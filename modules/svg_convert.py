@@ -50,7 +50,11 @@ def _patched_find_library(name: str) -> str | None:
 
 ctypes.util.find_library = _patched_find_library
 
-import cairosvg  # noqa: E402  — musi być po ustawieniu DYLD
+try:
+    import cairosvg  # noqa: E402  — musi być po ustawieniu DYLD
+    HAS_CAIROSVG = True
+except ImportError:
+    HAS_CAIROSVG = False
 
 # ---------------------------------------------------------------------------
 # SVG namespace
@@ -94,6 +98,8 @@ def svg_to_pdf(svg_path: str, target_w_mm: float | None = None,
 
     Returns the path to the generated temp PDF.
     """
+    if not HAS_CAIROSVG:
+        raise ImportError("cairosvg is required for SVG conversion. Install with: pip install cairosvg")
     if not os.path.isfile(svg_path):
         raise FileNotFoundError(f"SVG file not found: {svg_path}")
 

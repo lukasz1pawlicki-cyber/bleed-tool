@@ -361,18 +361,14 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
     log.info(f"Offset segmentów: {len(sticker.bleed_segments)} segmentów bleed")
 
     # 2. Kolor krawędzi
-    if sticker.raster_path is not None and sticker.edge_color_rgb is not None:
-        # Raster — kolor krawędzi już wykryty w detect_contour (z pikseli)
+    if sticker.edge_color_rgb is not None:
+        # Kolor krawędzi już wykryty w detect_contour (raster lub raster-only PDF)
         edge_rgb = sticker.edge_color_rgb
-        log.info(f"Kolor krawędzi RGB (raster): ({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})")
-    elif sticker.pdf_doc is not None:
+        log.info(f"Kolor krawędzi RGB (pre-set): ({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})")
+    elif sticker.pdf_doc is not None and sticker.outermost_drawing_idx is not None:
         page = sticker.pdf_doc[sticker.page_index]
         drawings = page.get_drawings()
-
-        if sticker.outermost_drawing_idx is not None:
-            outermost_drawing = drawings[sticker.outermost_drawing_idx]
-        else:
-            raise ValueError(f"Brak outermost_drawing_idx: {sticker.source_path}")
+        outermost_drawing = drawings[sticker.outermost_drawing_idx]
 
         edge_rgb = extract_edge_color(outermost_drawing)
         sticker.edge_color_rgb = edge_rgb

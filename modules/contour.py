@@ -308,11 +308,19 @@ def _detect_raster(image_path: str) -> Sticker:
             dpi_x = float(dpi_x)
             dpi_y = float(dpi_y)
             # Sanity check — DPI poniżej 10 lub powyżej 10000 to błąd
+            # 72 i 96 DPI to domyślne wartości ekranowe (JFIF), nie rzeczywiste DPI druku
             if dpi_x < 10 or dpi_x > 10000:
                 dpi_x = _DEFAULT_DPI
             if dpi_y < 10 or dpi_y > 10000:
                 dpi_y = _DEFAULT_DPI
-            log.info(f"Raster DPI z metadanych: {dpi_x:.0f}×{dpi_y:.0f}")
+            if dpi_x in (72, 96) and dpi_y in (72, 96):
+                log.info(
+                    f"Raster DPI={dpi_x:.0f} (domyślne ekranowe), "
+                    f"fallback na {_DEFAULT_DPI} DPI"
+                )
+                dpi_x = dpi_y = _DEFAULT_DPI
+            else:
+                log.info(f"Raster DPI z metadanych: {dpi_x:.0f}×{dpi_y:.0f}")
         else:
             dpi_x = dpi_y = _DEFAULT_DPI
             log.info(f"Raster: brak DPI w metadanych, fallback {_DEFAULT_DPI} DPI")
@@ -386,6 +394,27 @@ def _sample_raster_edge_color(img) -> tuple[float, float, float]:
     avg_b = sum(p[2] for p in pixels) / len(pixels) / 255.0
 
     return (avg_r, avg_g, avg_b)
+
+
+def _sample_pdf_page_edge_color(
+    doc: fitz.Document, page_index: int
+) -> tuple[float, float, float]:
+    """Próbkuje kolor krawędzi ze zrenderowanej strony PDF.
+
+    Renderuje stronę na niskiej rozdzielczości i próbkuje piksele z krawędzi.
+    Zwraca (r, g, b) w zakresie 0-1.
+    """
+    from PIL import Image
+
+    page = doc[page_index]
+    # Niska rozdzielczość — wystarczy do próbkowania koloru krawędzi
+    zoom = 72.0 / 72.0  # 72 DPI
+    mat = fitz.Matrix(zoom, zoom)
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    edge_rgb = _sample_raster_edge_color(img)
+    img.close()
+    return edge_rgb
 
 
 def _make_page_rect_contour(page_rect: fitz.Rect) -> list:
@@ -471,7 +500,45 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
             page, drawings = validate_page(
                 doc, page_idx, skip_raster_check=bool(_tmp_pdf)
             )
+        except ValueError:
+            # Strona bez drawings — sprawdź czy ma obrazy rastrowe
+            page = doc[page_idx]
+            images = page.get_images()
+            if images:
+                log.info(
+                    f"Strona {page_idx + 1}: brak wektorów, ale {len(images)} obraz(ów) "
+                    f"rastrowych — traktowanie jako raster-only PDF"
+                )
+                page_w_pt = page.rect.width
+                page_h_pt = page.rect.height
+                w_mm = page_w_pt * PT_TO_MM
+                h_mm = page_h_pt * PT_TO_MM
+                cut_segments = _make_page_rect_contour(page.rect)
+                edge_rgb = _sample_pdf_page_edge_color(doc, page_idx)
 
+                sticker = Sticker(
+                    source_path=original_path,
+                    page_index=page_idx,
+                    width_mm=w_mm,
+                    height_mm=h_mm,
+                    cut_segments=cut_segments,
+                    pdf_doc=doc,
+                    page_width_pt=page_w_pt,
+                    page_height_pt=page_h_pt,
+                    outermost_drawing_idx=None,
+                    edge_color_rgb=edge_rgb,
+                )
+                stickers.append(sticker)
+                log.info(
+                    f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
+                    f"raster-only PDF, edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+                )
+                continue
+            else:
+                log.warning(f"Strona {page_idx + 1} pominieta: brak wektorów i obrazów")
+                continue
+
+        try:
             page_w_pt = page.rect.width
             page_h_pt = page.rect.height
 

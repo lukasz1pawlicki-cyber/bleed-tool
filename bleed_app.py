@@ -199,11 +199,24 @@ class BleedApp(customtkinter.CTk):
         self._file_list.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 5))
         self._file_list.grid_columnconfigure(0, weight=1)
 
+        count_row = customtkinter.CTkFrame(parent, fg_color="transparent")
+        count_row.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 5))
+        count_row.grid_columnconfigure(0, weight=1)
+
         self._file_count_label = customtkinter.CTkLabel(
-            parent, text="0 plikow", text_color=TEXT_SECONDARY,
+            count_row, text="0 plikow", text_color=TEXT_SECONDARY,
             font=customtkinter.CTkFont(size=11),
         )
-        self._file_count_label.grid(row=2, column=0, sticky="w", padx=15, pady=(0, 5))
+        self._file_count_label.grid(row=0, column=0, sticky="w", padx=(5, 0))
+
+        self._clear_btn = customtkinter.CTkButton(
+            count_row, text="Wyczysc", width=70, height=24,
+            fg_color="transparent", hover_color=("#fee2e2", "#3d1111"),
+            text_color=ERROR, border_width=1, border_color=ERROR,
+            font=customtkinter.CTkFont(size=11),
+            command=self._clear_files,
+        )
+        self._clear_btn.grid(row=0, column=1, sticky="e")
 
     def _build_settings_section(self, parent):
         """Bleed settings + output dir."""
@@ -555,13 +568,13 @@ class BleedApp(customtkinter.CTk):
 # =============================================================================
 
 def _minimize_console():
-    """Minimalizuje okno konsoli (Windows)."""
+    """Ukrywa okno konsoli (Windows)."""
     if platform.system() != "Windows":
         return
     try:
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
     except Exception:
         pass
 

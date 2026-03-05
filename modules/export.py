@@ -18,10 +18,13 @@ Full sheet export (dwa PDF-y):
 from __future__ import annotations
 
 import logging
+import os
 import re as re_module
+import tempfile
 
 import fitz  # PyMuPDF
 import numpy as np
+from PIL import Image as PILImage
 
 from models import Sticker, Sheet, Placement, Mark, PanelLine
 from config import (
@@ -427,6 +430,41 @@ def inject_content_stream(
 # SINGLE STICKER EXPORT
 # =============================================================================
 
+def _create_edge_extended_image(img: PILImage.Image, bleed_px: int) -> PILImage.Image:
+    """Tworzy obraz z rozciągniętymi krawędziami (edge clamping).
+
+    Każdy piksel krawędzi jest rozciągany na zewnątrz o bleed_px pikseli.
+    Daje efekt lokalnie dopasowanego koloru bleed.
+    """
+    arr = np.array(img.convert("RGB"))
+    h, w = arr.shape[:2]
+    bp = bleed_px
+
+    new_h = h + 2 * bp
+    new_w = w + 2 * bp
+    ext = np.zeros((new_h, new_w, 3), dtype=arr.dtype)
+
+    # Środek — oryginał
+    ext[bp:bp + h, bp:bp + w] = arr
+
+    # Górna krawędź — powtórzenie pierwszego wiersza
+    ext[:bp, bp:bp + w] = arr[0:1, :]
+    # Dolna krawędź — powtórzenie ostatniego wiersza
+    ext[bp + h:, bp:bp + w] = arr[-1:, :]
+    # Lewa krawędź — powtórzenie pierwszej kolumny
+    ext[bp:bp + h, :bp] = arr[:, 0:1]
+    # Prawa krawędź — powtórzenie ostatniej kolumny
+    ext[bp:bp + h, bp + w:] = arr[:, -1:]
+
+    # Narożniki — piksel narożny
+    ext[:bp, :bp] = arr[0, 0]
+    ext[:bp, bp + w:] = arr[0, -1]
+    ext[bp + h:, :bp] = arr[-1, 0]
+    ext[bp + h:, bp + w:] = arr[-1, -1]
+
+    return PILImage.fromarray(ext)
+
+
 def export_single_sticker(
     sticker: Sticker,
     output_path: str,
@@ -470,21 +508,48 @@ def export_single_sticker(
     doc_out = fitz.open()
     out_page = doc_out.new_page(width=out_w, height=out_h)
 
-    # --- WARSTWA 1: Podkład bleed (RGB solid fill) ---
-    bleed_stream = build_rgb_fill_stream(
-        sticker.bleed_segments, sticker.edge_color_rgb, bleed_pts, out_h
+    # --- WARSTWA 1+2: Bleed + grafika ---
+    _is_raster_only_pdf = (
+        sticker.raster_path is None
+        and sticker.pdf_doc is not None
+        and sticker.outermost_drawing_idx is None
     )
-    inject_content_stream(doc_out, out_page, bleed_stream)
-    log.info("Warstwa 1: podkład bleed (wektorowy RGB fill) — OK")
 
-    # --- WARSTWA 2: Oryginalna grafika ---
-    if sticker.raster_path is not None:
-        # Raster: insert_image do target rect (z bleedem)
-        target_rect = fitz.Rect(bleed_pts, bleed_pts, bleed_pts + page_w, bleed_pts + page_h)
-        out_page.insert_image(target_rect, filename=sticker.raster_path)
-        log.info("Warstwa 2: grafika rastrowa (insert_image) — OK")
+    if sticker.raster_path is not None or _is_raster_only_pdf:
+        # Raster / raster-only PDF: edge-clamping bleed
+        # Wczytaj obraz (z pliku lub render strony PDF)
+        if sticker.raster_path is not None:
+            src_img = PILImage.open(sticker.raster_path).convert("RGB")
+        else:
+            page_src = sticker.pdf_doc[sticker.page_index]
+            pix_per_pt = 300.0 / 72.0  # render na 300 DPI
+            mat = fitz.Matrix(pix_per_pt, pix_per_pt)
+            pix = page_src.get_pixmap(matrix=mat, alpha=False)
+            src_img = PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+        # Oblicz bleed w pikselach
+        bleed_px = max(1, round(bleed_pts * src_img.width / page_w))
+        ext_img = _create_edge_extended_image(src_img, bleed_px)
+        src_img.close()
+
+        # Zapisz do pliku tymczasowego i wstaw na pełną stronę
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.close()
+        ext_img.save(tmp.name)
+        ext_img.close()
+
+        full_rect = fitz.Rect(0, 0, out_w, out_h)
+        out_page.insert_image(full_rect, filename=tmp.name)
+        os.unlink(tmp.name)
+        log.info("Warstwa 1+2: bleed edge-clamping + grafika rastrowa — OK")
     else:
-        # Wektor: show_pdf_page z rozszerzonym MediaBox
+        # Wektor PDF: solid fill + show_pdf_page
+        bleed_stream = build_rgb_fill_stream(
+            sticker.bleed_segments, sticker.edge_color_rgb, bleed_pts, out_h
+        )
+        inject_content_stream(doc_out, out_page, bleed_stream)
+        log.info("Warstwa 1: podkład bleed (wektorowy RGB fill) — OK")
+
         doc_src = sticker.pdf_doc
         src_page = doc_src[sticker.page_index]
 
@@ -492,7 +557,6 @@ def export_single_sticker(
         expand_clip_paths(doc_src, src_page, bleed_pts)
 
         # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
-        # (PyMuPDF auto-adjustuje CropBox błędnie przy ujemnych współrzędnych)
         src_xref = src_page.xref
         for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
             doc_src.xref_set_key(src_xref, box, "null")
