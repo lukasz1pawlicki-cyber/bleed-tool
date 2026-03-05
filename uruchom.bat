@@ -19,7 +19,7 @@ if errorlevel 1 (
 )
 
 :: Sprawdz zaleznosci
-python -c "import customtkinter, fitz, numpy, PIL" >nul 2>&1
+python -c "import customtkinter, fitz, numpy, PIL, tkinterdnd2" >nul 2>&1
 if errorlevel 1 (
     echo   Instaluje brakujace zaleznosci...
     echo.

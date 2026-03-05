@@ -182,14 +182,21 @@ class BleedApp(customtkinter.CTk):
         self._drop_frame.grid_columnconfigure(0, weight=1)
         self._drop_frame.grid_propagate(False)
 
+        if HAS_DND:
+            drop_text = "Przeciagnij pliki PDF / SVG / PNG / JPG\nlub kliknij aby wybrac"
+        else:
+            drop_text = "Kliknij aby wybrac pliki\nPDF / SVG / PNG / JPG"
+
         drop_label = customtkinter.CTkLabel(
             self._drop_frame,
-            text="Przeciagnij pliki PDF / SVG / PNG / JPG\nlub kliknij aby wybrac",
+            text=drop_text,
             text_color=TEXT_SECONDARY,
             justify="center",
+            cursor="hand2",
         )
         drop_label.grid(row=0, column=0, pady=15)
         drop_label.bind("<Button-1>", lambda e: self._browse_files())
+        self._drop_frame.configure(cursor="hand2")
         self._drop_frame.bind("<Button-1>", lambda e: self._browse_files())
 
         # File list
