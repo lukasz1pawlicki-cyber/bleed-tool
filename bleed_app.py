@@ -69,6 +69,13 @@ class BleedApp(customtkinter.CTk):
     def __init__(self):
         super().__init__()
 
+        # Inicjalizacja tkdnd (drag & drop)
+        if HAS_DND:
+            try:
+                self.TkdndVersion = tkinterdnd2.TkinterDnD._require(self)
+            except Exception:
+                pass
+
         self.title("Bleed Tool")
         self.geometry("900x650")
         self.minsize(700, 500)
@@ -269,8 +276,10 @@ class BleedApp(customtkinter.CTk):
         if not HAS_DND:
             return
         try:
-            self.drop_target_register(tkinterdnd2.DND_FILES)
-            self.dnd_bind("<<Drop>>", self._on_drop)
+            # Rejestruj DnD na drop zone i na całym oknie
+            for w in (self._drop_frame, self):
+                w.drop_target_register(tkinterdnd2.DND_FILES)
+                w.dnd_bind("<<Drop>>", self._on_drop)
         except Exception:
             pass
 
@@ -560,17 +569,6 @@ def _minimize_console():
 def main():
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     _minimize_console()
-
-    if HAS_DND:
-        try:
-            app = BleedApp()
-            # Patch: re-create with tkinterdnd2 support
-            app.destroy()
-            root = tkinterdnd2.Tk()
-            root.withdraw()
-            root.destroy()
-        except Exception:
-            pass
 
     app = BleedApp()
     app.mainloop()
