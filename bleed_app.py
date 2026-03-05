@@ -8,8 +8,10 @@ Drag & drop lub file dialog, podgląd wynikowego PDF.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
+import platform
 import sys
 import threading
 import time
@@ -543,8 +545,21 @@ class BleedApp(customtkinter.CTk):
 # MAIN
 # =============================================================================
 
+def _minimize_console():
+    """Minimalizuje okno konsoli (Windows)."""
+    if platform.system() != "Windows":
+        return
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+    except Exception:
+        pass
+
+
 def main():
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+    _minimize_console()
 
     if HAS_DND:
         try:
