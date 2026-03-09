@@ -396,6 +396,240 @@ def _sample_raster_edge_color(img) -> tuple[float, float, float]:
     return (avg_r, avg_g, avg_b)
 
 
+def _get_images_bbox(page: fitz.Page):
+    """Zwraca union bounding box wszystkich obrazów na stronie.
+
+    Returns None jeśli brak obrazów.
+    """
+    img_info = page.get_image_info()
+    if not img_info:
+        return None
+
+    x0 = min(info['bbox'][0] for info in img_info)
+    y0 = min(info['bbox'][1] for info in img_info)
+    x1 = max(info['bbox'][2] for info in img_info)
+    y1 = max(info['bbox'][3] for info in img_info)
+
+    rect = fitz.Rect(x0, y0, x1, y1)
+    if rect.is_empty or rect.width < 1 or rect.height < 1:
+        return None
+    return rect
+
+
+def _is_artwork_on_artboard(page: fitz.Page, artwork_rect: fitz.Rect,
+                             max_ratio: float = 0.6) -> bool:
+    """Sprawdza czy grafika jest znacznie mniejsza od strony (= artwork na artboardzie)."""
+    page_area = page.rect.width * page.rect.height
+    art_area = artwork_rect.width * artwork_rect.height
+    if page_area < 1:
+        return False
+    return art_area / page_area < max_ratio
+
+
+def _fit_circle(points: np.ndarray) -> tuple[float, float, float] | None:
+    """Dopasowuje okrąg do zbioru punktów 2D metodą najmniejszych kwadratów.
+
+    Returns (cx, cy, radius) lub None jeśli dopasowanie się nie udało.
+    """
+    if len(points) < 3:
+        return None
+
+    x = points[:, 0]
+    y = points[:, 1]
+
+    # Linearyzacja: 2*cx*x + 2*cy*y + (r² - cx² - cy²) = x² + y²
+    A = np.column_stack([2 * x, 2 * y, np.ones(len(x))])
+    b = x ** 2 + y ** 2
+
+    try:
+        result, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+
+    cx, cy, c = result
+    val = c + cx ** 2 + cy ** 2
+    if val <= 0:
+        return None
+    r = np.sqrt(val)
+    return float(cx), float(cy), float(r)
+
+
+def _is_circular(points: np.ndarray, cx: float, cy: float, r: float,
+                  tolerance: float = 0.05) -> bool:
+    """Sprawdza czy punkty leżą na okręgu (w granicy tolerance * r)."""
+    distances = np.sqrt((points[:, 0] - cx) ** 2 + (points[:, 1] - cy) ** 2)
+    max_deviation = np.max(np.abs(distances - r))
+    return max_deviation / r < tolerance
+
+
+def _circle_to_bezier_segments(cx: float, cy: float, r: float) -> list:
+    """Generuje 4 krzywe Bézier aproksymujące okrąg.
+
+    Standardowa aproksymacja: k ≈ 0.5523 (4*(√2-1)/3).
+    Koordynaty w y-down (fitz).
+    """
+    k = 0.5522847498  # 4*(sqrt(2)-1)/3
+    kr = k * r
+
+    # 4 ćwiartki: prawo → dół → lewo → góra → prawo (y-down, clockwise)
+    return [
+        ('c',
+         np.array([cx + r, cy]),
+         np.array([cx + r, cy + kr]),
+         np.array([cx + kr, cy + r]),
+         np.array([cx, cy + r])),
+        ('c',
+         np.array([cx, cy + r]),
+         np.array([cx - kr, cy + r]),
+         np.array([cx - r, cy + kr]),
+         np.array([cx - r, cy])),
+        ('c',
+         np.array([cx - r, cy]),
+         np.array([cx - r, cy - kr]),
+         np.array([cx - kr, cy - r]),
+         np.array([cx, cy - r])),
+        ('c',
+         np.array([cx, cy - r]),
+         np.array([cx + kr, cy - r]),
+         np.array([cx + r, cy - kr]),
+         np.array([cx + r, cy])),
+    ]
+
+
+def _render_alpha_contour(doc: fitz.Document, page_index: int,
+                           clip_rect: fitz.Rect) -> tuple[list, tuple]:
+    """Renderuje obszar grafiki z alpha i wyodrębnia kontur + kolor krawędzi.
+
+    Jeśli kształt jest okrągły → zwraca 4 krzywe Bézier (idealny okrąg).
+    W przeciwnym razie → polygon z linii.
+    Segmenty w koordynatach relatywnych do (0,0) clip_rect.
+    """
+    page = doc[page_index]
+
+    # Render na umiarkowanej rozdzielczości
+    target_px = 500
+    scale = target_px / max(clip_rect.width, clip_rect.height)
+    mat = fitz.Matrix(scale, scale)
+
+    pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=True)
+    data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 4)
+    alpha = data[:, :, 3]
+    rgb = data[:, :, :3]
+
+    h, w = alpha.shape
+    threshold = 128
+
+    # Dla każdego wiersza: lewy i prawy piksel opaque
+    boundary_pts = []
+    edge_colors = []
+
+    for y in range(h):
+        opaque_cols = np.where(alpha[y] > threshold)[0]
+        if len(opaque_cols) > 0:
+            lx = int(opaque_cols[0])
+            rx = int(opaque_cols[-1])
+            boundary_pts.append([float(lx), float(y)])
+            if rx != lx:
+                boundary_pts.append([float(rx), float(y)])
+            # Próbkuj kolory z pikseli granicznych
+            edge_colors.append(rgb[y, lx].astype(float))
+            edge_colors.append(rgb[y, rx].astype(float))
+
+    if len(boundary_pts) < 6:
+        edge_rgb = _sample_pdf_page_edge_color(doc, page_index)
+        rect_local = fitz.Rect(0, 0, clip_rect.width, clip_rect.height)
+        return _make_page_rect_contour(rect_local), edge_rgb
+
+    boundary_arr = np.array(boundary_pts)
+
+    # Kolor krawędzi z pikseli granicznych
+    if edge_colors:
+        avg = np.mean(edge_colors, axis=0) / 255.0
+        edge_rgb = (float(avg[0]), float(avg[1]), float(avg[2]))
+    else:
+        edge_rgb = (1.0, 1.0, 1.0)
+
+    # Próba dopasowania okręgu
+    circle = _fit_circle(boundary_arr)
+    if circle is not None:
+        cx_px, cy_px, r_px = circle
+        if _is_circular(boundary_arr, cx_px, cy_px, r_px, tolerance=0.05):
+            # Okrąg! Generuj Bézier w pt (relatywnie do 0,0)
+            cx_pt = cx_px / scale
+            cy_pt = cy_px / scale
+            r_pt = r_px / scale
+            segments = _circle_to_bezier_segments(cx_pt, cy_pt, r_pt)
+            log.info(
+                f"Kontur: okrąg Bézier, r={r_pt * PT_TO_MM:.1f}mm, "
+                f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+            )
+            return segments, edge_rgb
+
+    # Fallback: polygon z linii (Douglas-Peucker)
+    left_pts = []
+    right_pts = []
+    for y in range(h):
+        opaque_cols = np.where(alpha[y] > threshold)[0]
+        if len(opaque_cols) > 0:
+            left_pts.append([float(opaque_cols[0]), float(y)])
+            right_pts.append([float(opaque_cols[-1]), float(y)])
+
+    polygon_px = np.array(left_pts + right_pts[::-1])
+    polygon_px = _douglas_peucker(polygon_px, epsilon=1.0)
+
+    segments = []
+    n = len(polygon_px)
+    for i in range(n):
+        p0 = polygon_px[i]
+        p1 = polygon_px[(i + 1) % n]
+        segments.append(('l',
+                         np.array([p0[0] / scale, p0[1] / scale]),
+                         np.array([p1[0] / scale, p1[1] / scale])))
+
+    log.info(
+        f"Kontur: polygon {len(segments)} segmentów, "
+        f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+    )
+    return segments, edge_rgb
+
+
+def _douglas_peucker(points: np.ndarray, epsilon: float) -> np.ndarray:
+    """Upraszczanie wielokąta algorytmem Douglas-Peucker."""
+    if len(points) <= 2:
+        return points
+    return _dp_recursive(points, epsilon)
+
+
+def _dp_recursive(pts: np.ndarray, epsilon: float) -> np.ndarray:
+    """Rekurencyjne upraszczanie DP."""
+    if len(pts) <= 2:
+        return pts
+
+    start = pts[0]
+    end = pts[-1]
+    line_vec = end - start
+    line_len = np.linalg.norm(line_vec)
+
+    if line_len < 1e-10:
+        return pts[[0, -1]]
+
+    line_unit = line_vec / line_len
+
+    # Odległość prostopadła każdego pośredniego punktu od linii
+    diffs = pts[1:-1] - start
+    cross = np.abs(diffs[:, 0] * line_unit[1] - diffs[:, 1] * line_unit[0])
+
+    max_idx = np.argmax(cross) + 1  # +1 bo pominęliśmy pierwszy punkt
+    max_dist = cross[max_idx - 1]
+
+    if max_dist > epsilon:
+        left = _dp_recursive(pts[:max_idx + 1], epsilon)
+        right = _dp_recursive(pts[max_idx:], epsilon)
+        return np.vstack([left[:-1], right])
+    else:
+        return pts[[0, -1]]
+
+
 def _sample_pdf_page_edge_color(
     doc: fitz.Document, page_index: int
 ) -> tuple[float, float, float]:
@@ -509,12 +743,51 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                     f"Strona {page_idx + 1}: brak wektorów, ale {len(images)} obraz(ów) "
                     f"rastrowych — traktowanie jako raster-only PDF"
                 )
-                page_w_pt = page.rect.width
-                page_h_pt = page.rect.height
+
+                # Sprawdź czy grafika jest mniejsza od strony (artwork na artboardzie)
+                images_bbox = _get_images_bbox(page)
+                artwork_on_artboard = (
+                    images_bbox is not None
+                    and _is_artwork_on_artboard(page, images_bbox)
+                )
+
+                if artwork_on_artboard:
+                    # Grafika mniejsza od strony — przytnij do obszaru grafiki
+                    artwork_rect = fitz.Rect(
+                        images_bbox.x0 - 1, images_bbox.y0 - 1,
+                        images_bbox.x1 + 1, images_bbox.y1 + 1,
+                    )
+                    artwork_rect &= page.rect  # nie wychodź poza stronę
+
+                    log.info(
+                        f"Strona {page_idx + 1}: grafika "
+                        f"{artwork_rect.width * PT_TO_MM:.1f}x"
+                        f"{artwork_rect.height * PT_TO_MM:.1f}mm na stronie "
+                        f"{page.rect.width * PT_TO_MM:.1f}x"
+                        f"{page.rect.height * PT_TO_MM:.1f}mm"
+                    )
+
+                    # Wykryj kontur z renderingu z alpha
+                    cut_segments, edge_rgb = _render_alpha_contour(
+                        doc, page_idx, artwork_rect
+                    )
+
+                    # Przytnij stronę do obszaru grafiki (dla eksportu)
+                    page.set_cropbox(artwork_rect)
+
+                    page_w_pt = artwork_rect.width
+                    page_h_pt = artwork_rect.height
+                else:
+                    # Grafika wypełnia stronę — prostokąt z page.rect
+                    page_w_pt = page.rect.width
+                    page_h_pt = page.rect.height
+                    cut_segments = _make_page_rect_contour(
+                        fitz.Rect(0, 0, page_w_pt, page_h_pt)
+                    )
+                    edge_rgb = _sample_pdf_page_edge_color(doc, page_idx)
+
                 w_mm = page_w_pt * PT_TO_MM
                 h_mm = page_h_pt * PT_TO_MM
-                cut_segments = _make_page_rect_contour(page.rect)
-                edge_rgb = _sample_pdf_page_edge_color(doc, page_idx)
 
                 sticker = Sticker(
                     source_path=original_path,
@@ -531,7 +804,8 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                 stickers.append(sticker)
                 log.info(
                     f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
-                    f"raster-only PDF, edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+                    f"raster-only PDF, {len(cut_segments)} segmentów konturu, "
+                    f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
                 )
                 continue
             else:

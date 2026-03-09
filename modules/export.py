@@ -135,6 +135,211 @@ def build_cutcontour_stream(
 # ROZSZERZANIE CLIPPING PATHS W CONTENT STREAM
 # =============================================================================
 
+def inject_page_boundary_clip(
+    doc: fitz.Document, page: fitz.Page, bleed_pts: float
+) -> None:
+    """Wstrzykuje clip path ograniczający rendering do CropBox + bleed.
+
+    Dla plików z TrimBox != MediaBox: content stream zawiera geometrię
+    poza TrimBox (markery cięcia, tło). Po set_cropbox() viewport się zmienia,
+    ale content stream nie. Ta funkcja dodaje clip path na początku strumienia,
+    który maskuje wszystko poza CropBox rozszerzonym o bleed_pts.
+
+    UWAGA: content stream używa współrzędnych MediaBox, nie page.rect.
+    page.rect po set_cropbox() jest znormalizowany do (0,0), ale surowe
+    bajty strumienia nadal używają oryginalnych współrzędnych.
+    """
+    # Użyj cropbox — surowe współrzędne w przestrzeni MediaBox
+    cb = page.cropbox
+    x0 = cb.x0 - bleed_pts
+    y0 = cb.y0 - bleed_pts
+    x1 = cb.x1 + bleed_pts
+    y1 = cb.y1 + bleed_pts
+    w = x1 - x0
+    h = y1 - y0
+
+    # PDF clip path: rectangle → W n (clip + end path)
+    clip_stream = f"q\n{x0:.4f} {y0:.4f} {w:.4f} {h:.4f} re W n\n"
+
+    # Prepend to first content stream
+    page_xref = page.xref
+    contents_info = doc.xref_get_key(page_xref, "Contents")
+    xref_str = contents_info[1]
+    xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xref_str)
+
+    if xrefs:
+        first_xr = int(xrefs[0])
+        stream = doc.xref_stream(first_xr)
+        if stream:
+            text = stream.decode('latin-1', errors='replace')
+            new_text = clip_stream + text
+            doc.update_stream(first_xr, new_text.encode('latin-1'))
+            log.info(
+                f"Wstrzyknięto boundary clip: ({x0:.1f}, {y0:.1f}, "
+                f"{x1:.1f}, {y1:.1f})pt"
+            )
+
+
+def convert_black_to_100k(doc: fitz.Document, page: fitz.Page) -> None:
+    """Zamienia kolory czarne na czarny 100% K w content streamach strony.
+
+    Konwertuje:
+      - DeviceGray:  '0 g' → '0 0 0 1 k',  '0 G' → '0 0 0 1 K'
+      - DeviceRGB:   '0 0 0 rg' → '0 0 0 1 k',  '0 0 0 RG' → '0 0 0 1 K'
+      - DeviceCMYK rich black: K≥0.85 z CMY → '0 0 0 1 k/K'
+      - Shadingi DeviceN[CMY] nakładające CMY na czarne tło → usunięte
+    Próg „czarnego": wartości ≤ 0.1 (gray/RGB), K ≥ 0.85 (CMYK).
+    """
+    page_xref = page.xref
+    contents_info = doc.xref_get_key(page_xref, "Contents")
+    xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', contents_info[1])
+
+    count = 0
+    for xr_str in xrefs:
+        xr = int(xr_str)
+        stream = doc.xref_stream(xr)
+        if not stream:
+            continue
+        text = stream.decode('latin-1', errors='replace')
+        new_text, n = _convert_black_in_stream(text)
+        if n > 0:
+            doc.update_stream(xr, new_text.encode('latin-1'))
+            count += n
+
+    # Przetworz Form XObjects (mogą zawierać kolory czarne)
+    xobj_info = doc.xref_get_key(page_xref, "Resources/XObject")
+    if xobj_info[0] != 'null':
+        xobj_xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xobj_info[1])
+        for xr_str in xobj_xrefs:
+            xr = int(xr_str)
+            stream = doc.xref_stream(xr)
+            if not stream:
+                continue
+            text = stream.decode('latin-1', errors='replace')
+            new_text, n = _convert_black_in_stream(text)
+            if n > 0:
+                doc.update_stream(xr, new_text.encode('latin-1'))
+                count += n
+
+    # Zamień Separation /All na /Black (registration → pure K)
+    count += _convert_separation_all_to_black(doc, page)
+
+    if count:
+        log.info(f"Czarny → 100%% K: zamieniono {count} operacji kolorów")
+
+
+def _convert_separation_all_to_black(doc: fitz.Document, page: fitz.Page) -> int:
+    """Zamienia Separation /All na Separation /Black w zasobach strony.
+
+    /Separation /All = registration (C+M+Y+K = tint) → rich black.
+    /Separation /Black = tylko K = tint → pure K black.
+    """
+    count = 0
+    page_xref = page.xref
+    cs_info = doc.xref_get_key(page_xref, "Resources/ColorSpace")
+    if cs_info[0] == 'null':
+        return 0
+
+    for m in re_module.finditer(r'/(\w+)\s+(\d+)\s+\d+\s+R', cs_info[1]):
+        cs_name = m.group(1)
+        cs_xref = int(m.group(2))
+        cs_obj = doc.xref_object(cs_xref)
+
+        if '/Separation' in cs_obj and '/All' in cs_obj:
+            # Zamień /All na /Black w definicji colorspace
+            new_obj = cs_obj.replace('/All', '/Black', 1)
+            # Zmień alternate space na DeviceCMYK z tintTransform: tint → 0 0 0 tint
+            # Prostszy sposób: zamień tylko nazwę /All → /Black
+            new_obj_str = new_obj.strip()
+            try:
+                doc.update_object(cs_xref, new_obj_str)
+                log.info(f"Colorspace /{cs_name}: /Separation /All → /Black")
+                count += 1
+            except Exception as e:
+                log.warning(f"Nie udało się zmienić /{cs_name} /All → /Black: {e}")
+
+    return count
+
+
+# Regex dla operatorów kolorów (na końcu linii)
+_RE_GRAY_FILL   = re_module.compile(r'^(\s*)([\d.]+)\s+g\s*$')
+_RE_GRAY_STROKE = re_module.compile(r'^(\s*)([\d.]+)\s+G\s*$')
+_RE_RGB_FILL    = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg\s*$')
+_RE_RGB_STROKE  = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+RG\s*$')
+_RE_CMYK_FILL   = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+k\s*$')
+_RE_CMYK_STROKE = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+K\s*$')
+
+_BLACK_THRESH = 0.1  # Wartości ≤ tego uznajemy za „czarny" (gray/RGB)
+_K_RICH_THRESH = 0.85  # CMYK: K ≥ tego z jakimkolwiek CMY → rich black
+
+
+def _convert_black_in_stream(text: str) -> tuple[str, int]:
+    """Zamienia czarne kolory na 100% K w jednym content stream."""
+    lines = text.split('\n')
+    count = 0
+    result = []
+
+    for line in lines:
+        new_line = line
+
+        # DeviceGray fill: '0 g' → '0 0 0 1 k'
+        m = _RE_GRAY_FILL.match(line)
+        if m:
+            val = float(m.group(2))
+            if val <= _BLACK_THRESH:
+                new_line = f"{m.group(1)}0 0 0 1 k"
+                count += 1
+
+        # DeviceGray stroke: '0 G' → '0 0 0 1 K'
+        if new_line is line:
+            m = _RE_GRAY_STROKE.match(line)
+            if m:
+                val = float(m.group(2))
+                if val <= _BLACK_THRESH:
+                    new_line = f"{m.group(1)}0 0 0 1 K"
+                    count += 1
+
+        # DeviceRGB fill: '0 0 0 rg' → '0 0 0 1 k'
+        if new_line is line:
+            m = _RE_RGB_FILL.match(line)
+            if m:
+                r, g, b = float(m.group(2)), float(m.group(3)), float(m.group(4))
+                if r <= _BLACK_THRESH and g <= _BLACK_THRESH and b <= _BLACK_THRESH:
+                    new_line = f"{m.group(1)}0 0 0 1 k"
+                    count += 1
+
+        # DeviceRGB stroke: '0 0 0 RG' → '0 0 0 1 K'
+        if new_line is line:
+            m = _RE_RGB_STROKE.match(line)
+            if m:
+                r, g, b = float(m.group(2)), float(m.group(3)), float(m.group(4))
+                if r <= _BLACK_THRESH and g <= _BLACK_THRESH and b <= _BLACK_THRESH:
+                    new_line = f"{m.group(1)}0 0 0 1 K"
+                    count += 1
+
+        # DeviceCMYK fill: rich black → pure K
+        if new_line is line:
+            m = _RE_CMYK_FILL.match(line)
+            if m:
+                c, mk, y, kk = (float(m.group(i)) for i in range(2, 6))
+                if kk >= _K_RICH_THRESH and (c > 0.01 or mk > 0.01 or y > 0.01):
+                    new_line = f"{m.group(1)}0 0 0 1 k"
+                    count += 1
+
+        # DeviceCMYK stroke: rich black → pure K
+        if new_line is line:
+            m = _RE_CMYK_STROKE.match(line)
+            if m:
+                c, mk, y, kk = (float(m.group(i)) for i in range(2, 6))
+                if kk >= _K_RICH_THRESH and (c > 0.01 or mk > 0.01 or y > 0.01):
+                    new_line = f"{m.group(1)}0 0 0 1 K"
+                    count += 1
+
+        result.append(new_line)
+
+    return '\n'.join(result), count
+
+
 def expand_clip_paths(doc: fitz.Document, page: fitz.Page, bleed_pts: float) -> None:
     """Rozszerza clipping paths (W n / W* n) w content stream strony o bleed_pts.
 
@@ -174,28 +379,87 @@ def expand_clip_paths(doc: fitz.Document, page: fitz.Page, bleed_pts: float) -> 
 
 
 def _expand_clips_in_stream(text: str, bleed_pts: float) -> str:
-    """Parsuje content stream i rozszerza wszystkie clip paths o bleed_pts."""
+    """Parsuje content stream i rozszerza wszystkie clip paths o bleed_pts.
+
+    Po rozszerzeniu clip path, szuka macierzy transformacji obrazu (cm + Do)
+    i rozszerza ją o bleed_pts, żeby obraz pokrywał rozszerzony clip.
+    """
     lines = text.split('\n')
     result: list[str] = []
     i = 0
+    clip_was_expanded = False
 
     while i < len(lines):
         line = lines[i].strip()
 
-        # Sprawdź czy ta linia to "W n" lub "W* n" (clip operator)
+        # Wzorzec 1: "W n" lub "W* n" na jednej linii
         if line in ('W n', 'W* n'):
             clip_expanded = _try_expand_clip(result, line, bleed_pts)
             if clip_expanded:
                 result.extend(clip_expanded)
+                clip_was_expanded = True
             else:
                 result.append(lines[i])
             i += 1
             continue
 
+        # Wzorzec 2: "W" lub "W*" na osobnej linii, "n" na następnej
+        if line in ('W', 'W*') and i + 1 < len(lines) and lines[i + 1].strip() == 'n':
+            clip_op = line + ' n'
+            clip_expanded = _try_expand_clip(result, clip_op, bleed_pts)
+            if clip_expanded:
+                result.extend(clip_expanded)
+                clip_was_expanded = True
+            else:
+                result.append(lines[i])
+                result.append(lines[i + 1])
+            i += 2
+            continue
+
+        # Po rozszerzeniu clip: rozszerz macierz transformacji obrazu (cm)
+        # Wzorzec: "sx 0 0 sy tx ty cm" → rozszerz o bleed_pts
+        if clip_was_expanded and line.endswith(' cm'):
+            expanded_cm = _expand_image_matrix(line, bleed_pts)
+            if expanded_cm:
+                result.append(expanded_cm)
+                log.info(f"Rozszerzono macierz obrazu: {line.strip()} → {expanded_cm.strip()}")
+                clip_was_expanded = False
+                i += 1
+                continue
+
         result.append(lines[i])
         i += 1
 
     return '\n'.join(result)
+
+
+def _expand_image_matrix(cm_line: str, bleed_pts: float) -> str | None:
+    """Rozszerza macierz transformacji obrazu o bleed_pts.
+
+    Macierz: 'sx 0 0 sy tx ty cm' (tylko skala + translacja, bez rotacji/skew).
+    Rozszerza obraz o bleed_pts na każdą stronę: zwiększa skalę i przesuwa origin.
+    """
+    parts = cm_line.strip().split()
+    if len(parts) != 7 or parts[6] != 'cm':
+        return None
+
+    try:
+        a, b, c, d, tx, ty = [float(p) for p in parts[:6]]
+    except ValueError:
+        return None
+
+    # Tylko proste macierze (skala + translacja): b=0, c=0
+    if abs(b) > 0.001 or abs(c) > 0.001:
+        return None
+
+    # sx = a (skala X), sy = d (skala Y)
+    # Rozszerz: obraz jest większy o 2*bleed na każdą oś, przesunięty o -bleed
+    new_a = a + 2 * bleed_pts
+    new_d = d + 2 * bleed_pts
+    new_tx = tx - bleed_pts
+    new_ty = ty - bleed_pts
+
+    return f"{new_a:.5f} {b:.5f} {c:.5f} {new_d:.5f} {new_tx:.4f} {new_ty:.4f} cm"
 
 
 def _try_expand_clip(
@@ -205,6 +469,11 @@ def _try_expand_clip(
 
     Zwraca listę linii zastępujących (od początku ścieżki do clip_op włącznie),
     lub None jeśli nie udało się rozpoznać wzorca.
+
+    Obsługuje:
+    - Prostokąty: x y w h re W n
+    - Ścieżki z 'h' (explicit close): m ... l/c ... h W n
+    - Ścieżki bez 'h' (implicit close): m ... l/c ... W n
     """
     path_lines: list[str] = []
     idx = len(preceding_lines) - 1
@@ -245,7 +514,26 @@ def _try_expand_clip(
             break
 
         parts = pl.split()
-        if parts and parts[-1] in ('m', 'l', 'c'):
+        if not parts:
+            break
+
+        op = parts[-1]
+
+        # moveTo = początek ścieżki → ścieżka bez explicit 'h' (implicit close)
+        if op == 'm':
+            polygon_lines = [
+                preceding_lines[j].strip()
+                for j in range(idx, len(preceding_lines))
+            ]
+            # Dodaj 'h' do zamknięcia ścieżki
+            polygon_lines.append('h')
+            expanded_polygon = _expand_polygon_clip(polygon_lines, bleed_pts)
+            if expanded_polygon:
+                del preceding_lines[idx:]
+                return expanded_polygon + [clip_op]
+            break
+
+        if op in ('l', 'c'):
             idx -= 1
             continue
 
@@ -281,54 +569,85 @@ def _expand_rect_clip(rect_line: str, bleed_pts: float) -> str | None:
 
 
 def _expand_polygon_clip(polygon_lines: list[str], bleed_pts: float) -> list[str] | None:
-    """Rozszerza polygonalny clip path (m/l/h) o bleed_pts na zewnątrz."""
-    vertices: list[tuple[float, float]] = []
+    """Rozszerza clip path (m/l/c/h) o bleed_pts na zewnątrz.
+
+    Obsługuje zarówno polygony (m/l/h) jak i ścieżki z krzywymi Bézier (m/c/h).
+    Używa offset_segments z bleed.py do precyzyjnego offsetu.
+    """
+    from modules.bleed import offset_segments
+
+    # Parsuj ścieżkę → segmenty [('l', start, end), ('c', p0, p1, p2, p3)]
+    segments: list = []
+    has_curves = False
+    current_pos = None
+    first_pos = None
+
     for pl in polygon_lines:
         parts = pl.split()
         if not parts:
             continue
         op = parts[-1]
-        if op == 'm' and len(parts) >= 3:
-            vertices.append((float(parts[0]), float(parts[1])))
-        elif op == 'l' and len(parts) >= 3:
-            vertices.append((float(parts[0]), float(parts[1])))
-        elif op == 'h':
-            pass
-        elif op == 'c':
-            # Krzywe w clip path — za skomplikowane
-            return None
 
-    if len(vertices) < 3:
+        if op == 'm' and len(parts) >= 3:
+            x, y = float(parts[0]), float(parts[1])
+            current_pos = np.array([x, y])
+            first_pos = current_pos.copy()
+        elif op == 'l' and len(parts) >= 3:
+            x, y = float(parts[0]), float(parts[1])
+            end = np.array([x, y])
+            if current_pos is not None:
+                segments.append(('l', current_pos.copy(), end.copy()))
+            current_pos = end
+        elif op == 'c' and len(parts) >= 7:
+            has_curves = True
+            x1, y1 = float(parts[0]), float(parts[1])
+            x2, y2 = float(parts[2]), float(parts[3])
+            x3, y3 = float(parts[4]), float(parts[5])
+            p1 = np.array([x1, y1])
+            p2 = np.array([x2, y2])
+            p3 = np.array([x3, y3])
+            if current_pos is not None:
+                segments.append(('c', current_pos.copy(), p1, p2, p3))
+            current_pos = p3.copy()
+        elif op == 'h':
+            # Zamknij ścieżkę
+            if current_pos is not None and first_pos is not None:
+                dist = np.linalg.norm(current_pos - first_pos)
+                if dist > 0.01:
+                    segments.append(('l', current_pos.copy(), first_pos.copy()))
+
+    if len(segments) < 2:
         return None
 
-    # Offset na zewnątrz (normal-based)
-    poly = np.array(vertices, dtype=np.float64)
-    n = len(poly)
-    normals = np.zeros_like(poly)
+    # Offset segmentów na zewnątrz
+    try:
+        expanded_segs = offset_segments(segments, bleed_pts)
+    except Exception as e:
+        log.warning(f"Offset clip path failed: {e}")
+        return None
 
-    for j in range(n):
-        prev_pt = poly[(j - 1) % n]
-        next_pt = poly[(j + 1) % n]
-        tangent = next_pt - prev_pt
-        normal = np.array([-tangent[1], tangent[0]])
-        length = np.linalg.norm(normal)
-        if length > 1e-8:
-            normal /= length
-        normals[j] = normal
+    if not expanded_segs:
+        return None
 
-    centroid = poly.mean(axis=0)
-    test_vec = poly[0] - centroid
-    if np.dot(test_vec, normals[0]) < 0:
-        normals = -normals
-
-    expanded = poly + normals * bleed_pts
-
+    # Rekonstrukcja PDF path operators
     result: list[str] = []
-    result.append(f"{expanded[0][0]:.6f} {expanded[0][1]:.6f} m")
-    for j in range(1, n):
-        result.append(f"{expanded[j][0]:.6f} {expanded[j][1]:.6f} l")
+    first_seg = expanded_segs[0]
+    start_pt = first_seg[1]
+    result.append(f"{start_pt[0]:.6f} {start_pt[1]:.6f} m")
+
+    for seg in expanded_segs:
+        if seg[0] == 'l':
+            end = seg[2]
+            result.append(f"{end[0]:.6f} {end[1]:.6f} l")
+        elif seg[0] == 'c':
+            p1, p2, p3 = seg[2], seg[3], seg[4]
+            result.append(
+                f"{p1[0]:.6f} {p1[1]:.6f} {p2[0]:.6f} {p2[1]:.6f} "
+                f"{p3[0]:.6f} {p3[1]:.6f} c"
+            )
     result.append("h")
 
+    log.info(f"Rozszerzono clip path ({len(segments)} seg, curves={has_curves})")
     return result
 
 
@@ -430,6 +749,48 @@ def inject_content_stream(
 # SINGLE STICKER EXPORT
 # =============================================================================
 
+def _fill_transparent_pixels(rgba: np.ndarray, max_grow_px: int) -> np.ndarray:
+    """Wypełnia przezroczyste piksele kolorami z najbliższego opaque sąsiada.
+
+    Iteracyjna dylatacja 4-sąsiadowa — nearest-neighbor (bez uśredniania).
+    Każdy nowy piksel kopiuje kolor z jednego sąsiada → jednolite kolory.
+    Zwraca tablicę RGB (h, w, 3) uint8.
+    """
+    h, w = rgba.shape[:2]
+    result = rgba[:, :, :3].copy()
+    filled = rgba[:, :, 3] > 128
+
+    for _ in range(max_grow_px):
+        if filled.all():
+            break
+
+        new_filled = filled.copy()
+        new_result = result.copy()
+        unfilled = ~filled
+
+        # Sprawdź 4 kierunki — kopiuj kolor z pierwszego dostępnego sąsiada
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            neighbor_ok = np.zeros_like(filled)
+            neighbor_rgb = np.zeros_like(result)
+
+            sy = slice(max(0, -dy), h + min(0, -dy))
+            sx = slice(max(0, -dx), w + min(0, -dx))
+            ty = slice(max(0, dy), h + min(0, dy))
+            tx = slice(max(0, dx), w + min(0, dx))
+
+            neighbor_ok[ty, tx] = filled[sy, sx]
+            neighbor_rgb[ty, tx] = result[sy, sx]
+
+            can_fill = unfilled & neighbor_ok & (~new_filled)
+            new_result[can_fill] = neighbor_rgb[can_fill]
+            new_filled |= can_fill
+
+        result = new_result
+        filled = new_filled
+
+    return result
+
+
 def _create_edge_extended_image(img: PILImage.Image, bleed_px: int) -> PILImage.Image:
     """Tworzy obraz z rozciągniętymi krawędziami (edge clamping).
 
@@ -469,6 +830,7 @@ def export_single_sticker(
     sticker: Sticker,
     output_path: str,
     bleed_mm: float = DEFAULT_BLEED_MM,
+    black_100k: bool = False,
 ) -> dict:
     """Eksportuje pojedynczą naklejkę z bleedem i CutContour.
 
@@ -480,6 +842,7 @@ def export_single_sticker(
     Args:
         sticker: Sticker z wypełnionymi polami konturu i bleed
         output_path: ścieżka do pliku wyjściowego
+        black_100k: zamiana czarnych kolorów na 100%% K
         bleed_mm: wielkość bleed w mm
 
     Returns:
@@ -515,22 +878,67 @@ def export_single_sticker(
         and sticker.outermost_drawing_idx is None
     )
 
-    if sticker.raster_path is not None or _is_raster_only_pdf:
-        # Raster / raster-only PDF: edge-clamping bleed
-        # Wczytaj obraz (z pliku lub render strony PDF)
+    # Sprawdź czy raster-only PDF z clip path powinien iść ścieżką wektorową
+    _use_vector_for_raster_pdf = False
+    if _is_raster_only_pdf:
+        # Sprawdź czy content stream zawiera clip path z krzywymi (np. okrągła naklejka)
+        # Jeśli tak — ścieżka wektorowa da lepszy wynik (expand clip + show_pdf_page)
+        _page_tmp = sticker.pdf_doc[sticker.page_index]
+        _xref_tmp = _page_tmp.xref
+        _ci = sticker.pdf_doc.xref_get_key(_xref_tmp, "Contents")
+        _xrefs_tmp = re_module.findall(r'(\d+)\s+\d+\s+R', _ci[1])
+        for _xr in _xrefs_tmp:
+            _stream = sticker.pdf_doc.xref_stream(int(_xr))
+            if _stream:
+                _text = _stream.decode('latin-1', errors='replace')
+                # Szukaj wzorca: krzywe Bézier + clip (c ... W* n lub W n)
+                # Uwaga: content stream może mieć \r\n lub \n
+                _text_norm = _text.replace('\r\n', '\n')
+                if ' c\n' in _text_norm and ('W*' in _text_norm or 'W n' in _text_norm):
+                    _use_vector_for_raster_pdf = True
+                    log.info("Raster-only PDF z clip path krzywych → ścieżka wektorowa")
+                    break
+
+    if sticker.raster_path is not None or (_is_raster_only_pdf and not _use_vector_for_raster_pdf):
+        # Raster / raster-only PDF bez clip paths: edge-clamping bleed
         if sticker.raster_path is not None:
+            # Plik rastrowy (PNG/JPG): prostokątny edge-clamping
             src_img = PILImage.open(sticker.raster_path).convert("RGB")
+            bleed_px = max(1, round(bleed_pts * src_img.width / page_w))
+            ext_img = _create_edge_extended_image(src_img, bleed_px)
+            src_img.close()
         else:
+            # Raster-only PDF: render z alpha
             page_src = sticker.pdf_doc[sticker.page_index]
             pix_per_pt = 300.0 / 72.0  # render na 300 DPI
             mat = fitz.Matrix(pix_per_pt, pix_per_pt)
-            pix = page_src.get_pixmap(matrix=mat, alpha=False)
-            src_img = PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            pix = page_src.get_pixmap(matrix=mat, alpha=True)
+            rgba = np.frombuffer(
+                pix.samples, dtype=np.uint8
+            ).reshape(pix.height, pix.width, 4)
 
-        # Oblicz bleed w pikselach
-        bleed_px = max(1, round(bleed_pts * src_img.width / page_w))
-        ext_img = _create_edge_extended_image(src_img, bleed_px)
-        src_img.close()
+            has_transparency = np.any(rgba[:, :, 3] < 250)
+            if has_transparency:
+                # Grafika z przezroczystością — expanded canvas + dilation
+                bleed_px = max(1, round(bleed_pts * pix.width / page_w))
+                h, w = rgba.shape[:2]
+                new_h = h + 2 * bleed_px
+                new_w = w + 2 * bleed_px
+                expanded = np.zeros((new_h, new_w, 4), dtype=np.uint8)
+                expanded[bleed_px:bleed_px + h, bleed_px:bleed_px + w] = rgba
+                max_grow = max(new_h, new_w)
+                rgb_filled = _fill_transparent_pixels(expanded, max_grow)
+                ext_img = PILImage.fromarray(rgb_filled, "RGB")
+                log.info(
+                    f"Raster-only PDF: shape-following bleed via dilation "
+                    f"({w}x{h} -> {new_w}x{new_h}, bleed_px={bleed_px})"
+                )
+            else:
+                # Brak przezroczystości: prostokątny edge-clamping
+                src_img = PILImage.fromarray(rgba[:, :, :3], "RGB")
+                bleed_px = max(1, round(bleed_pts * src_img.width / page_w))
+                ext_img = _create_edge_extended_image(src_img, bleed_px)
+                src_img.close()
 
         # Zapisz do pliku tymczasowego i wstaw na pełną stronę
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -541,7 +949,7 @@ def export_single_sticker(
         full_rect = fitz.Rect(0, 0, out_w, out_h)
         out_page.insert_image(full_rect, filename=tmp.name)
         os.unlink(tmp.name)
-        log.info("Warstwa 1+2: bleed edge-clamping + grafika rastrowa — OK")
+        log.info("Warstwa 1+2: bleed + grafika rastrowa — OK")
     else:
         # Wektor PDF: solid fill + show_pdf_page
         bleed_stream = build_rgb_fill_stream(
@@ -553,17 +961,30 @@ def export_single_sticker(
         doc_src = sticker.pdf_doc
         src_page = doc_src[sticker.page_index]
 
-        # Rozszerz clipping paths w content stream źródłowego PDF
-        expand_clip_paths(doc_src, src_page, bleed_pts)
+        # Zapamiętaj CropBox (surowe współrzędne) PRZED usunięciem
+        src_cropbox = src_page.cropbox
+
+        # Czarny 100% K: zamiana kolorów przed osadzeniem
+        if black_100k:
+            convert_black_to_100k(doc_src, src_page)
+
+        # Ogranicz rendering do CropBox + bleed (maskuje markery cięcia)
+        inject_page_boundary_clip(doc_src, src_page, bleed_pts)
+
+        # Rozszerz clipping paths TYLKO dla raster-only PDF z clip path (np. okrągła naklejka)
+        # Dla zwykłych wektorowych PDF: boundary clip + expanded MediaBox wystarczą
+        if _use_vector_for_raster_pdf:
+            expand_clip_paths(doc_src, src_page, bleed_pts)
 
         # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
         src_xref = src_page.xref
         for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
             doc_src.xref_set_key(src_xref, box, "null")
 
+        # Expanded MediaBox wokół CropBox (nie wokół 0,0)
         expanded_rect = fitz.Rect(
-            -bleed_pts, -bleed_pts,
-            page_w + bleed_pts, page_h + bleed_pts,
+            src_cropbox.x0 - bleed_pts, src_cropbox.y0 - bleed_pts,
+            src_cropbox.x1 + bleed_pts, src_cropbox.y1 + bleed_pts,
         )
         src_page.set_mediabox(expanded_rect)
 
@@ -621,8 +1042,10 @@ def _prepare_source_for_embedding(sticker: Sticker, bleed_mm: float) -> fitz.Doc
     doc_single.insert_pdf(sticker.pdf_doc, from_page=sticker.page_index, to_page=sticker.page_index)
     page_copy = doc_single[0]
 
-    # Rozszerz clipping paths
-    expand_clip_paths(doc_single, page_copy, bleed_pts)
+    # Rozszerz clipping paths TYLKO dla raster-only PDF z clip path (np. okrągła naklejka)
+    _is_raster_only = sticker.outermost_drawing_idx is None and sticker.raster_path is None
+    if _is_raster_only:
+        expand_clip_paths(doc_single, page_copy, bleed_pts)
 
     # Usuń CropBox itp. przed set_mediabox
     xref = page_copy.xref

@@ -241,12 +241,25 @@ class BleedApp(customtkinter.CTk):
         )
         bleed_entry.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
+        # Czarny 100% K
+        self._black_100k_var = customtkinter.BooleanVar(value=False)
+        self._black_100k_cb = customtkinter.CTkCheckBox(
+            settings, text="Czarny 100% K",
+            variable=self._black_100k_var,
+            font=customtkinter.CTkFont(size=12),
+            checkbox_width=18, checkbox_height=18,
+        )
+        self._black_100k_cb.grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=3,
+        )
+        self._black_100k_cb.configure(state="disabled")
+
         # Output dir
         customtkinter.CTkLabel(settings, text="Output:").grid(
-            row=1, column=0, sticky="w", pady=3,
+            row=2, column=0, sticky="w", pady=3,
         )
         out_frame = customtkinter.CTkFrame(settings, fg_color="transparent")
-        out_frame.grid(row=1, column=1, sticky="ew", pady=3)
+        out_frame.grid(row=2, column=1, sticky="ew", pady=3)
         out_frame.grid_columnconfigure(0, weight=1)
 
         self._output_var = customtkinter.StringVar(value=self._output_dir)
@@ -385,6 +398,12 @@ class BleedApp(customtkinter.CTk):
             text=f"{count} plik(ow)" if count != 1 else "1 plik"
         )
 
+        # Czarny 100% K: aktywny tylko gdy jest PDF wektorowy
+        has_pdf = any(p.lower().endswith(('.pdf', '.svg')) for p in self._files)
+        self._black_100k_cb.configure(state="normal" if has_pdf else "disabled")
+        if not has_pdf:
+            self._black_100k_var.set(False)
+
     def _browse_output(self):
         d = filedialog.askdirectory(title="Wybierz folder wyjsciowy")
         if d:
@@ -412,21 +431,25 @@ class BleedApp(customtkinter.CTk):
 
         self._output_dir = self._output_var.get()
         bleed_mm = self._bleed_var.get()
+        black_100k = self._black_100k_var.get()
 
         self._processing = True
         self._run_btn.configure(state="disabled", text="Przetwarzam...")
         self._clear_log()
         self._clear_preview()
         self._log(f"Start: {len(self._files)} plik(ow), bleed={bleed_mm}mm")
+        if black_100k:
+            self._log("  Czarny 100% K: wlaczony")
         self._log(f"Output: {self._output_dir}\n")
 
         thread = threading.Thread(
-            target=self._worker, args=(list(self._files), self._output_dir, bleed_mm),
+            target=self._worker,
+            args=(list(self._files), self._output_dir, bleed_mm, black_100k),
             daemon=True,
         )
         thread.start()
 
-    def _worker(self, files: list[str], output_dir: str, bleed_mm: float):
+    def _worker(self, files: list[str], output_dir: str, bleed_mm: float, black_100k: bool = False):
         from modules.contour import detect_contour
         from modules.bleed import generate_bleed
         from modules.export import export_single_sticker
@@ -454,7 +477,9 @@ class BleedApp(customtkinter.CTk):
 
                     try:
                         sticker = generate_bleed(sticker, bleed_mm=bleed_mm)
-                        info = export_single_sticker(sticker, out, bleed_mm=bleed_mm)
+                        info = export_single_sticker(
+                            sticker, out, bleed_mm=bleed_mm, black_100k=black_100k,
+                        )
 
                         size_kb = os.path.getsize(out) / 1024
                         self._log(
