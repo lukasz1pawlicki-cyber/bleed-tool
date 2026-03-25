@@ -254,12 +254,24 @@ class BleedApp(customtkinter.CTk):
         )
         self._black_100k_cb.configure(state="disabled")
 
+        # Linia cięcia CutContour
+        self._cutcontour_var = customtkinter.BooleanVar(value=True)
+        self._cutcontour_cb = customtkinter.CTkCheckBox(
+            settings, text="Linia cięcia (CutContour)",
+            variable=self._cutcontour_var,
+            font=customtkinter.CTkFont(size=12),
+            checkbox_width=18, checkbox_height=18,
+        )
+        self._cutcontour_cb.grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=3,
+        )
+
         # Output dir
         customtkinter.CTkLabel(settings, text="Output:").grid(
-            row=2, column=0, sticky="w", pady=3,
+            row=3, column=0, sticky="w", pady=3,
         )
         out_frame = customtkinter.CTkFrame(settings, fg_color="transparent")
-        out_frame.grid(row=2, column=1, sticky="ew", pady=3)
+        out_frame.grid(row=3, column=1, sticky="ew", pady=3)
         out_frame.grid_columnconfigure(0, weight=1)
 
         self._output_var = customtkinter.StringVar(value=self._output_dir)
@@ -432,6 +444,7 @@ class BleedApp(customtkinter.CTk):
         self._output_dir = self._output_var.get()
         bleed_mm = self._bleed_var.get()
         black_100k = self._black_100k_var.get()
+        cutcontour = self._cutcontour_var.get()
 
         self._processing = True
         self._run_btn.configure(state="disabled", text="Przetwarzam...")
@@ -440,16 +453,19 @@ class BleedApp(customtkinter.CTk):
         self._log(f"Start: {len(self._files)} plik(ow), bleed={bleed_mm}mm")
         if black_100k:
             self._log("  Czarny 100% K: wlaczony")
+        if not cutcontour:
+            self._log("  Linia ciecia: wylaczona (sam spad)")
         self._log(f"Output: {self._output_dir}\n")
 
         thread = threading.Thread(
             target=self._worker,
-            args=(list(self._files), self._output_dir, bleed_mm, black_100k),
+            args=(list(self._files), self._output_dir, bleed_mm, black_100k, cutcontour),
             daemon=True,
         )
         thread.start()
 
-    def _worker(self, files: list[str], output_dir: str, bleed_mm: float, black_100k: bool = False):
+    def _worker(self, files: list[str], output_dir: str, bleed_mm: float,
+                black_100k: bool = False, cutcontour: bool = True):
         from modules.contour import detect_contour
         from modules.bleed import generate_bleed
         from modules.export import export_single_sticker
@@ -478,7 +494,8 @@ class BleedApp(customtkinter.CTk):
                     try:
                         sticker = generate_bleed(sticker, bleed_mm=bleed_mm)
                         info = export_single_sticker(
-                            sticker, out, bleed_mm=bleed_mm, black_100k=black_100k,
+                            sticker, out, bleed_mm=bleed_mm,
+                            black_100k=black_100k, cutcontour=cutcontour,
                         )
 
                         size_kb = os.path.getsize(out) / 1024

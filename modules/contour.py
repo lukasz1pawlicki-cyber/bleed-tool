@@ -651,6 +651,30 @@ def _sample_pdf_page_edge_color(
     return edge_rgb
 
 
+def _sample_page_edge_color(page: fitz.Page) -> tuple[float, float, float]:
+    """Sampluje dominujący kolor krawędzi renderowanej strony.
+
+    Renderuje stronę na 72 DPI i uśrednia piksele z 2px obramowania.
+    Zwraca (r, g, b) w zakresie 0-1.
+    """
+    pix = page.get_pixmap(dpi=72, alpha=False)
+    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+    h, w = arr.shape[:2]
+    b = 2  # 2px border
+
+    # Zbierz piksele z krawędzi (górna, dolna, lewa, prawa)
+    edges = np.concatenate([
+        arr[:b, :].reshape(-1, 3),      # góra
+        arr[-b:, :].reshape(-1, 3),     # dół
+        arr[b:-b, :b].reshape(-1, 3),   # lewa
+        arr[b:-b, -b:].reshape(-1, 3),  # prawa
+    ], axis=0)
+
+    # Mediana (odporna na outliery z dekoracji)
+    median = np.median(edges, axis=0)
+    return (median[0] / 255.0, median[1] / 255.0, median[2] / 255.0)
+
+
 def _make_page_rect_contour(page_rect: fitz.Rect) -> list:
     """Tworzy prostokątny kontur cięcia z page.rect (dla plików ze spadami).
 
@@ -816,6 +840,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
             page_w_pt = page.rect.width
             page_h_pt = page.rect.height
 
+            extends_beyond = False
             if svg_contour:
                 # Użyj konturu z SVG clipPath + wymiary z nazwy pliku
                 cut_segments = svg_contour
@@ -843,9 +868,31 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                 idx, outermost_drawing = find_outermost_drawing(
                     drawings, page.rect
                 )
-                cut_segments = extract_path_segments(
-                    outermost_drawing['items']
+
+                # Sprawdź czy outermost drawing wykracza poza stronę
+                # (np. elementy dekoracyjne na wizytówce) — wtedy kontur = strona
+                od_rect = outermost_drawing['rect']
+                extends_beyond = (
+                    od_rect.x0 < page.rect.x0 - 1 or
+                    od_rect.y0 < page.rect.y0 - 1 or
+                    od_rect.x1 > page.rect.x1 + 1 or
+                    od_rect.y1 > page.rect.y1 + 1
                 )
+                if extends_beyond:
+                    # Elementy wychodzą poza stronę → strona = kontur cięcia
+                    cut_segments = _make_page_rect_contour(page.rect)
+                    # Kolor krawędzi: renderuj stronę i sampluj krawędzie
+                    edge_rgb = _sample_page_edge_color(page)
+                    log.info(
+                        f"Strona {page_idx + 1}: outermost drawing wykracza "
+                        f"poza stronę → kontur = prostokąt strony, "
+                        f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                    )
+                else:
+                    cut_segments = extract_path_segments(
+                        outermost_drawing['items']
+                    )
+
                 w_mm = page_w_pt * PT_TO_MM
                 h_mm = page_h_pt * PT_TO_MM
                 outermost_idx = idx
@@ -861,6 +908,9 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                 page_height_pt=page_h_pt,
                 outermost_drawing_idx=outermost_idx,
             )
+            # Ustaw kolor krawędzi gdy wykryty z renderowanej strony
+            if extends_beyond:
+                sticker.edge_color_rgb = edge_rgb
             stickers.append(sticker)
 
             log.info(

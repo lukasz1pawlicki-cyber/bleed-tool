@@ -340,16 +340,23 @@ def _convert_black_in_stream(text: str) -> tuple[str, int]:
     return '\n'.join(result), count
 
 
-def expand_clip_paths(doc: fitz.Document, page: fitz.Page, bleed_pts: float) -> None:
+def expand_clip_paths(
+    doc: fitz.Document, page: fitz.Page, bleed_pts: float,
+    rect_only: bool = False,
+) -> None:
     """Rozszerza clipping paths (W n / W* n) w content stream strony o bleed_pts.
 
     Illustrator osadza clip paths (W n) ograniczające rendering do artboardu.
     Aby elementy wychodzące poza stronę (np. białe napisy) były widoczne
     w strefie bleed, musimy rozszerzyć te clip paths.
 
+    Args:
+        rect_only: jeśli True, rozszerza TYLKO prostokątne clipy (re W n).
+            Bezpieczne dla plików z wewnętrznymi krzywymi clip paths (np. Cyclonic).
+
     Obsługuje:
     - Prostokąty: `x y w h re W n` → rozszerzony o bleed_pts
-    - Polygony: `x y m ... l ... h W n` → offset vertex normalnych na zewnątrz
+    - Polygony/krzywe: `x y m ... l/c ... h W n` → offset (jeśli rect_only=False)
     """
     page_xref = page.xref
     contents_info = doc.xref_get_key(page_xref, "Contents")
@@ -367,22 +374,25 @@ def expand_clip_paths(doc: fitz.Document, page: fitz.Page, bleed_pts: float) -> 
 
         text = stream.decode('latin-1', errors='replace')
 
-        new_text = _expand_clips_in_stream(text, bleed_pts)
+        new_text = _expand_clips_in_stream(text, bleed_pts, rect_only=rect_only)
         if new_text != text:
             doc.update_stream(xr, new_text.encode('latin-1'))
             modified = True
 
     if modified:
         log.info(f"Rozszerzono clipping paths o {bleed_pts:.2f}pt")
-    else:
-        log.info("Brak clipping paths do rozszerzenia")
 
 
-def _expand_clips_in_stream(text: str, bleed_pts: float) -> str:
-    """Parsuje content stream i rozszerza wszystkie clip paths o bleed_pts.
+def _expand_clips_in_stream(
+    text: str, bleed_pts: float, rect_only: bool = False,
+) -> str:
+    """Parsuje content stream i rozszerza clip paths o bleed_pts.
 
     Po rozszerzeniu clip path, szuka macierzy transformacji obrazu (cm + Do)
     i rozszerza ją o bleed_pts, żeby obraz pokrywał rozszerzony clip.
+
+    Args:
+        rect_only: jeśli True, rozszerza tylko prostokąty (re), pomija krzywe.
     """
     lines = text.split('\n')
     result: list[str] = []
@@ -394,7 +404,7 @@ def _expand_clips_in_stream(text: str, bleed_pts: float) -> str:
 
         # Wzorzec 1: "W n" lub "W* n" na jednej linii
         if line in ('W n', 'W* n'):
-            clip_expanded = _try_expand_clip(result, line, bleed_pts)
+            clip_expanded = _try_expand_clip(result, line, bleed_pts, rect_only=rect_only)
             if clip_expanded:
                 result.extend(clip_expanded)
                 clip_was_expanded = True
@@ -406,7 +416,7 @@ def _expand_clips_in_stream(text: str, bleed_pts: float) -> str:
         # Wzorzec 2: "W" lub "W*" na osobnej linii, "n" na następnej
         if line in ('W', 'W*') and i + 1 < len(lines) and lines[i + 1].strip() == 'n':
             clip_op = line + ' n'
-            clip_expanded = _try_expand_clip(result, clip_op, bleed_pts)
+            clip_expanded = _try_expand_clip(result, clip_op, bleed_pts, rect_only=rect_only)
             if clip_expanded:
                 result.extend(clip_expanded)
                 clip_was_expanded = True
@@ -417,8 +427,8 @@ def _expand_clips_in_stream(text: str, bleed_pts: float) -> str:
             continue
 
         # Po rozszerzeniu clip: rozszerz macierz transformacji obrazu (cm)
-        # Wzorzec: "sx 0 0 sy tx ty cm" → rozszerz o bleed_pts
-        if clip_was_expanded and line.endswith(' cm'):
+        # TYLKO dla raster-only PDF (nie rect_only) — tam cm definiuje rozmiar obrazu
+        if clip_was_expanded and not rect_only and line.endswith(' cm'):
             expanded_cm = _expand_image_matrix(line, bleed_pts)
             if expanded_cm:
                 result.append(expanded_cm)
@@ -463,17 +473,21 @@ def _expand_image_matrix(cm_line: str, bleed_pts: float) -> str | None:
 
 
 def _try_expand_clip(
-    preceding_lines: list[str], clip_op: str, bleed_pts: float
+    preceding_lines: list[str], clip_op: str, bleed_pts: float,
+    rect_only: bool = False,
 ) -> list[str] | None:
     """Próbuje rozszerzyć clip path z preceding_lines.
 
     Zwraca listę linii zastępujących (od początku ścieżki do clip_op włącznie),
     lub None jeśli nie udało się rozpoznać wzorca.
 
+    Args:
+        rect_only: jeśli True, rozszerza tylko prostokąty (re), pomija krzywe/polygony.
+
     Obsługuje:
     - Prostokąty: x y w h re W n
-    - Ścieżki z 'h' (explicit close): m ... l/c ... h W n
-    - Ścieżki bez 'h' (implicit close): m ... l/c ... W n
+    - Ścieżki z 'h' (explicit close): m ... l/c ... h W n (jeśli rect_only=False)
+    - Ścieżki bez 'h' (implicit close): m ... l/c ... W n (jeśli rect_only=False)
     """
     path_lines: list[str] = []
     idx = len(preceding_lines) - 1
@@ -492,6 +506,8 @@ def _try_expand_clip(
 
         # Zamknięcie ścieżki: "h"
         if pl == 'h':
+            if rect_only:
+                break  # Pomijaj ścieżki (tylko prostokąty)
             path_start = idx
             while path_start > 0:
                 path_start -= 1
@@ -521,6 +537,8 @@ def _try_expand_clip(
 
         # moveTo = początek ścieżki → ścieżka bez explicit 'h' (implicit close)
         if op == 'm':
+            if rect_only:
+                break  # Pomijaj ścieżki (tylko prostokąty)
             polygon_lines = [
                 preceding_lines[j].strip()
                 for j in range(idx, len(preceding_lines))
@@ -831,13 +849,14 @@ def export_single_sticker(
     output_path: str,
     bleed_mm: float = DEFAULT_BLEED_MM,
     black_100k: bool = False,
+    cutcontour: bool = True,
 ) -> dict:
-    """Eksportuje pojedynczą naklejkę z bleedem i CutContour.
+    """Eksportuje pojedynczą naklejkę z bleedem i opcjonalnym CutContour.
 
-    3 warstwy (w pełni wektorowe):
+    2-3 warstwy (w pełni wektorowe):
       1) Podkład bleed — RGB solid fill z offsetem konturu
       2) Oryginalna grafika wektorowa (show_pdf_page z rozszerzonym MediaBox)
-      3) CutContour jako Separation spot color
+      3) CutContour jako Separation spot color (opcjonalnie)
 
     Args:
         sticker: Sticker z wypełnionymi polami konturu i bleed
@@ -971,10 +990,14 @@ def export_single_sticker(
         # Ogranicz rendering do CropBox + bleed (maskuje markery cięcia)
         inject_page_boundary_clip(doc_src, src_page, bleed_pts)
 
-        # Rozszerz clipping paths TYLKO dla raster-only PDF z clip path (np. okrągła naklejka)
-        # Dla zwykłych wektorowych PDF: boundary clip + expanded MediaBox wystarczą
+        # Rozszerz clipping paths:
+        # - Raster-only z clip path: rozszerz WSZYSTKIE clipy (w tym krzywe)
+        # - Zwykłe wektorowe PDF: rozszerz TYLKO prostokątne clipy (artboard clips)
+        #   żeby nie psuć wewnętrznych clip paths (np. elementy loga Cyclonic)
         if _use_vector_for_raster_pdf:
             expand_clip_paths(doc_src, src_page, bleed_pts)
+        else:
+            expand_clip_paths(doc_src, src_page, bleed_pts, rect_only=True)
 
         # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
         src_xref = src_page.xref
@@ -992,13 +1015,16 @@ def export_single_sticker(
         out_page.show_pdf_page(target_rect, doc_src, sticker.page_index)
         log.info("Warstwa 2: grafika wektorowa — OK")
 
-    # --- WARSTWA 3: CutContour spot color ---
-    cs_name = setup_separation_colorspace(doc_out, out_page)
-    cut_stream = build_cutcontour_stream(
-        sticker.cut_segments, bleed_pts, out_h, cs_name
-    )
-    inject_content_stream(doc_out, out_page, cut_stream)
-    log.info("Warstwa 3: CutContour — OK")
+    # --- WARSTWA 3: CutContour spot color (opcjonalna) ---
+    if cutcontour:
+        cs_name = setup_separation_colorspace(doc_out, out_page)
+        cut_stream = build_cutcontour_stream(
+            sticker.cut_segments, bleed_pts, out_h, cs_name
+        )
+        inject_content_stream(doc_out, out_page, cut_stream)
+        log.info("Warstwa 3: CutContour — OK")
+    else:
+        log.info("Warstwa 3: CutContour — pominięta (sam spad)")
 
     # Zapis
     doc_out.save(output_path)
