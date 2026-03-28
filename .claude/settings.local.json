@@ -15,7 +15,8 @@
       "Bash(powershell *)",
       "Bash(GIT_INDEX_FILE=.git/tmpidx git read-tree HEAD)",
       "Bash(GIT_INDEX_FILE=.git/tmpidx git add bleed_app.py modules/contour.py modules/export.py CLAUDE.md .claude/settings.local.json)",
-      "Bash(GIT_INDEX_FILE=.git/tmpidx git write-tree)"
+      "Bash(GIT_INDEX_FILE=.git/tmpidx git write-tree)",
+      "Bash(chmod +x \"/Users/lukaszpawlicki/Library/CloudStorage/GoogleDrive-lukasz1pawlicki@gmail.com/Mój dysk/_ClaudeCode/bleed-tool/uruchom.command\")"
     ]
   }
 }

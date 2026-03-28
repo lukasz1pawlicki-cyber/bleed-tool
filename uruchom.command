@@ -8,11 +8,11 @@ echo "  Bleed Tool"
 echo "  =========="
 echo ""
 
-# Znajdz Python 3
+# Znajdz Python 3.10+
 PYTHON=""
 for candidate in python3 python; do
     if command -v "$candidate" &>/dev/null; then
-        ver=$("$candidate" --version 2>&1 | grep -oP '\d+\.\d+')
+        ver=$("$candidate" --version 2>&1 | sed -n 's/Python \([0-9]*\.[0-9]*\).*/\1/p')
         major=$(echo "$ver" | cut -d. -f1)
         minor=$(echo "$ver" | cut -d. -f2)
         if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
@@ -35,6 +35,7 @@ fi
 if [ -z "$PYTHON" ]; then
     echo "  BLAD: Nie znaleziono Python 3.10+"
     echo "  Zainstaluj: https://www.python.org/downloads/"
+    echo ""
     read -p "  Nacisnij Enter..."
     exit 1
 fi
@@ -42,11 +43,22 @@ fi
 echo "  Python: $($PYTHON --version) @ $PYTHON"
 
 # Sprawdz zaleznosci
-$PYTHON -c "import customtkinter, fitz, numpy, PIL" 2>/dev/null
+$PYTHON -c "import customtkinter, fitz, numpy, PIL, tkinterdnd2" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo ""
     echo "  Instaluje brakujace zaleznosci..."
     $PYTHON -m pip install --user -r requirements.txt
+    echo ""
+    # Sprawdz ponownie
+    $PYTHON -c "import customtkinter, fitz, numpy, PIL" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "  BLAD: Instalacja bibliotek nie powiodla sie!"
+        echo "  Sprobuj recznie:  $PYTHON -m pip install -r requirements.txt"
+        echo ""
+        read -p "  Nacisnij Enter..."
+        exit 1
+    fi
+    echo "  Biblioteki zainstalowane pomyslnie."
     echo ""
 fi
 

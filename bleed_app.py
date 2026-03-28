@@ -86,6 +86,14 @@ class BleedApp(customtkinter.CTk):
         self._processing = False
         self._preview_images: list = []  # keep references to avoid GC
 
+        # Crop
+        self._crop_offsets: dict[str, tuple[float, float]] = {}
+        self._crop_preview_file_idx: int = 0
+        self._crop_canvas_img = None       # ImageTk.PhotoImage ref
+        self._crop_src_img = None           # PIL source image cache
+        self._crop_src_path: str | None = None  # cached source path
+        self._drag_start: tuple[int, int] | None = None
+
         self._build_ui()
         self._setup_dnd()
 
@@ -241,6 +249,48 @@ class BleedApp(customtkinter.CTk):
         )
         bleed_entry.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
+        # Wysokość docelowa (cm) — opcjonalna, skaluje proporcjonalnie
+        customtkinter.CTkLabel(settings, text="Wysokość (cm):").grid(
+            row=1, column=0, sticky="w", pady=3,
+        )
+        self._height_var = customtkinter.StringVar(value="")
+        height_entry = customtkinter.CTkEntry(
+            settings, textvariable=self._height_var, width=70,
+            placeholder_text="auto",
+        )
+        height_entry.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=3)
+
+        # Crop — przycinanie do rozmiaru
+        self._crop_var = customtkinter.BooleanVar(value=False)
+        self._crop_cb = customtkinter.CTkCheckBox(
+            settings, text="Przytnij do rozmiaru",
+            variable=self._crop_var,
+            font=customtkinter.CTkFont(size=12),
+            checkbox_width=18, checkbox_height=18,
+            command=self._on_crop_changed,
+        )
+        self._crop_cb.grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=3,
+        )
+        self._crop_cb.configure(state="disabled")
+
+        # Kształt crop
+        self._crop_shape_var = customtkinter.StringVar(value="Kwadrat")
+        self._crop_shape_btn = customtkinter.CTkSegmentedButton(
+            settings, values=["Kwadrat", "Okrag"],
+            variable=self._crop_shape_var,
+            command=self._on_crop_shape_changed,
+            width=140,
+            font=customtkinter.CTkFont(size=11),
+        )
+        self._crop_shape_btn.grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=(26, 0), pady=(0, 3),
+        )
+        self._crop_shape_btn.grid_remove()  # ukryty domyślnie
+
+        # Trace na wysokość — aktywuje/deaktywuje crop
+        self._height_var.trace_add("write", self._on_height_changed)
+
         # Czarny 100% K
         self._black_100k_var = customtkinter.BooleanVar(value=False)
         self._black_100k_cb = customtkinter.CTkCheckBox(
@@ -250,7 +300,7 @@ class BleedApp(customtkinter.CTk):
             checkbox_width=18, checkbox_height=18,
         )
         self._black_100k_cb.grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=3,
+            row=4, column=0, columnspan=2, sticky="w", pady=3,
         )
         self._black_100k_cb.configure(state="disabled")
 
@@ -263,15 +313,15 @@ class BleedApp(customtkinter.CTk):
             checkbox_width=18, checkbox_height=18,
         )
         self._cutcontour_cb.grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=3,
+            row=5, column=0, columnspan=2, sticky="w", pady=3,
         )
 
         # Output dir
         customtkinter.CTkLabel(settings, text="Output:").grid(
-            row=3, column=0, sticky="w", pady=3,
+            row=6, column=0, sticky="w", pady=3,
         )
         out_frame = customtkinter.CTkFrame(settings, fg_color="transparent")
-        out_frame.grid(row=3, column=1, sticky="ew", pady=3)
+        out_frame.grid(row=6, column=1, sticky="ew", pady=3)
         out_frame.grid_columnconfigure(0, weight=1)
 
         self._output_var = customtkinter.StringVar(value=self._output_dir)
@@ -285,17 +335,58 @@ class BleedApp(customtkinter.CTk):
         ).grid(row=0, column=1)
 
     def _build_preview_section(self, parent):
-        """PDF preview area."""
+        """PDF preview area + crop canvas."""
+        self._preview_parent = parent
+
         preview_label = customtkinter.CTkLabel(
             parent, text="Podglad", font=customtkinter.CTkFont(weight="bold"),
         )
         preview_label.grid(row=0, column=0, sticky="nw", padx=10, pady=(10, 0))
 
+        # Normalny podgląd (output po przetworzeniu)
         self._preview_frame = customtkinter.CTkScrollableFrame(
             parent, fg_color="transparent",
         )
         self._preview_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=(30, 5))
         self._preview_frame.grid_columnconfigure(0, weight=1)
+
+        # Crop canvas (ukryty domyślnie)
+        self._crop_container = customtkinter.CTkFrame(parent, fg_color="transparent")
+        self._crop_container.grid(row=0, column=0, sticky="nsew", padx=10, pady=(30, 5))
+        self._crop_container.grid_columnconfigure(0, weight=1)
+        self._crop_container.grid_rowconfigure(1, weight=1)
+        self._crop_container.grid_remove()
+
+        # Nawigacja między plikami
+        nav = customtkinter.CTkFrame(self._crop_container, fg_color="transparent")
+        nav.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        nav.grid_columnconfigure(1, weight=1)
+
+        self._crop_prev_btn = customtkinter.CTkButton(
+            nav, text="<", width=30, command=self._crop_prev_file,
+        )
+        self._crop_prev_btn.grid(row=0, column=0, padx=(0, 5))
+
+        self._crop_file_label = customtkinter.CTkLabel(
+            nav, text="", font=customtkinter.CTkFont(size=12),
+        )
+        self._crop_file_label.grid(row=0, column=1)
+
+        self._crop_next_btn = customtkinter.CTkButton(
+            nav, text=">", width=30, command=self._crop_next_file,
+        )
+        self._crop_next_btn.grid(row=0, column=2, padx=(5, 0))
+
+        # Canvas
+        self._crop_canvas = tk.Canvas(
+            self._crop_container, bg="#e0e0e0",
+            highlightthickness=0, cursor="fleur",
+        )
+        self._crop_canvas.grid(row=1, column=0, sticky="nsew")
+        self._crop_canvas.bind("<ButtonPress-1>", self._crop_on_press)
+        self._crop_canvas.bind("<B1-Motion>", self._crop_on_drag)
+        self._crop_canvas.bind("<ButtonRelease-1>", self._crop_on_release)
+        self._crop_canvas.bind("<Configure>", self._crop_on_resize)
 
         self._preview_placeholder = customtkinter.CTkLabel(
             self._preview_frame,
@@ -312,6 +403,210 @@ class BleedApp(customtkinter.CTk):
             state="disabled",
         )
         self._log_text.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+    # =========================================================================
+    # CROP — callbacks i podgląd
+    # =========================================================================
+
+    def _on_height_changed(self, *_args):
+        """Trace callback: aktywuj/deaktywuj checkbox crop."""
+        val_str = self._height_var.get().strip().replace(",", ".")
+        try:
+            val = float(val_str)
+            valid = val > 0
+        except (ValueError, TypeError):
+            valid = False
+
+        if valid:
+            self._crop_cb.configure(state="normal")
+        else:
+            self._crop_cb.configure(state="disabled")
+            if self._crop_var.get():
+                self._crop_var.set(False)
+                self._on_crop_changed()
+
+    def _on_crop_changed(self):
+        """Callback: włącz/wyłącz tryb crop."""
+        if self._crop_var.get():
+            self._crop_shape_btn.grid()
+            self._show_crop_preview()
+        else:
+            self._crop_shape_btn.grid_remove()
+            self._hide_crop_preview()
+
+    def _on_crop_shape_changed(self, _value=None):
+        """Callback: zmiana kształtu crop — odśwież podgląd."""
+        if self._crop_var.get():
+            self._redraw_crop_canvas()
+
+    def _show_crop_preview(self):
+        """Pokaż crop canvas, ukryj normalny podgląd."""
+        if not self._files:
+            return
+        self._preview_frame.grid_remove()
+        self._crop_container.grid()
+        self._crop_preview_file_idx = 0
+        self._crop_src_path = None  # force reload
+        self._update_crop_preview()
+
+    def _hide_crop_preview(self):
+        """Ukryj crop canvas, pokaż normalny podgląd."""
+        self._crop_container.grid_remove()
+        self._preview_frame.grid()
+        self._crop_canvas.delete("all")
+        self._crop_canvas_img = None
+        self._crop_src_img = None
+        self._crop_src_path = None
+
+    def _crop_prev_file(self):
+        if not self._files:
+            return
+        self._crop_preview_file_idx = (self._crop_preview_file_idx - 1) % len(self._files)
+        self._crop_src_path = None
+        self._update_crop_preview()
+
+    def _crop_next_file(self):
+        if not self._files:
+            return
+        self._crop_preview_file_idx = (self._crop_preview_file_idx + 1) % len(self._files)
+        self._crop_src_path = None
+        self._update_crop_preview()
+
+    def _update_crop_preview(self):
+        """Załaduj obraz i narysuj crop overlay."""
+        if not self._files:
+            return
+        idx = self._crop_preview_file_idx % len(self._files)
+        filepath = self._files[idx]
+
+        # Nawigacja label
+        name = os.path.basename(filepath)
+        self._crop_file_label.configure(text=f"{idx + 1}/{len(self._files)}: {name}")
+        self._crop_prev_btn.configure(state="normal" if len(self._files) > 1 else "disabled")
+        self._crop_next_btn.configure(state="normal" if len(self._files) > 1 else "disabled")
+
+        # Załaduj source image (cache)
+        if self._crop_src_path != filepath:
+            self._crop_src_path = filepath
+            try:
+                from modules.crop import load_preview_image
+                self._crop_src_img = load_preview_image(filepath, max_size=600)
+            except Exception:
+                self._crop_src_img = Image.new("RGB", (200, 200), (200, 200, 200))
+
+        # Domyślny offset jeśli brak
+        if filepath not in self._crop_offsets:
+            self._crop_offsets[filepath] = (0.5, 0.5)
+
+        self._redraw_crop_canvas()
+
+    def _redraw_crop_canvas(self):
+        """Przerysuj canvas z obrazem i overlayem crop."""
+        canvas = self._crop_canvas
+        canvas.delete("all")
+
+        if self._crop_src_img is None:
+            return
+
+        cw = canvas.winfo_width()
+        ch = canvas.winfo_height()
+        if cw < 10 or ch < 10:
+            return
+
+        src_w, src_h = self._crop_src_img.size
+        crop_shape = "circle" if self._crop_shape_var.get() == "Okrag" else "square"
+
+        # Crop area jest kwadratowy — dopasuj do mniejszego wymiaru canvas
+        canvas_crop = int(min(cw, ch) * 0.85)
+
+        # Skaluj obraz aby pokrył crop area (cover)
+        scale = max(canvas_crop / src_w, canvas_crop / src_h)
+        disp_w = int(src_w * scale)
+        disp_h = int(src_h * scale)
+
+        # Pozycja obrazu na canvas (z offsetu)
+        filepath = self._files[self._crop_preview_file_idx % len(self._files)]
+        ox, oy = self._crop_offsets.get(filepath, (0.5, 0.5))
+
+        # Obszar przesunięcia
+        pan_x = max(0, disp_w - canvas_crop)
+        pan_y = max(0, disp_h - canvas_crop)
+
+        # Pozycja lewego górnego rogu obrazu
+        img_x = (cw - canvas_crop) // 2 - int(ox * pan_x)
+        img_y = (ch - canvas_crop) // 2 - int(oy * pan_y)
+
+        # Resize obrazu
+        resized = self._crop_src_img.resize((disp_w, disp_h), Image.LANCZOS)
+        self._crop_canvas_img = ImageTk.PhotoImage(resized)
+
+        # Rysuj obraz
+        canvas.create_image(img_x, img_y, anchor="nw", image=self._crop_canvas_img)
+
+        # Crop overlay — przyciemnij poza crop area
+        crop_x0 = (cw - canvas_crop) // 2
+        crop_y0 = (ch - canvas_crop) // 2
+        crop_x1 = crop_x0 + canvas_crop
+        crop_y1 = crop_y0 + canvas_crop
+
+        # Zapamiętaj wymiary crop do drag
+        self._crop_rect = (crop_x0, crop_y0, crop_x1, crop_y1)
+        self._crop_disp_size = (disp_w, disp_h)
+        self._crop_canvas_crop = canvas_crop
+
+        # Semi-transparent overlay (4 prostokąty wokół)
+        overlay_color = "#00000060"
+        canvas.create_rectangle(0, 0, cw, crop_y0, fill="#888888", stipple="gray50", outline="")
+        canvas.create_rectangle(0, crop_y1, cw, ch, fill="#888888", stipple="gray50", outline="")
+        canvas.create_rectangle(0, crop_y0, crop_x0, crop_y1, fill="#888888", stipple="gray50", outline="")
+        canvas.create_rectangle(crop_x1, crop_y0, cw, crop_y1, fill="#888888", stipple="gray50", outline="")
+
+        # Ramka crop
+        if crop_shape == "circle":
+            canvas.create_oval(
+                crop_x0, crop_y0, crop_x1, crop_y1,
+                outline=ACCENT, width=2,
+            )
+        else:
+            canvas.create_rectangle(
+                crop_x0, crop_y0, crop_x1, crop_y1,
+                outline=ACCENT, width=2,
+            )
+
+    def _crop_on_press(self, event):
+        self._drag_start = (event.x, event.y)
+
+    def _crop_on_drag(self, event):
+        if self._drag_start is None or not self._files:
+            return
+
+        dx = event.x - self._drag_start[0]
+        dy = event.y - self._drag_start[1]
+        self._drag_start = (event.x, event.y)
+
+        filepath = self._files[self._crop_preview_file_idx % len(self._files)]
+        ox, oy = self._crop_offsets.get(filepath, (0.5, 0.5))
+
+        # Przelicz dx/dy na zmianę offsetu
+        canvas_crop = getattr(self, '_crop_canvas_crop', 100)
+        disp_w, disp_h = getattr(self, '_crop_disp_size', (100, 100))
+        pan_x = max(1, disp_w - canvas_crop)
+        pan_y = max(1, disp_h - canvas_crop)
+
+        # Przeciągamy obraz (odwrotny kierunek do offsetu)
+        new_ox = max(0.0, min(1.0, ox - dx / pan_x))
+        new_oy = max(0.0, min(1.0, oy - dy / pan_y))
+
+        self._crop_offsets[filepath] = (new_ox, new_oy)
+        self._redraw_crop_canvas()
+
+    def _crop_on_release(self, event):
+        self._drag_start = None
+
+    def _crop_on_resize(self, event):
+        """Canvas się zmienił — przerysuj."""
+        if self._crop_var.get() and self._crop_src_img is not None:
+            self.after(50, self._redraw_crop_canvas)
 
     # =========================================================================
     # DRAG & DROP
@@ -416,6 +711,16 @@ class BleedApp(customtkinter.CTk):
         if not has_pdf:
             self._black_100k_var.set(False)
 
+        # Odśwież crop preview jeśli aktywny
+        if self._crop_var.get() and self._files:
+            self._crop_preview_file_idx = min(
+                self._crop_preview_file_idx, len(self._files) - 1
+            )
+            self._crop_src_path = None
+            self._show_crop_preview()
+        elif self._crop_var.get() and not self._files:
+            self._hide_crop_preview()
+
     def _browse_output(self):
         d = filedialog.askdirectory(title="Wybierz folder wyjsciowy")
         if d:
@@ -446,11 +751,35 @@ class BleedApp(customtkinter.CTk):
         black_100k = self._black_100k_var.get()
         cutcontour = self._cutcontour_var.get()
 
+        # Wysokość docelowa (cm → mm), puste = brak skalowania
+        height_cm_str = self._height_var.get().strip()
+        target_height_mm = None
+        if height_cm_str:
+            try:
+                val = float(height_cm_str.replace(",", "."))
+                if val > 0:
+                    target_height_mm = val * 10.0  # cm → mm
+                else:
+                    messagebox.showwarning("Bleed Tool", "Wysokosc musi byc wieksza od 0.")
+                    return
+            except ValueError:
+                messagebox.showwarning("Bleed Tool", "Nieprawidlowa wartosc wysokosci.")
+                return
+
+        # Crop
+        crop_enabled = self._crop_var.get() and target_height_mm is not None
+        crop_shape = "circle" if self._crop_shape_var.get() == "Okrag" else "square"
+        crop_offsets = dict(self._crop_offsets) if crop_enabled else {}
+
         self._processing = True
         self._run_btn.configure(state="disabled", text="Przetwarzam...")
         self._clear_log()
         self._clear_preview()
         self._log(f"Start: {len(self._files)} plik(ow), bleed={bleed_mm}mm")
+        if target_height_mm is not None:
+            self._log(f"  Wysokosc docelowa: {target_height_mm:.1f}mm ({height_cm_str}cm)")
+        if crop_enabled:
+            self._log(f"  Crop: {crop_shape}")
         if black_100k:
             self._log("  Czarny 100% K: wlaczony")
         if not cutcontour:
@@ -459,18 +788,25 @@ class BleedApp(customtkinter.CTk):
 
         thread = threading.Thread(
             target=self._worker,
-            args=(list(self._files), self._output_dir, bleed_mm, black_100k, cutcontour),
+            args=(list(self._files), self._output_dir, bleed_mm, black_100k,
+                  cutcontour, target_height_mm, crop_enabled, crop_shape,
+                  crop_offsets),
             daemon=True,
         )
         thread.start()
 
     def _worker(self, files: list[str], output_dir: str, bleed_mm: float,
-                black_100k: bool = False, cutcontour: bool = True):
-        from modules.contour import detect_contour
+                black_100k: bool = False, cutcontour: bool = True,
+                target_height_mm: float | None = None,
+                crop_enabled: bool = False, crop_shape: str = "square",
+                crop_offsets: dict | None = None):
+        from modules.contour import detect_contour, scale_sticker
         from modules.bleed import generate_bleed
         from modules.export import export_single_sticker
 
         os.makedirs(output_dir, exist_ok=True)
+        crop_offsets = crop_offsets or {}
+        temp_files: list[str] = []
 
         t0 = time.time()
         ok, err = 0, 0
@@ -478,10 +814,30 @@ class BleedApp(customtkinter.CTk):
 
         for filepath in files:
             name = os.path.splitext(os.path.basename(filepath))[0]
+            actual_path = filepath
 
             try:
-                stickers = detect_contour(filepath)
+                # Crop: przycięcie przed pipeline
+                if crop_enabled and target_height_mm is not None:
+                    from modules.crop import apply_crop
+                    offset = crop_offsets.get(filepath, (0.5, 0.5))
+                    actual_path = apply_crop(
+                        filepath,
+                        target_size_mm=target_height_mm,
+                        shape=crop_shape,
+                        offset=offset,
+                    )
+                    temp_files.append(actual_path)
+
+                stickers = detect_contour(actual_path)
                 multi = len(stickers) > 1
+
+                # Skalowanie do docelowej wysokości (pomijane gdy crop)
+                if target_height_mm is not None and not crop_enabled:
+                    stickers = [
+                        scale_sticker(s, target_height_mm)
+                        for s in stickers
+                    ]
 
                 for sticker in stickers:
                     if multi:
@@ -516,6 +872,13 @@ class BleedApp(customtkinter.CTk):
             except Exception as e:
                 self._log(f"  [ERR] {name}: {e}")
                 err += 1
+
+        # Cleanup temp plików z crop
+        for tmp in temp_files:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
         elapsed = time.time() - t0
         summary = f"\nGotowe: {ok} naklejek"

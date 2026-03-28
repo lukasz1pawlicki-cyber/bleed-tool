@@ -10,6 +10,7 @@ Stałe potrzebne do pipeline bleed: contour → bleed → export.
 
 DEFAULT_BLEED_MM = 2.0
 DEFAULT_DPI = 300
+DEFAULT_CROP_DPI = 300
 
 # =============================================================================
 # SPOT COLORS

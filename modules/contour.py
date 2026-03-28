@@ -332,12 +332,30 @@ def _detect_raster(image_path: str) -> Sticker:
     w_pt = w_mm * MM_TO_PT
     h_pt = h_mm * MM_TO_PT
 
-    # Kontur cięcia = prostokąt (fitz coords: y-down)
-    page_rect = fitz.Rect(0, 0, w_pt, h_pt)
-    cut_segments = _make_page_rect_contour(page_rect)
+    # Sprawdź alpha channel — jeśli obraz ma przezroczystość, wykryj kształt
+    has_alpha = img.mode == 'RGBA' or (img.mode == 'PA') or (img.mode == 'LA')
+    cut_segments = None
+    edge_rgb = None
 
-    # Kolor krawędzi — próbkowanie z krawędzi obrazu
-    edge_rgb = _sample_raster_edge_color(img)
+    if has_alpha:
+        cut_segments, edge_rgb = _detect_raster_alpha_contour(
+            img, w_pt, h_pt
+        )
+
+    if cut_segments is None and not has_alpha:
+        # Obraz bez alpha — spróbuj wykryć kształt z jednolitego tła
+        cut_segments, edge_rgb = _detect_raster_bg_contour(
+            img, w_pt, h_pt
+        )
+
+    if cut_segments is None:
+        # Fallback: kontur cięcia = prostokąt (fitz coords: y-down)
+        page_rect = fitz.Rect(0, 0, w_pt, h_pt)
+        cut_segments = _make_page_rect_contour(page_rect)
+
+    if edge_rgb is None:
+        # Kolor krawędzi — próbkowanie z krawędzi obrazu
+        edge_rgb = _sample_raster_edge_color(img)
 
     img.close()
 
@@ -360,6 +378,276 @@ def _detect_raster(image_path: str) -> Sticker:
         f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
     )
     return sticker
+
+
+def _detect_raster_alpha_contour(
+    img, w_pt: float, h_pt: float
+) -> tuple[list | None, tuple[float, float, float] | None]:
+    """Wykrywa kontur z kanału alpha obrazu rastrowego.
+
+    Jeśli obraz ma nietrywialną przezroczystość (nie jest w pełni opaque),
+    analizuje kształt treści:
+      - okrąg → 4 krzywe Bézier
+      - inny kształt → polygon z linii (Douglas-Peucker)
+
+    Zwraca (cut_segments, edge_rgb) lub (None, None) gdy alpha jest trywialna.
+    Segmenty w koordynatach pt, origin (0,0).
+    """
+    rgba = img.convert('RGBA')
+    arr = np.array(rgba)
+    alpha = arr[:, :, 3]
+    rgb = arr[:, :, :3]
+    h, w = alpha.shape
+
+    # Sprawdź czy alpha jest trywialna (cały obraz opaque)
+    transparent_count = np.sum(alpha < 128)
+    total = h * w
+    if transparent_count < total * 0.01:
+        # Mniej niż 1% przezroczystych — traktuj jako prostokąt
+        log.info("Raster alpha: obraz prawie w pełni opaque, prostokątny kontur")
+        return None, None
+
+    # Skaluj do rozdzielczości roboczej (500px maks)
+    target_px = 500
+    scale_factor = target_px / max(h, w)
+    if scale_factor < 1.0:
+        from PIL import Image as PILImage
+        new_w = max(1, int(w * scale_factor))
+        new_h = max(1, int(h * scale_factor))
+        rgba_small = rgba.resize((new_w, new_h), PILImage.NEAREST)
+        arr_s = np.array(rgba_small)
+        alpha_s = arr_s[:, :, 3]
+        rgb_s = arr_s[:, :, :3]
+        hs, ws = alpha_s.shape
+    else:
+        scale_factor = 1.0
+        alpha_s = alpha
+        rgb_s = rgb
+        hs, ws = h, w
+
+    threshold = 128
+
+    # Zbierz punkty graniczne i kolory krawędzi
+    boundary_pts = []
+    edge_colors = []
+
+    for y in range(hs):
+        opaque_cols = np.where(alpha_s[y] > threshold)[0]
+        if len(opaque_cols) > 0:
+            lx = int(opaque_cols[0])
+            rx = int(opaque_cols[-1])
+            boundary_pts.append([float(lx), float(y)])
+            if rx != lx:
+                boundary_pts.append([float(rx), float(y)])
+            edge_colors.append(rgb_s[y, lx].astype(float))
+            edge_colors.append(rgb_s[y, rx].astype(float))
+
+    if len(boundary_pts) < 6:
+        return None, None
+
+    boundary_arr = np.array(boundary_pts)
+
+    # Kolor krawędzi z pikseli granicznych
+    if edge_colors:
+        avg = np.mean(edge_colors, axis=0) / 255.0
+        edge_rgb = (float(avg[0]), float(avg[1]), float(avg[2]))
+    else:
+        edge_rgb = (1.0, 1.0, 1.0)
+
+    # Przelicznik px (skalowany) → pt
+    px_to_pt_x = w_pt / ws
+    px_to_pt_y = h_pt / hs
+
+    # Próba dopasowania okręgu
+    circle = _fit_circle(boundary_arr)
+    if circle is not None:
+        cx_px, cy_px, r_px = circle
+        if _is_circular(boundary_arr, cx_px, cy_px, r_px, tolerance=0.05):
+            # Okrąg! Generuj Bézier w pt
+            cx_pt = cx_px * px_to_pt_x
+            cy_pt = cy_px * px_to_pt_y
+            r_pt = r_px * (px_to_pt_x + px_to_pt_y) / 2  # średni skalowanie
+            segments = _circle_to_bezier_segments(cx_pt, cy_pt, r_pt)
+            log.info(
+                f"Raster alpha kontur: okrąg Bézier, r={r_pt * PT_TO_MM:.1f}mm, "
+                f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+            )
+            return segments, edge_rgb
+
+    # Fallback: polygon z linii (Douglas-Peucker)
+    left_pts = []
+    right_pts = []
+    for y in range(hs):
+        opaque_cols = np.where(alpha_s[y] > threshold)[0]
+        if len(opaque_cols) > 0:
+            left_pts.append([float(opaque_cols[0]), float(y)])
+            right_pts.append([float(opaque_cols[-1]), float(y)])
+
+    polygon_px = np.array(left_pts + right_pts[::-1])
+    polygon_px = _douglas_peucker(polygon_px, epsilon=1.0)
+
+    segments = []
+    n = len(polygon_px)
+    for i in range(n):
+        p0 = polygon_px[i]
+        p1 = polygon_px[(i + 1) % n]
+        segments.append(('l',
+                         np.array([p0[0] * px_to_pt_x, p0[1] * px_to_pt_y]),
+                         np.array([p1[0] * px_to_pt_x, p1[1] * px_to_pt_y])))
+
+    log.info(
+        f"Raster alpha kontur: polygon {len(segments)} segmentów, "
+        f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+    )
+    return segments, edge_rgb
+
+
+def _detect_raster_bg_contour(
+    img, w_pt: float, h_pt: float
+) -> tuple[list | None, tuple[float, float, float] | None]:
+    """Wykrywa kontur z obrazu bez alpha na podstawie jednolitego tła w rogach.
+
+    Metoda: flood-fill z rogów → binary_fill_holes → binary_closing → kontur.
+    Niski threshold (10) zapobiega "wyciekaniu" do jasnych obszarów treści.
+
+    Zwraca (cut_segments, edge_rgb) lub (None, None) gdy brak jednolitego tła.
+    """
+    from scipy.ndimage import label, binary_fill_holes, binary_closing, binary_erosion
+
+    rgb = img.convert('RGB')
+    arr = np.array(rgb)
+    h, w = arr.shape[:2]
+
+    # Sprawdź rogi (20x20 px) — czy są jednolite
+    corner_size = min(20, h // 10, w // 10)
+    if corner_size < 3:
+        return None, None
+
+    corners = [
+        arr[:corner_size, :corner_size],
+        arr[:corner_size, -corner_size:],
+        arr[-corner_size:, :corner_size],
+        arr[-corner_size:, -corner_size:],
+    ]
+
+    bg_colors = []
+    for c in corners:
+        std = c.std(axis=(0, 1))
+        if np.max(std) > 10:
+            return None, None
+        bg_colors.append(c.mean(axis=(0, 1)))
+
+    bg_avg = np.mean(bg_colors, axis=0)
+    for bc in bg_colors:
+        if np.max(np.abs(bc - bg_avg)) > 15:
+            return None, None
+
+    # Skaluj do rozdzielczości roboczej
+    target_px = 500
+    scale_factor = target_px / max(h, w)
+    if scale_factor < 1.0:
+        from PIL import Image as PILImage
+        new_w = max(1, int(w * scale_factor))
+        new_h = max(1, int(h * scale_factor))
+        rgb_small = rgb.resize((new_w, new_h), PILImage.NEAREST)
+        arr_s = np.array(rgb_small)
+        hs, ws = new_h, new_w
+    else:
+        scale_factor = 1.0
+        arr_s = arr
+        hs, ws = h, w
+
+    # Flood-fill z rogów: niski threshold (10) — strict BG matching
+    bg_threshold = 10
+    diff_s = np.max(np.abs(arr_s.astype(float) - bg_avg[None, None, :]), axis=2)
+    is_bg_candidate = diff_s < bg_threshold
+
+    # Znajdź regiony tła połączone z rogami
+    labeled, _ = label(is_bg_candidate)
+    corner_labels = set()
+    for (cy, cx) in [(0, 0), (0, ws - 1), (hs - 1, 0), (hs - 1, ws - 1)]:
+        lbl = labeled[cy, cx]
+        if lbl > 0:
+            corner_labels.add(lbl)
+
+    if not corner_labels:
+        return None, None
+
+    is_bg = np.isin(labeled, list(corner_labels))
+    is_content = ~is_bg
+
+    # Zamknij dziury wewnętrzne + wygładź krawędzie
+    is_content = binary_fill_holes(is_content)
+    is_content = binary_closing(is_content, iterations=3)
+
+    # Sprawdź proporcje treść/tło
+    content_ratio = is_content.sum() / (hs * ws)
+    if content_ratio < 0.1 or content_ratio > 0.99:
+        return None, None
+
+    # Granica: erozja → XOR
+    edges = is_content.astype(np.uint8) - binary_erosion(is_content).astype(np.uint8)
+    ys_b, xs_b = np.where(edges > 0)
+    if len(xs_b) < 6:
+        return None, None
+
+    boundary_arr = np.column_stack([xs_b.astype(float), ys_b.astype(float)])
+
+    # Kolor krawędzi — sampluj z pikseli na granicy
+    edge_colors = arr_s[ys_b, xs_b].astype(float)
+    avg_ec = np.mean(edge_colors, axis=0) / 255.0
+    edge_rgb = (float(avg_ec[0]), float(avg_ec[1]), float(avg_ec[2]))
+
+    # Przelicznik px → pt
+    px_to_pt_x = w_pt / ws
+    px_to_pt_y = h_pt / hs
+
+    # Próba dopasowania okręgu
+    circle = _fit_circle(boundary_arr)
+    if circle is not None:
+        cx_px, cy_px, r_px = circle
+        if _is_circular(boundary_arr, cx_px, cy_px, r_px, tolerance=0.05):
+            cx_pt = cx_px * px_to_pt_x
+            cy_pt = cy_px * px_to_pt_y
+            r_pt = r_px * (px_to_pt_x + px_to_pt_y) / 2
+            segments = _circle_to_bezier_segments(cx_pt, cy_pt, r_pt)
+            log.info(
+                f"Raster BG kontur: okrąg Bézier, r={r_pt * PT_TO_MM:.1f}mm, "
+                f"bg=({bg_avg[0]:.0f},{bg_avg[1]:.0f},{bg_avg[2]:.0f}), "
+                f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+            )
+            return segments, edge_rgb
+
+    # Fallback: polygon z per-row leftmost/rightmost
+    left_pts = []
+    right_pts = []
+    for y in range(hs):
+        content_cols = np.where(is_content[y])[0]
+        if len(content_cols) > 0:
+            left_pts.append([float(content_cols[0]), float(y)])
+            right_pts.append([float(content_cols[-1]), float(y)])
+
+    if not left_pts:
+        return None, None
+
+    polygon_px = np.array(left_pts + right_pts[::-1])
+    polygon_px = _douglas_peucker(polygon_px, epsilon=1.0)
+
+    segments = []
+    n = len(polygon_px)
+    for i in range(n):
+        p0 = polygon_px[i]
+        p1 = polygon_px[(i + 1) % n]
+        segments.append(('l',
+                         np.array([p0[0] * px_to_pt_x, p0[1] * px_to_pt_y]),
+                         np.array([p1[0] * px_to_pt_x, p1[1] * px_to_pt_y])))
+
+    log.info(
+        f"Raster BG kontur: polygon {len(segments)} segmentów, "
+        f"bg=({bg_avg[0]:.0f},{bg_avg[1]:.0f},{bg_avg[2]:.0f}), "
+        f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+    )
+    return segments, edge_rgb
 
 
 def _sample_raster_edge_color(img) -> tuple[float, float, float]:
@@ -688,6 +976,69 @@ def _make_page_rect_contour(page_rect: fitz.Rect) -> list:
         ('l', tl, tr), ('l', tr, br),
         ('l', br, bl), ('l', bl, tl),
     ]
+
+
+# =============================================================================
+# SKALOWANIE STICKERA
+# =============================================================================
+
+def scale_sticker(sticker: Sticker, target_height_mm: float) -> Sticker:
+    """Skaluje naklejkę proporcjonalnie do docelowej wysokości (mm).
+
+    Skaluje: width_mm, height_mm, page_width_pt, page_height_pt,
+    cut_segments (wszystkie punkty w pt).
+
+    Args:
+        sticker: Sticker z wypełnionymi polami konturu
+        target_height_mm: docelowa wysokość w mm (bez spadu)
+
+    Returns:
+        Sticker ze zaktualizowanymi wymiarami i konturem
+    """
+    if sticker.height_mm <= 0:
+        log.warning("scale_sticker: height_mm <= 0, pomijam skalowanie")
+        return sticker
+
+    scale = target_height_mm / sticker.height_mm
+    if abs(scale - 1.0) < 0.001:
+        # Brak zmiany
+        return sticker
+
+    old_w = sticker.width_mm
+    old_h = sticker.height_mm
+    sticker.width_mm = old_w * scale
+    sticker.height_mm = target_height_mm
+    sticker.page_width_pt = sticker.page_width_pt * scale
+    sticker.page_height_pt = sticker.page_height_pt * scale
+
+    # Skaluj cut_segments — wszystkie punkty (numpy arrays) w pt
+    sticker.cut_segments = _scale_segments(sticker.cut_segments, scale)
+
+    log.info(
+        f"Skalowanie: {old_w:.1f}x{old_h:.1f}mm → "
+        f"{sticker.width_mm:.1f}x{sticker.height_mm:.1f}mm "
+        f"(skala {scale:.3f})"
+    )
+    return sticker
+
+
+def _scale_segments(segments: list, scale: float) -> list:
+    """Skaluje segmenty konturu (linie i krzywe Bézier) o współczynnik scale."""
+    scaled = []
+    for seg in segments:
+        seg_type = seg[0]
+        if seg_type == 'l':
+            # Linia: ('l', start, end)
+            scaled.append(('l', seg[1] * scale, seg[2] * scale))
+        elif seg_type == 'c':
+            # Bézier: ('c', p0, p1, p2, p3)
+            scaled.append(('c',
+                           seg[1] * scale, seg[2] * scale,
+                           seg[3] * scale, seg[4] * scale))
+        else:
+            # Nieznany typ — przepuść bez zmian
+            scaled.append(seg)
+    return scaled
 
 
 # =============================================================================

@@ -767,12 +767,70 @@ def inject_content_stream(
 # SINGLE STICKER EXPORT
 # =============================================================================
 
+def _render_bleed_mask(
+    bleed_segments: list,
+    img_w: int, img_h: int,
+    page_w_pt: float, page_h_pt: float,
+    bleed_pts: float,
+) -> np.ndarray:
+    """Rysuje bleed_segments jako wypełnioną maskę alpha (gładki kształt).
+
+    Przelicza współrzędne pt → px i rysuje wypełniony polygon/Bézier
+    na bitmapie img_w × img_h. Zwraca tablicę uint8 (h, w) z wartościami 0/255.
+    """
+    from PIL import ImageDraw
+
+    mask = PILImage.new("L", (img_w, img_h), 0)
+    draw = ImageDraw.Draw(mask)
+
+    # Przelicznik pt → px (expanded canvas: bleed_pts offset)
+    px_per_pt_x = img_w / (page_w_pt + 2 * bleed_pts)
+    px_per_pt_y = img_h / (page_h_pt + 2 * bleed_pts)
+
+    # Zbierz punkty ścieżki — flatten Bézier do polyline
+    points = []
+    for seg in bleed_segments:
+        seg_type = seg[0]
+        if seg_type == 'l':
+            # Linia: ('l', start_pt, end_pt) — współrzędne w pt, origin = (0,0)
+            # W expanded canvas: przesunięcie o bleed_pts
+            sx = (seg[1][0] + bleed_pts) * px_per_pt_x
+            sy = (seg[1][1] + bleed_pts) * px_per_pt_y
+            ex = (seg[2][0] + bleed_pts) * px_per_pt_x
+            ey = (seg[2][1] + bleed_pts) * px_per_pt_y
+            points.append((sx, sy))
+            points.append((ex, ey))
+        elif seg_type == 'c':
+            # Bézier: ('c', p0, p1, p2, p3) — flatten do 20 punktów
+            p0, p1, p2, p3 = seg[1], seg[2], seg[3], seg[4]
+            for i in range(21):
+                t = i / 20.0
+                t2 = t * t
+                t3 = t2 * t
+                mt = 1 - t
+                mt2 = mt * mt
+                mt3 = mt2 * mt
+                x = mt3 * p0[0] + 3 * mt2 * t * p1[0] + 3 * mt * t2 * p2[0] + t3 * p3[0]
+                y = mt3 * p0[1] + 3 * mt2 * t * p1[1] + 3 * mt * t2 * p2[1] + t3 * p3[1]
+                px_x = (x + bleed_pts) * px_per_pt_x
+                px_y = (y + bleed_pts) * px_per_pt_y
+                points.append((px_x, px_y))
+
+    if len(points) >= 3:
+        draw.polygon(points, fill=255)
+
+    return np.array(mask)
+
+
 def _fill_transparent_pixels(rgba: np.ndarray, max_grow_px: int) -> np.ndarray:
     """Wypełnia przezroczyste piksele kolorami z najbliższego opaque sąsiada.
 
     Iteracyjna dylatacja 4-sąsiadowa — nearest-neighbor (bez uśredniania).
     Każdy nowy piksel kopiuje kolor z jednego sąsiada → jednolite kolory.
-    Zwraca tablicę RGB (h, w, 3) uint8.
+    Dylatacja ograniczona do max_grow_px iteracji — piksele dalej niż
+    max_grow_px od treści pozostają przezroczyste.
+
+    Zwraca tablicę RGBA (h, w, 4) uint8 — niewypełnione piksele mają alpha=0.
     """
     h, w = rgba.shape[:2]
     result = rgba[:, :, :3].copy()
@@ -806,7 +864,9 @@ def _fill_transparent_pixels(rgba: np.ndarray, max_grow_px: int) -> np.ndarray:
         result = new_result
         filled = new_filled
 
-    return result
+    # RGBA — niewypełnione piksele przezroczyste
+    alpha_out = np.where(filled, 255, 0).astype(np.uint8)
+    return np.dstack([result, alpha_out])
 
 
 def _create_edge_extended_image(img: PILImage.Image, bleed_px: int) -> PILImage.Image:
@@ -919,13 +979,48 @@ def export_single_sticker(
                     break
 
     if sticker.raster_path is not None or (_is_raster_only_pdf and not _use_vector_for_raster_pdf):
-        # Raster / raster-only PDF bez clip paths: edge-clamping bleed
+        # Raster / raster-only PDF: bleed via edge-clamping lub dilation
         if sticker.raster_path is not None:
-            # Plik rastrowy (PNG/JPG): prostokątny edge-clamping
-            src_img = PILImage.open(sticker.raster_path).convert("RGB")
-            bleed_px = max(1, round(bleed_pts * src_img.width / page_w))
-            ext_img = _create_edge_extended_image(src_img, bleed_px)
-            src_img.close()
+            # Plik rastrowy (PNG/JPG/TIFF)
+            src_pil = PILImage.open(sticker.raster_path)
+            has_raster_alpha = src_pil.mode in ('RGBA', 'LA', 'PA')
+
+            if has_raster_alpha:
+                # Obraz z alpha — expanded canvas + dilation + bleed mask
+                # 1) Dylatacja wypełnia kolory bleed (pełny zasięg)
+                # 2) Maska z bleed_segments ogranicza do gładkiego kształtu
+                rgba = np.array(src_pil.convert('RGBA'))
+                bleed_px = max(1, round(bleed_pts * rgba.shape[1] / page_w))
+                h_r, w_r = rgba.shape[:2]
+                new_h = h_r + 2 * bleed_px
+                new_w = w_r + 2 * bleed_px
+                expanded = np.zeros((new_h, new_w, 4), dtype=np.uint8)
+                expanded[bleed_px:bleed_px + h_r, bleed_px:bleed_px + w_r] = rgba
+
+                # Dylatacja — wypełnij kolory wystarczająco daleko
+                fill_range = bleed_px * 3
+                rgba_filled = _fill_transparent_pixels(expanded, fill_range)
+                rgb_filled = rgba_filled[:, :, :3]
+
+                # Maska z bleed_segments — gładki kształt (okrąg/polygon)
+                bleed_mask = _render_bleed_mask(
+                    sticker.bleed_segments, new_w, new_h,
+                    page_w, page_h, bleed_pts,
+                )
+                result_rgba = np.dstack([rgb_filled, bleed_mask])
+                ext_img = PILImage.fromarray(result_rgba, "RGBA")
+                log.info(
+                    f"Raster alpha: bleed via dilation + mask "
+                    f"({w_r}x{h_r} -> {new_w}x{new_h}, bleed_px={bleed_px})"
+                )
+            else:
+                # Obraz bez alpha — prostokątny edge-clamping
+                src_img = src_pil.convert("RGB")
+                bleed_px = max(1, round(bleed_pts * src_img.width / page_w))
+                ext_img = _create_edge_extended_image(src_img, bleed_px)
+                src_img.close()
+
+            src_pil.close()
         else:
             # Raster-only PDF: render z alpha
             page_src = sticker.pdf_doc[sticker.page_index]
@@ -938,18 +1033,25 @@ def export_single_sticker(
 
             has_transparency = np.any(rgba[:, :, 3] < 250)
             if has_transparency:
-                # Grafika z przezroczystością — expanded canvas + dilation
+                # Grafika z przezroczystością — expanded canvas + dilation + mask
                 bleed_px = max(1, round(bleed_pts * pix.width / page_w))
                 h, w = rgba.shape[:2]
                 new_h = h + 2 * bleed_px
                 new_w = w + 2 * bleed_px
                 expanded = np.zeros((new_h, new_w, 4), dtype=np.uint8)
                 expanded[bleed_px:bleed_px + h, bleed_px:bleed_px + w] = rgba
-                max_grow = max(new_h, new_w)
-                rgb_filled = _fill_transparent_pixels(expanded, max_grow)
-                ext_img = PILImage.fromarray(rgb_filled, "RGB")
+                fill_range = bleed_px * 3
+                rgba_filled = _fill_transparent_pixels(expanded, fill_range)
+                rgb_filled = rgba_filled[:, :, :3]
+
+                bleed_mask = _render_bleed_mask(
+                    sticker.bleed_segments, new_w, new_h,
+                    page_w, page_h, bleed_pts,
+                )
+                result_rgba = np.dstack([rgb_filled, bleed_mask])
+                ext_img = PILImage.fromarray(result_rgba, "RGBA")
                 log.info(
-                    f"Raster-only PDF: shape-following bleed via dilation "
+                    f"Raster-only PDF: bleed via dilation + mask "
                     f"({w}x{h} -> {new_w}x{new_h}, bleed_px={bleed_px})"
                 )
             else:
