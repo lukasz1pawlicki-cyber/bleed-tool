@@ -40,6 +40,10 @@ class Sticker:
     # Raster source (PNG/JPG/TIFF — alternatywa dla pdf_doc):
     raster_path: Optional[str] = None         # sciezka do oryginalnego pliku rastrowego
 
+    # Flaga: plik jest już gotowym outputem bleed (bleed_ prefix)
+    # Eksport: nie rozszerzaj MediaBox, usuń CutContour ze źródłowego PDF
+    is_bleed_output: bool = False
+
 
 @dataclass
 class Placement:
@@ -102,3 +106,11 @@ class Sheet:
     def printable_height_mm(self) -> float:
         x0, y0, x1, y1 = self.printable_rect_mm
         return y1 - y0
+
+
+@dataclass
+class Job:
+    """Całe zlecenie — naklejki + arkusze."""
+    stickers: list[tuple[Sticker, int]] = field(default_factory=list)  # (naklejka, ilość)
+    sheets: list[Sheet] = field(default_factory=list)
+    plotter: str = "summa_s3"         # "summa_s3" | "jwei"

@@ -39,12 +39,8 @@ if errorlevel 1 (
     echo.
 )
 
-:: Uruchom GUI
+:: Uruchom GUI i zamknij terminal
 echo   Uruchamiam...
 echo.
-python bleed_app.py
-if errorlevel 1 (
-    echo.
-    echo   GUI zamkniete z bledem.
-    pause
-)
+start "" pythonw bleed_app.py 2>nul || start "" python bleed_app.py
+exit

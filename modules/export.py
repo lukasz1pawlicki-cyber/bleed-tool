@@ -351,12 +351,14 @@ def expand_clip_paths(
     w strefie bleed, musimy rozszerzyć te clip paths.
 
     Args:
-        rect_only: jeśli True, rozszerza TYLKO prostokątne clipy (re W n).
-            Bezpieczne dla plików z wewnętrznymi krzywymi clip paths (np. Cyclonic).
+        rect_only: jeśli True, rozszerza TYLKO prostokątne clipy (re W n)
+            ORAZ pierwszy napotkany polygon clip (zewnętrzny kontur naklejki).
+            Wewnętrzne polygon clipy (dekoracyjne, np. Cyclonic) są pomijane.
 
     Obsługuje:
     - Prostokąty: `x y w h re W n` → rozszerzony o bleed_pts
-    - Polygony/krzywe: `x y m ... l/c ... h W n` → offset (jeśli rect_only=False)
+    - Polygony/krzywe: `x y m ... l/c ... h W n` → offset (jeśli rect_only=False
+      lub pierwszy polygon w rect_only mode)
     """
     page_xref = page.xref
     contents_info = doc.xref_get_key(page_xref, "Contents")
@@ -366,6 +368,7 @@ def expand_clip_paths(
     xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xref_str)
 
     modified = False
+    first_polygon_expanded = False
     for xr_str in xrefs:
         xr = int(xr_str)
         stream = doc.xref_stream(xr)
@@ -374,7 +377,12 @@ def expand_clip_paths(
 
         text = stream.decode('latin-1', errors='replace')
 
-        new_text = _expand_clips_in_stream(text, bleed_pts, rect_only=rect_only)
+        new_text, did_expand_polygon = _expand_clips_in_stream(
+            text, bleed_pts, rect_only=rect_only,
+            first_polygon_expanded=first_polygon_expanded,
+        )
+        if did_expand_polygon:
+            first_polygon_expanded = True
         if new_text != text:
             doc.update_stream(xr, new_text.encode('latin-1'))
             modified = True
@@ -385,29 +393,49 @@ def expand_clip_paths(
 
 def _expand_clips_in_stream(
     text: str, bleed_pts: float, rect_only: bool = False,
-) -> str:
+    first_polygon_expanded: bool = False,
+) -> tuple[str, bool]:
     """Parsuje content stream i rozszerza clip paths o bleed_pts.
 
     Po rozszerzeniu clip path, szuka macierzy transformacji obrazu (cm + Do)
     i rozszerza ją o bleed_pts, żeby obraz pokrywał rozszerzony clip.
 
     Args:
-        rect_only: jeśli True, rozszerza tylko prostokąty (re), pomija krzywe.
+        rect_only: jeśli True, rozszerza prostokąty (re) + PIERWSZY polygon clip
+            (zewnętrzny kontur naklejki — np. parallelogram w Asset 9).
+            Wewnętrzne polygon clipy są pomijane.
+        first_polygon_expanded: jeśli True, pierwszy polygon został już rozszerzony
+            w poprzednim content streamie — dalsze polygony pomijane.
+
+    Returns:
+        (new_text, did_expand_polygon): nowy tekst i czy polygon został rozszerzony.
     """
     lines = text.split('\n')
     result: list[str] = []
     i = 0
     clip_was_expanded = False
+    did_expand_polygon = False
+    _polygon_done = first_polygon_expanded  # czy pierwszy polygon już obsłużony
 
     while i < len(lines):
         line = lines[i].strip()
 
         # Wzorzec 1: "W n" lub "W* n" na jednej linii
         if line in ('W n', 'W* n'):
-            clip_expanded = _try_expand_clip(result, line, bleed_pts, rect_only=rect_only)
+            # Dla rect_only: rozszerzaj prostokąty zawsze,
+            # a pierwszy polygon też (chyba że _polygon_done)
+            effective_rect_only = rect_only and _polygon_done
+            clip_expanded = _try_expand_clip(result, line, bleed_pts, rect_only=effective_rect_only)
             if clip_expanded:
                 result.extend(clip_expanded)
                 clip_was_expanded = True
+                # Sprawdź czy to był polygon (nie rect)
+                if rect_only and not _polygon_done:
+                    # Jeśli rozszerzono nie-rect clip → to był polygon
+                    # Sprawdź: jeśli _try_expand_clip z rect_only=True by to odrzucił,
+                    # to był polygon
+                    _polygon_done = True
+                    did_expand_polygon = True
             else:
                 result.append(lines[i])
             i += 1
@@ -416,10 +444,14 @@ def _expand_clips_in_stream(
         # Wzorzec 2: "W" lub "W*" na osobnej linii, "n" na następnej
         if line in ('W', 'W*') and i + 1 < len(lines) and lines[i + 1].strip() == 'n':
             clip_op = line + ' n'
-            clip_expanded = _try_expand_clip(result, clip_op, bleed_pts, rect_only=rect_only)
+            effective_rect_only = rect_only and _polygon_done
+            clip_expanded = _try_expand_clip(result, clip_op, bleed_pts, rect_only=effective_rect_only)
             if clip_expanded:
                 result.extend(clip_expanded)
                 clip_was_expanded = True
+                if rect_only and not _polygon_done:
+                    _polygon_done = True
+                    did_expand_polygon = True
             else:
                 result.append(lines[i])
                 result.append(lines[i + 1])
@@ -440,7 +472,7 @@ def _expand_clips_in_stream(
         result.append(lines[i])
         i += 1
 
-    return '\n'.join(result)
+    return '\n'.join(result), did_expand_polygon
 
 
 def _expand_image_matrix(cm_line: str, bleed_pts: float) -> str | None:
@@ -1151,6 +1183,45 @@ def export_single_sticker(
 # HELPER: przygotowanie źródłowego PDF do show_pdf_page
 # =============================================================================
 
+def _strip_cutcontour_streams(doc: fitz.Document, page: fitz.Page) -> None:
+    """Usuwa strumienie zawierające CutContour ze strony.
+
+    Dla plików bleed_ output: CutContour jest ostatnim content streamem.
+    Wykrywamy go po obecności 'CutContour' w bajtach strumienia.
+    """
+    contents_info = doc.xref_get_key(page.xref, "Contents")
+    if contents_info[0] == "array":
+        xrefs = [int(x) for x in re_module.findall(r'(\d+)\s+\d+\s+R', contents_info[1])]
+        filtered = []
+        for xref in xrefs:
+            try:
+                sd = doc.xref_stream(xref)
+                if sd is None or b"CutContour" not in sd:
+                    filtered.append(xref)
+                else:
+                    log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (CutContour)")
+            except Exception:
+                filtered.append(xref)
+        if len(filtered) < len(xrefs):
+            if filtered:
+                arr = " ".join(f"{x} 0 R" for x in filtered)
+                doc.xref_set_key(page.xref, "Contents", f"[{arr}]")
+            else:
+                doc.xref_set_key(page.xref, "Contents", "null")
+    elif contents_info[0] == "xref":
+        xref_str = contents_info[1]
+        m = re_module.search(r'(\d+)\s+\d+\s+R', xref_str)
+        if m:
+            xref = int(m.group(1))
+            try:
+                sd = doc.xref_stream(xref)
+                if sd and b"CutContour" in sd:
+                    doc.xref_set_key(page.xref, "Contents", "null")
+                    log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (CutContour)")
+            except Exception:
+                pass
+
+
 def _prepare_source_for_embedding(sticker: Sticker, bleed_mm: float) -> fitz.Document:
     """Przygotowuje źródłowy PDF do osadzenia w arkuszu.
 
@@ -1158,6 +1229,9 @@ def _prepare_source_for_embedding(sticker: Sticker, bleed_mm: float) -> fitz.Doc
       - Rozszerzonymi clip paths
       - Rozszerzonym MediaBox
       - Usuniętymi CropBox/TrimBox/ArtBox/BleedBox
+
+    Dla sticker.is_bleed_output=True: nie rozszerza MediaBox (bleed już w grafice),
+    tylko usuwa CutContour ze strumieni.
 
     Zwraca nowy jednostronicowy dokument (strona 0).
     WAŻNE: caller musi zamknąć zwrócony dokument.
@@ -1169,6 +1243,15 @@ def _prepare_source_for_embedding(sticker: Sticker, bleed_mm: float) -> fitz.Doc
     doc_single = fitz.open()
     doc_single.insert_pdf(sticker.pdf_doc, from_page=sticker.page_index, to_page=sticker.page_index)
     page_copy = doc_single[0]
+
+    if getattr(sticker, 'is_bleed_output', False):
+        # Plik bleed_ output — bleed już wbudowany w grafikę
+        # Tylko usuń CutContour (nie pokazuj w print PDF) + wyczyść nadmiarowe boxy
+        xref = page_copy.xref
+        for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
+            doc_single.xref_set_key(xref, box, "null")
+        _strip_cutcontour_streams(doc_single, page_copy)
+        return doc_single
 
     # Rozszerz clipping paths TYLKO dla raster-only PDF z clip path (np. okrągła naklejka)
     _is_raster_only = sticker.outermost_drawing_idx is None and sticker.raster_path is None
@@ -1621,16 +1704,34 @@ def _build_flexcut_stream(
 
     bleed_pts = bleed_mm * MM_TO_PT
 
+    # Deduplikacja linii FlexCut — sub-arkusze mogą mieć wspólne krawędzie.
+    # Maszyna nie może ciąć 2× w tym samym miejscu (overlap).
+    # Klucz: (axis, round(position, 1), round(start, 1), round(end, 1))
+    seen: set[tuple] = set()
+    unique_lines: list = []
+    for line in panel_lines:
+        if line.bridge_length_mm <= 0:
+            continue
+        key = (line.axis, round(line.position_mm, 1),
+               round(min(line.start_mm, line.end_mm), 1),
+               round(max(line.start_mm, line.end_mm), 1))
+        if key not in seen:
+            seen.add(key)
+            unique_lines.append(line)
+
+    if not unique_lines:
+        return b""
+
+    if len(unique_lines) < len([l for l in panel_lines if l.bridge_length_mm > 0]):
+        log.info(f"FlexCut deduplikacja: {len(panel_lines)} → {len(unique_lines)} linii")
+
     ops: list[str] = []
     ops.append(f"/{cs_name} cs")
     ops.append(f"/{cs_name} CS")
     ops.append("1 SCN")
     ops.append(f"{FLEXCUT_STROKE_WIDTH_PT} w")
 
-    for line in panel_lines:
-        if line.bridge_length_mm <= 0:
-            continue  # Nie FlexCut
-
+    for line in unique_lines:
         if line.axis == "horizontal":
             y_pt = (line.position_mm + bleed_mm) * MM_TO_PT
             x0_pt = (line.start_mm + bleed_mm) * MM_TO_PT

@@ -62,7 +62,10 @@ if [ $? -ne 0 ]; then
     echo ""
 fi
 
-# Uruchom GUI
+# Uruchom GUI w tle i zamknij terminal
 echo "  Uruchamiam..."
 echo ""
-$PYTHON bleed_app.py
+$PYTHON bleed_app.py &
+sleep 1
+osascript -e 'tell application "Terminal" to close front window' 2>/dev/null &
+exit 0
