@@ -725,10 +725,12 @@ def nest_job(
     # -------------------------------------------------------------------
     # Centruj zawartosc na kazdym arkuszu
     # -------------------------------------------------------------------
-    if _center_mode in ("x", "xy"):
-        center_y = (_center_mode == "xy")
+    if _center_mode == "xy":
         for s in job.sheets:
-            _center_rows(s, bleed2=bleed2, center_y=center_y)
+            _center_placements(s, center_y=True)
+    elif _center_mode == "x":
+        for s in job.sheets:
+            _center_placements(s, center_y=False)
     # _center_mode == "none" → bez centrowania
 
     log.info(
