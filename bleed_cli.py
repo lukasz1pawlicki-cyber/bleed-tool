@@ -79,7 +79,7 @@ def find_batch_files(folder: str, recursive: bool = False) -> list[str]:
 
 
 def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
-              file_list: list[str] | None = None):
+              file_list: list[str] | None = None, white: bool = False):
     """Generuje bleed dla plików w input_path lub z podanej listy file_list."""
     from modules.contour import detect_contour
     from modules.bleed import generate_bleed
@@ -120,7 +120,7 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
 
                 try:
                     sticker = generate_bleed(sticker, bleed_mm=bleed_mm)
-                    info = export_single_sticker(sticker, out, bleed_mm=bleed_mm)
+                    info = export_single_sticker(sticker, out, bleed_mm=bleed_mm, white=white)
 
                     size_kb = os.path.getsize(out) / 1024
                     print(
@@ -179,6 +179,11 @@ def main():
         help=f"Wielkosc bleed w mm (domyslnie: {DEFAULT_BLEED_MM})",
     )
     parser.add_argument(
+        "--white",
+        action="store_true",
+        help="Dodaj bialy poddruk (White ink) pod grafika",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose logging",
@@ -196,13 +201,13 @@ def main():
             ext_list = ", ".join(_SUPPORTED_EXT)
             print(f"Brak obslugiwanych plikow ({ext_list}) w: {args.batch}")
             sys.exit(1)
-        run_bleed(args.batch, args.output, args.bleed, file_list=files)
+        run_bleed(args.batch, args.output, args.bleed, file_list=files, white=args.white)
     elif args.input:
         # Tryb pojedynczy — oryginalny (backward compatible)
         if args.recursive:
             print("[!] Flaga --recursive dziala tylko z --batch")
             sys.exit(1)
-        run_bleed(args.input, args.output, args.bleed)
+        run_bleed(args.input, args.output, args.bleed, white=args.white)
     else:
         parser.print_help()
         sys.exit(1)

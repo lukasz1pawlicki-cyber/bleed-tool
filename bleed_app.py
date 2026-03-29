@@ -39,6 +39,7 @@ from config import (
     SHEET_PRESETS, ROLL_PRESETS, DEFAULT_ROLL_MAX_LENGTH_MM,
     PLOTTERS, FLEXCUT_GAP_MM,
 )
+from modules.preflight import preflight_check, format_preflight_result
 
 log = logging.getLogger("bleed-tool")
 
@@ -1364,6 +1365,18 @@ class BleedApp(customtkinter.CTk):
             command=self._on_run,
         )
         self._run_btn.pack(side="left")
+
+        # Preflight button
+        self._preflight_btn = customtkinter.CTkButton(
+            bar, text="Preflight",
+            font=customtkinter.CTkFont(size=12),
+            fg_color="transparent", hover_color=("#e7f0ff", "#25334a"),
+            text_color=ACCENT, border_width=1, border_color=ACCENT,
+            height=38, width=100,
+            command=self._on_preflight,
+        )
+        self._preflight_btn.pack(side="left", padx=(8, 0))
+
         self._progress_bar = customtkinter.CTkProgressBar(
             bar, width=150, height=8, progress_color=ACCENT,
         )
@@ -1514,6 +1527,15 @@ class BleedApp(customtkinter.CTk):
             text_color=TEXT, corner_radius=6,
             command=self._open_flexcut_window,
         ).pack(side="left")
+
+        # Bialy poddruk (White) — nest
+        self._nest_white_var = customtkinter.BooleanVar(value=False)
+        customtkinter.CTkCheckBox(
+            pb, text="Bialy poddruk (White)",
+            variable=self._nest_white_var,
+            font=customtkinter.CTkFont(size=12),
+            checkbox_width=18, checkbox_height=18,
+        ).pack(anchor="w", pady=2)
 
         # Output
         r = customtkinter.CTkFrame(pb, fg_color="transparent")
@@ -1712,6 +1734,15 @@ class BleedApp(customtkinter.CTk):
         customtkinter.CTkCheckBox(
             body, text="Linia ciecia (CutContour)",
             variable=self._cutcontour_var,
+            font=customtkinter.CTkFont(size=12),
+            checkbox_width=18, checkbox_height=18,
+        ).pack(anchor="w", pady=2)
+
+        # Bialy poddruk (White)
+        self._white_var = customtkinter.BooleanVar(value=False)
+        customtkinter.CTkCheckBox(
+            body, text="Bialy poddruk (White)",
+            variable=self._white_var,
             font=customtkinter.CTkFont(size=12),
             checkbox_width=18, checkbox_height=18,
         ).pack(anchor="w", pady=2)
@@ -2040,12 +2071,24 @@ class BleedApp(customtkinter.CTk):
 
     def _add_files(self, paths: list[str]):
         existing = set(self._files)
+        added = []
         for p in paths:
             p = os.path.normpath(p)
             if p.lower().endswith(_SUPPORTED_EXT) and p not in existing:
                 self._files.append(p)
                 existing.add(p)
+                added.append(p)
         self._refresh_file_list()
+        # Auto-preflight nowo dodanych plikow (tylko bleed tab)
+        if added and self._active_tab == "bleed":
+            self._clear_log()
+            self._log("Preflight:\n")
+            for fpath in added:
+                try:
+                    result = preflight_check(fpath)
+                    self._log(format_preflight_result(result))
+                except Exception:
+                    pass
 
     def _remove_file(self, path: str):
         if path in self._files:
@@ -2159,6 +2202,55 @@ class BleedApp(customtkinter.CTk):
     # PROCESSING
     # =========================================================================
 
+    # =========================================================================
+    # PREFLIGHT
+    # =========================================================================
+
+    def _on_preflight(self):
+        """Uruchamia preflight check na wszystkich zaladowanych plikach."""
+        if not self._files:
+            messagebox.showwarning("Bleed Tool", "Brak plikow do sprawdzenia.\nPrzeciagnij lub wybierz pliki.")
+            return
+        self._clear_log()
+        self._log("Preflight check:\n")
+        ok_count = 0
+        warn_count = 0
+        err_count = 0
+        for fpath in self._files:
+            try:
+                result = preflight_check(fpath)
+                line = format_preflight_result(result)
+                self._log(line)
+                # Dodatkowe szczegoly dla issues/warnings
+                for issue in result["issues"]:
+                    self._log(f"      {issue['message']}")
+                for warn in result["warnings"]:
+                    if warn["severity"] == "warning":
+                        self._log(f"      {warn['message']}")
+                if result["status"] == "ok":
+                    ok_count += 1
+                elif result["status"] == "warning":
+                    warn_count += 1
+                else:
+                    err_count += 1
+            except Exception as e:
+                self._log(f"[XX] {os.path.basename(fpath)}: blad analizy — {e}")
+                err_count += 1
+        self._log(f"\nPreflight: {ok_count} OK, {warn_count} ostrzezen, {err_count} bledow")
+
+    def _run_auto_preflight(self):
+        """Szybki auto-preflight przy dodawaniu plikow — loguje podsumowanie."""
+        if not self._files or self._active_tab != "bleed":
+            return
+        # Zbierz krotkie info o nowo dodanych plikach
+        for fpath in self._files:
+            try:
+                result = preflight_check(fpath)
+                line = format_preflight_result(result)
+                self._log(line)
+            except Exception:
+                pass
+
     def _on_run(self):
         if self._processing:
             return
@@ -2176,6 +2268,7 @@ class BleedApp(customtkinter.CTk):
             return
         black_100k = self._black_100k_var.get()
         cutcontour = self._cutcontour_var.get()
+        white = self._white_var.get()
 
         # Wysokość docelowa (cm → mm), puste = brak skalowania
         height_cm_str = self._height_var.get().strip()
@@ -2213,13 +2306,15 @@ class BleedApp(customtkinter.CTk):
             self._log("  Czarny 100% K: wlaczony")
         if not cutcontour:
             self._log("  Linia ciecia: wylaczona (sam spad)")
+        if white:
+            self._log("  Bialy poddruk (White): wlaczony")
         self._log(f"Output: {self._output_dir}\n")
 
         thread = threading.Thread(
             target=self._worker,
             args=(list(self._files), self._output_dir, bleed_mm, black_100k,
                   cutcontour, target_height_mm, crop_enabled, crop_shape,
-                  crop_offsets),
+                  crop_offsets, white),
             daemon=True,
         )
         thread.start()
@@ -2228,7 +2323,7 @@ class BleedApp(customtkinter.CTk):
                 black_100k: bool = False, cutcontour: bool = True,
                 target_height_mm: float | None = None,
                 crop_enabled: bool = False, crop_shape: str = "square",
-                crop_offsets: dict | None = None):
+                crop_offsets: dict | None = None, white: bool = False):
         from modules.contour import detect_contour, scale_sticker
         from modules.bleed import generate_bleed
         from modules.export import export_single_sticker
@@ -2286,6 +2381,7 @@ class BleedApp(customtkinter.CTk):
                         info = export_single_sticker(
                             sticker, out, bleed_mm=bleed_mm,
                             black_100k=black_100k, cutcontour=cutcontour,
+                            white=white,
                         )
 
                         size_kb = os.path.getsize(out) / 1024
@@ -2397,6 +2493,7 @@ class BleedApp(customtkinter.CTk):
             "grouping_mode": self._grouping_var.get(),
             "file_copies": dict(self._file_copies),
             "input_files": list(self._files),
+            "white": self._nest_white_var.get() if hasattr(self, '_nest_white_var') else False,
         }
 
         self._processing = True
@@ -2441,6 +2538,7 @@ class BleedApp(customtkinter.CTk):
         copies_override = params["copies"]
         plotter = params["plotter"]
         gap = params["gap"]
+        white = params.get("white", False)
         # FlexCut dodawany ręcznie po nestingu — nie auto-panelize
         file_copies_dict = params.get("file_copies", {})
 
@@ -2631,7 +2729,7 @@ class BleedApp(customtkinter.CTk):
 
             pp = os.path.join(out_dir, f"sheet_{i + 1}_print.pdf")
             cp = os.path.join(out_dir, f"sheet_{i + 1}_cut.pdf")
-            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=plotter)
+            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=plotter, white=white)
             sheet_pdf_paths.append((pp, cp))
 
             pk = os.path.getsize(pp) / 1024
@@ -2723,7 +2821,8 @@ class BleedApp(customtkinter.CTk):
             pp, cp = pdfs[idx]
             sheet = generate_marks(sheet, plotter=job.plotter)
             job.sheets[idx] = sheet
-            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=job.plotter)
+            white = self._nest_white_var.get() if hasattr(self, '_nest_white_var') else False
+            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=job.plotter, white=white)
             self._log(f"  OK: {os.path.basename(cp)} ({os.path.getsize(cp) / 1024:.1f}KB)")
             # Odśwież podgląd główny
             self.preview_panel.set_job(job, bleed, pdfs)

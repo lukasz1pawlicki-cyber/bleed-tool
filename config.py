@@ -78,12 +78,19 @@ PLOTTERS = {
 
 SPOT_COLOR_CUTCONTOUR = "CutContour"
 SPOT_COLOR_FLEXCUT = "FlexCut"
+SPOT_COLOR_WHITE = "White"
 
 # Separation colorspace: DeviceCMYK alternate, Type 2 function
 # CutContour → 100% magenta w alternate CMYK
 SPOT_CMYK_CUTCONTOUR = (0, 1, 0, 0)
 # FlexCut → cyan + yellow = zielony w alternate CMYK
 SPOT_CMYK_FLEXCUT = (1, 0, 1, 0)
+# White → brak koloru w alternate (drukarka interpretuje spot name "White")
+SPOT_CMYK_WHITE = (0, 0, 0, 0)
+
+# White underprint inset — cofnięcie białego poddruku od linii cięcia (mm)
+# Zapobiega wystaniu białego tuszu na krawędziach naklejki
+WHITE_INSET_MM = 0.3
 
 # =============================================================================
 # PDF

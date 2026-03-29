@@ -35,8 +35,11 @@ from config import (
     FLEXCUT_STROKE_WIDTH_PT,
     SPOT_COLOR_CUTCONTOUR,
     SPOT_COLOR_FLEXCUT,
+    SPOT_COLOR_WHITE,
     SPOT_CMYK_CUTCONTOUR,
     SPOT_CMYK_FLEXCUT,
+    SPOT_CMYK_WHITE,
+    WHITE_INSET_MM,
 )
 
 log = logging.getLogger(__name__)
@@ -145,6 +148,94 @@ def build_cutcontour_stream(
         f"S"
     )
     return stream.encode('ascii')
+
+
+def build_white_fill_stream(
+    segments: list,
+    bleed_pts: float,
+    out_h: float,
+    cs_name: str = "CS_White",
+) -> bytes:
+    """Buduje content stream: White fill z segmentów (bialy poddruk).
+
+    Solid fill w spot color "White" — nakładany WEWNATRZ konturu ciecia.
+    Umieszczany miedzy warstwa bleed a grafika (drukarka drukuje bialy tusz
+    pod grafika na przezroczystym/metalicznym podlozu).
+    """
+    path_ops = _segments_to_pdf_path_ops(segments, bleed_pts, out_h)
+    if not path_ops:
+        return b""
+    stream = (
+        f"/{cs_name} cs\n"
+        f"1 scn\n"
+        f"{path_ops}\n"
+        f"f"
+    )
+    return stream.encode('ascii')
+
+
+def _get_white_segments(cut_segments: list) -> list:
+    """Zwraca segmenty do white fill — cut_segments z opcjonalnym insetem.
+
+    Jesli WHITE_INSET_MM > 0, segmenty sa cofniete do srodka o inset,
+    zeby bialy tusz nie wystawal na krawedzi naklejki.
+    """
+    inset_pt = WHITE_INSET_MM * MM_TO_PT
+    if inset_pt < 0.01:
+        return list(cut_segments)
+
+    # Inset = offset w kierunku do wewnatrz (ujemna odleglosc)
+    try:
+        from modules.bleed import flatten_segments_to_polyline, offset_polyline
+        from modules.bleed import _fit_cubic_bezier
+
+        polyline, boundaries = flatten_segments_to_polyline(cut_segments, 30)
+        # offset_polyline daje offset na zewnatrz; ujemna wartosc = do wewnatrz
+        inset_poly = offset_polyline(polyline, -inset_pt)
+
+        result = []
+        for seg_idx, seg in enumerate(cut_segments):
+            start_b = boundaries[seg_idx]
+            end_b = (
+                boundaries[seg_idx + 1]
+                if seg_idx + 1 < len(boundaries)
+                else boundaries[0]
+            )
+
+            if seg[0] == 'l':
+                result.append((
+                    'l',
+                    inset_poly[start_b].copy(),
+                    inset_poly[end_b].copy(),
+                ))
+            elif seg[0] == 'c':
+                if end_b > start_b:
+                    seg_pts = inset_poly[start_b:end_b + 1]
+                else:
+                    seg_pts = np.vstack([
+                        inset_poly[start_b:],
+                        inset_poly[:end_b + 1],
+                    ])
+                if len(seg_pts) < 2:
+                    result.append((
+                        'l',
+                        inset_poly[start_b].copy(),
+                        inset_poly[end_b].copy(),
+                    ))
+                else:
+                    p1, p2 = _fit_cubic_bezier(seg_pts)
+                    result.append((
+                        'c',
+                        seg_pts[0].copy(),
+                        p1, p2,
+                        seg_pts[-1].copy(),
+                    ))
+
+        log.info(f"White inset: {WHITE_INSET_MM}mm ({inset_pt:.2f}pt), {len(result)} segmentow")
+        return result
+    except Exception as e:
+        log.warning(f"White inset nieudany ({e}), uzywam cut_segments bez insetu")
+        return list(cut_segments)
 
 
 # =============================================================================
@@ -963,11 +1054,13 @@ def export_single_sticker(
     bleed_mm: float = DEFAULT_BLEED_MM,
     black_100k: bool = False,
     cutcontour: bool = True,
+    white: bool = False,
 ) -> dict:
     """Eksportuje pojedynczą naklejkę z bleedem i opcjonalnym CutContour.
 
-    2-3 warstwy (w pełni wektorowe):
+    2-4 warstwy (w pełni wektorowe):
       1) Podkład bleed — RGB solid fill z offsetem konturu
+      1.5) Bialy poddruk (White) — spot color fill pod grafika (opcjonalnie)
       2) Oryginalna grafika wektorowa (show_pdf_page z rozszerzonym MediaBox)
       3) CutContour jako Separation spot color (opcjonalnie)
 
@@ -976,6 +1069,7 @@ def export_single_sticker(
         output_path: ścieżka do pliku wyjściowego
         black_100k: zamiana czarnych kolorów na 100%% K
         bleed_mm: wielkość bleed w mm
+        white: bialy poddruk (White ink) pod grafika
 
     Returns:
         dict z informacjami o wygenerowanym PDF
@@ -1114,6 +1208,19 @@ def export_single_sticker(
                 ext_img = _create_edge_extended_image(src_img, bleed_px)
                 src_img.close()
 
+        # --- WARSTWA 1.5 (raster): White underprint (opcjonalna) ---
+        if white:
+            white_segments = _get_white_segments(sticker.cut_segments)
+            cs_white = setup_separation_colorspace(
+                doc_out, out_page, SPOT_COLOR_WHITE, SPOT_CMYK_WHITE,
+            )
+            white_stream = build_white_fill_stream(
+                white_segments, bleed_pts, out_h, cs_white
+            )
+            if white_stream:
+                inject_content_stream(doc_out, out_page, white_stream)
+                log.info("Warstwa 1.5: bialy poddruk (White) — OK")
+
         # Zapisz do pliku tymczasowego i wstaw na pełną stronę
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp.close()
@@ -1136,6 +1243,19 @@ def export_single_sticker(
             )
         inject_content_stream(doc_out, out_page, bleed_stream)
         log.info("Warstwa 1: podkład bleed (CMYK fill) — OK")
+
+        # --- WARSTWA 1.5 (wektor): White underprint (opcjonalna) ---
+        if white:
+            white_segments = _get_white_segments(sticker.cut_segments)
+            cs_white = setup_separation_colorspace(
+                doc_out, out_page, SPOT_COLOR_WHITE, SPOT_CMYK_WHITE,
+            )
+            white_stream = build_white_fill_stream(
+                white_segments, bleed_pts, out_h, cs_white
+            )
+            if white_stream:
+                inject_content_stream(doc_out, out_page, white_stream)
+                log.info("Warstwa 1.5: bialy poddruk (White) — OK")
 
         doc_src = sticker.pdf_doc
         src_page = doc_src[sticker.page_index]
@@ -1378,6 +1498,57 @@ def _build_sheet_bleed_fill_stream(
 
     # Bardziej bezpośredni sposób: użyj _segments_to_pdf_path_ops
     path_ops = _segments_to_pdf_path_ops(sticker.bleed_segments, bleed_pts, out_h)
+    ops.append(path_ops)
+    ops.append("f")
+    ops.append("Q")  # restore graphics state
+
+    return "\n".join(ops).encode('ascii')
+
+
+def _build_sheet_white_fill_stream(
+    placement: Placement,
+    sheet_h_pt: float,
+    bleed_mm: float,
+    cs_name: str,
+) -> bytes:
+    """Buduje content stream: White fill dla jednego placement na arkuszu.
+
+    Ksztalt: cut_segments (kontur ciecia) z opcjonalnym insetem.
+    Spot color White — bialy poddruk pod grafika.
+    """
+    sticker = placement.sticker
+    if not sticker.cut_segments:
+        return b""
+
+    bleed_pts = bleed_mm * MM_TO_PT
+    px = placement.x_mm * MM_TO_PT
+    py = placement.y_mm * MM_TO_PT
+
+    if placement.rotation_deg == 90:
+        sticker_w_pt = sticker.page_height_pt
+        sticker_h_pt = sticker.page_width_pt
+    else:
+        sticker_w_pt = sticker.page_width_pt
+        sticker_h_pt = sticker.page_height_pt
+
+    out_w = sticker_w_pt + 2 * bleed_pts
+    out_h = sticker_h_pt + 2 * bleed_pts
+
+    white_segments = _get_white_segments(sticker.cut_segments)
+
+    ops: list[str] = []
+    ops.append(f"/{cs_name} cs")
+    ops.append("1 scn")
+    ops.append("q")  # save graphics state
+
+    if placement.rotation_deg == 90:
+        tx = px + out_h
+        ty = py
+        ops.append(f"0 1 -1 0 {tx:.4f} {ty:.4f} cm")
+    else:
+        ops.append(f"1 0 0 1 {px:.4f} {py:.4f} cm")
+
+    path_ops = _segments_to_pdf_path_ops(white_segments, bleed_pts, out_h)
     ops.append(path_ops)
     ops.append("f")
     ops.append("Q")  # restore graphics state
@@ -1792,17 +1963,20 @@ def export_sheet_print(
     sheet: Sheet,
     output_path: str,
     bleed_mm: float = DEFAULT_BLEED_MM,
+    white: bool = False,
 ) -> str:
     """Eksportuje print PDF arkusza (bleed fills + grafika + marks).
 
     Każda naklejka na arkuszu:
       1) Bleed fill (solid RGB) w pozycji placement
+      1.5) White underprint (opcjonalnie) w pozycji placement
       2) Grafika wektorowa (show_pdf_page) w pozycji placement
 
     Args:
         sheet: Sheet z placements
         output_path: ścieżka do pliku wyjściowego
         bleed_mm: wielkość bleed w mm
+        white: bialy poddruk (White ink) pod grafika
 
     Returns:
         output_path
@@ -1821,6 +1995,14 @@ def export_sheet_print(
 
     # Białe tło (domyślne)
 
+    # Setup White Separation (raz, jesli potrzebny)
+    cs_white = None
+    if white:
+        cs_white = setup_separation_colorspace(
+            doc_out, out_page, SPOT_COLOR_WHITE, SPOT_CMYK_WHITE,
+        )
+        log.info("White underprint: Separation colorspace zarejestrowany")
+
     # Cache prepared documents per sticker source (ta sama naklejka × N kopii)
     _prepared_cache: dict[int, fitz.Document] = {}
 
@@ -1835,6 +2017,14 @@ def export_sheet_print(
         bleed_stream = _build_sheet_bleed_fill_stream(placement, sheet_h_pt, bleed_mm)
         if bleed_stream:
             inject_content_stream(doc_out, out_page, bleed_stream)
+
+        # 1.5) White underprint (opcjonalny)
+        if white and cs_white:
+            white_stream = _build_sheet_white_fill_stream(
+                placement, sheet_h_pt, bleed_mm, cs_white,
+            )
+            if white_stream:
+                inject_content_stream(doc_out, out_page, white_stream)
 
         # 2) Grafika (wektorowa lub rastrowa)
         if sticker.raster_path is not None:
@@ -2010,12 +2200,13 @@ def export_sheet(
     cut_output_path: str,
     bleed_mm: float = DEFAULT_BLEED_MM,
     plotter: str = "summa_s3",
+    white: bool = False,
 ) -> tuple[str, str]:
     """Eksportuje oba PDF-y arkusza (print + cut).
 
     Returns:
         (print_path, cut_path)
     """
-    print_path = export_sheet_print(sheet, print_output_path, bleed_mm)
+    print_path = export_sheet_print(sheet, print_output_path, bleed_mm, white=white)
     cut_path = export_sheet_cut(sheet, cut_output_path, bleed_mm, plotter)
     return print_path, cut_path
