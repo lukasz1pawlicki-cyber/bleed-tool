@@ -2831,26 +2831,35 @@ class BleedApp(customtkinter.CTk):
         plotter_cfg = PLOTTERS.get(plotter, {})
         mark_zone = plotter_cfg.get("mark_zone_mm", DEFAULT_MARK_ZONE_MM)
 
+        # side_offset: zmniejsz szerokość nestingu o 2*offset (lewa+prawa)
+        # po nestingu przesunięcie X o offset wyrównuje do środka
+        leading_offset = plotter_cfg.get("leading_offset_mm", 0)
+        side_offset = plotter_cfg.get("side_offset_mm", 0)
+        nest_w = params["sheet_w"] - 2 * side_offset
+        nest_h = params["sheet_h"]
+        nest_max_len = params.get("max_sheet_length")
+        if nest_max_len:
+            nest_max_len = nest_max_len - leading_offset - side_offset
+
         job = Job(stickers=sticker_copies_list, plotter=plotter)
         job = nest_job(
             job,
-            sheet_width_mm=params["sheet_w"],
-            sheet_height_mm=params["sheet_h"],
+            sheet_width_mm=nest_w,
+            sheet_height_mm=nest_h,
             gap_mm=gap,
-            max_sheet_length_mm=params.get("max_sheet_length"),
+            max_sheet_length_mm=nest_max_len,
             grouping_mode=grouping_mode,
             bleed_mm=bleed,
             mark_zone_mm=mark_zone,
         )
 
-        # 2.5. Offset grafiki od markerów — przesunięcie PO nestingu
-        leading_offset = plotter_cfg.get("leading_offset_mm", 0)
-        side_offset = plotter_cfg.get("side_offset_mm", 0)
+        # 2.5. Przesunięcie PO nestingu — offset od markerów
         if leading_offset > 0 or side_offset > 0:
             for sheet in job.sheets:
                 for p in sheet.placements:
                     p.y_mm += leading_offset
                     p.x_mm += side_offset
+                sheet.width_mm += 2 * side_offset
                 sheet.height_mm += leading_offset + side_offset
 
         # 3. Panelize + Marks + Export
