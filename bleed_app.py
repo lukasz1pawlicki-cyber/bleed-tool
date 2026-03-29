@@ -671,6 +671,14 @@ class FlexCutWindow(customtkinter.CTkToplevel):
             command=self._on_clear,
         ).pack(side="right", padx=4)
 
+        self._apply_btn = customtkinter.CTkButton(
+            toolbar, text="Zastosuj", width=100, height=28, corner_radius=6,
+            fg_color=SUCCESS, hover_color="#2e7d32",
+            text_color="white", font=customtkinter.CTkFont(size=11, weight="bold"),
+            command=self._on_export_flexcut,
+        )
+        self._apply_btn.pack(side="right", padx=4)
+
         customtkinter.CTkButton(
             toolbar, text="Dodaj FlexCut", width=120, height=28, corner_radius=6,
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
@@ -680,7 +688,7 @@ class FlexCutWindow(customtkinter.CTkToplevel):
 
         # Instrukcja
         customtkinter.CTkLabel(
-            toolbar, text="Zaznacz naklejki (klik / przeciągnij) → Dodaj FlexCut",
+            toolbar, text="Zaznacz → Dodaj FlexCut → Zastosuj",
             font=customtkinter.CTkFont(size=10), text_color=TEXT_SECONDARY,
         ).pack(side="right", padx=8)
 
@@ -855,7 +863,22 @@ class FlexCutWindow(customtkinter.CTkToplevel):
                     outline="#00e676", width=2, dash=(4, 2),
                 )
 
-        # Bbox aktualnego setu
+        # Rysuj zatwierdzone FlexCut linie z panel_lines (cyan)
+        for line in sheet.panel_lines:
+            if line.bridge_length_mm <= 0:
+                continue
+            if line.axis == "horizontal":
+                y = ty(line.position_mm)
+                x0 = tx(line.start_mm)
+                x1 = tx(line.end_mm)
+                self.canvas.create_line(x0, y, x1, y, fill="#00bcd4", width=2, dash=(5, 3))
+            elif line.axis == "vertical":
+                x = tx(line.position_mm)
+                y0 = ty(line.start_mm)
+                y1 = ty(line.end_mm)
+                self.canvas.create_line(x, y0, x, y1, fill="#00bcd4", width=2, dash=(5, 3))
+
+        # Bbox aktualnego zaznaczenia (pomarańczowy)
         if self._selected_placements:
             sel = [sheet.placements[i] for i in self._selected_placements
                    if i < len(sheet.placements)]
@@ -1138,12 +1161,7 @@ class FlexCutWindow(customtkinter.CTkToplevel):
             set(self._selected_placements))
         self._selected_placements.clear()
 
-        # Re-export
-        self._on_reexport(self.current_sheet_idx)
-        self._render_cache.clear()
-
-        # Odśwież okno FlexCut (nowy PDF na dysku)
-        self._update_nav()
+        # Odśwież podgląd (bez re-exportu — linie rysowane z panel_lines)
         self._draw_current_sheet()
 
     def _on_clear(self):
@@ -1156,14 +1174,37 @@ class FlexCutWindow(customtkinter.CTkToplevel):
         self._flexcut_sets_by_sheet.pop(idx, None)
         self._selected_placements.clear()
         self._app_log("FlexCut: wyczyszczono")
+        self._draw_current_sheet()
 
-        try:
-            self._on_reexport(idx)
-        except Exception as e:
-            self._app_log(f"  [ERR] FlexCut clear: {e}")
+    def _on_export_flexcut(self):
+        """Zastosuj — re-export wszystkich arkuszy z FlexCut liniami."""
+        if not self.job or not self.job.sheets:
+            self._app_log("FlexCut: brak arkuszy")
+            return
+
+        self._apply_btn.configure(state="disabled", text="Eksportuję...")
+        self._app_log("FlexCut: eksport arkuszy...")
+
+        exported = 0
+        for idx in range(len(self.job.sheets)):
+            sheet = self.job.sheets[idx]
+            if not sheet.panel_lines:
+                continue
+            try:
+                self._on_reexport(idx)
+                exported += 1
+            except Exception as e:
+                self._app_log(f"  [ERR] Arkusz {idx+1}: {e}")
+
         self._render_cache.clear()
         self._update_nav()
         self._draw_current_sheet()
+        self._apply_btn.configure(state="normal", text="Zastosuj")
+
+        if exported:
+            self._app_log(f"FlexCut: wyeksportowano {exported} arkusz(y)")
+        else:
+            self._app_log("FlexCut: brak arkuszy z liniami FlexCut")
 
     def _on_close(self):
         self._selected_placements.clear()
