@@ -2533,6 +2533,9 @@ class BleedApp(customtkinter.CTk):
         for old in _glob.glob(os.path.join(out_dir, "sheet_*_cut.pdf")):
             try: os.remove(old)
             except OSError: pass
+        for old in _glob.glob(os.path.join(out_dir, "sheet_*_white.pdf")):
+            try: os.remove(old)
+            except OSError: pass
 
         bleed = params["bleed"]
         copies_override = params["copies"]
@@ -2729,13 +2732,16 @@ class BleedApp(customtkinter.CTk):
 
             pp = os.path.join(out_dir, f"sheet_{i + 1}_print.pdf")
             cp = os.path.join(out_dir, f"sheet_{i + 1}_cut.pdf")
-            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=plotter, white=white)
+            wp = os.path.join(out_dir, f"sheet_{i + 1}_white.pdf") if white else None
+            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=plotter,
+                         white=white, white_output_path=wp)
             sheet_pdf_paths.append((pp, cp))
 
             pk = os.path.getsize(pp) / 1024
             ck = os.path.getsize(cp) / 1024
             fl = f", {len(sheet.panel_lines)} FlexCut" if sheet.panel_lines else ""
-            self._log(f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, print={pk:.1f}KB, cut={ck:.1f}KB")
+            wl = f", white={os.path.getsize(wp) / 1024:.1f}KB" if wp and os.path.exists(wp) else ""
+            self._log(f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, print={pk:.1f}KB, cut={ck:.1f}KB{wl}")
 
         # NIE zamykaj docs — potrzebne do FlexCut re-export (show_pdf_page)
         # Zamknięcie starych docs z poprzedniego uruchomienia
@@ -2822,7 +2828,9 @@ class BleedApp(customtkinter.CTk):
             sheet = generate_marks(sheet, plotter=job.plotter)
             job.sheets[idx] = sheet
             white = self._nest_white_var.get() if hasattr(self, '_nest_white_var') else False
-            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=job.plotter, white=white)
+            wp = pp.replace("_print.pdf", "_white.pdf") if white else None
+            export_sheet(sheet, pp, cp, bleed_mm=bleed, plotter=job.plotter,
+                         white=white, white_output_path=wp)
             self._log(f"  OK: {os.path.basename(cp)} ({os.path.getsize(cp) / 1024:.1f}KB)")
             # Odśwież podgląd główny
             self.preview_panel.set_job(job, bleed, pdfs)
