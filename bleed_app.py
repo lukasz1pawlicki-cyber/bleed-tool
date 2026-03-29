@@ -1211,6 +1211,299 @@ class FlexCutWindow(customtkinter.CTkToplevel):
         self.destroy()
 
 
+# =============================================================================
+# CLEAR VARNISH WINDOW — okno wyboru elementów pod lakier wybiórczy (spot UV)
+# =============================================================================
+
+class ClearVarnishWindow(customtkinter.CTkToplevel):
+    """Okno wyboru elementów pod lakier wybiórczy (Clear/Spot UV)."""
+
+    def __init__(self, parent, stickers, bleed_mm: float):
+        super().__init__(parent)
+        self.title("Lakier wybiórczy")
+        self.geometry("900x700")
+        self.minsize(700, 500)
+        self.transient(parent)
+        self._parent = parent
+
+        self._stickers = stickers
+        self._bleed_mm = bleed_mm
+        self._current_idx = 0
+        self._elements_cache: dict[str, list] = {}
+        self._selections: dict[str, set[int]] = {}
+        self._render_img = None
+        self._tx_scale = 1.0
+        self._tx_ox = 0.0
+        self._tx_oy = 0.0
+
+        # --- toolbar ---
+        toolbar = customtkinter.CTkFrame(self, fg_color="transparent")
+        toolbar.pack(fill="x", padx=8, pady=(8, 4))
+
+        self._prev_btn = customtkinter.CTkButton(
+            toolbar, text="\u25C1", width=32, height=28,
+            command=self._prev,
+        )
+        self._prev_btn.pack(side="left", padx=(0, 4))
+
+        self._nav_label = customtkinter.CTkLabel(
+            toolbar, text="", font=customtkinter.CTkFont(size=12),
+        )
+        self._nav_label.pack(side="left", padx=4)
+
+        self._next_btn = customtkinter.CTkButton(
+            toolbar, text="\u25B7", width=32, height=28,
+            command=self._next,
+        )
+        self._next_btn.pack(side="left", padx=(4, 12))
+
+        customtkinter.CTkButton(
+            toolbar, text="Zaznacz wszystko", height=28,
+            command=self._on_select_all,
+        ).pack(side="left", padx=4)
+
+        customtkinter.CTkButton(
+            toolbar, text="Wyczysc", height=28,
+            fg_color=ERROR, hover_color="#c92a2a",
+            command=self._on_clear,
+        ).pack(side="left", padx=4)
+
+        customtkinter.CTkButton(
+            toolbar, text="Zastosuj", height=28,
+            fg_color=SUCCESS, hover_color="#2f9e44",
+            command=self._on_apply,
+        ).pack(side="left", padx=4)
+
+        customtkinter.CTkButton(
+            toolbar, text="Zamknij", height=28,
+            command=self._on_close,
+        ).pack(side="right", padx=4)
+
+        # --- canvas ---
+        self._canvas = tk.Canvas(self, bg="#e9ecef", highlightthickness=0, cursor="hand2")
+        self._canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._canvas.bind("<ButtonRelease-1>", self._on_click)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(100, self._draw_current)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sticker_key(sticker) -> str:
+        return f"{sticker.source_path}:{sticker.page_index}"
+
+    def _fitz_to_canvas(self, x_pt: float, y_pt: float):
+        return self._tx_ox + x_pt * self._tx_scale, self._tx_oy + y_pt * self._tx_scale
+
+    def _canvas_to_fitz(self, cx: float, cy: float):
+        return (cx - self._tx_ox) / self._tx_scale, (cy - self._tx_oy) / self._tx_scale
+
+    # ------------------------------------------------------------------
+    # drawing
+    # ------------------------------------------------------------------
+
+    def _draw_current(self):
+        self._canvas.delete("all")
+
+        if not self._stickers:
+            return
+
+        idx = self._current_idx
+        if idx < 0 or idx >= len(self._stickers):
+            idx = 0
+            self._current_idx = 0
+
+        sticker = self._stickers[idx]
+        key = self._sticker_key(sticker)
+        name = os.path.basename(sticker.source_path) if sticker.source_path else "?"
+
+        # Update nav label
+        self._nav_label.configure(text=f"{idx + 1}/{len(self._stickers)}: {name}")
+        self._prev_btn.configure(state="normal" if len(self._stickers) > 1 else "disabled")
+        self._next_btn.configure(state="normal" if len(self._stickers) > 1 else "disabled")
+
+        # No pdf_doc — raster sticker
+        if sticker.pdf_doc is None:
+            self._canvas.create_text(
+                self._canvas.winfo_width() // 2,
+                self._canvas.winfo_height() // 2,
+                text="Brak podglądu (raster)",
+                font=("Helvetica", 14),
+                fill="#868e96",
+            )
+            return
+
+        # Render page
+        self._canvas.update_idletasks()
+        cw = max(self._canvas.winfo_width(), 200)
+        ch = max(self._canvas.winfo_height(), 200)
+        padding = 20
+
+        page = sticker.pdf_doc[sticker.page_index]
+        page_rect = page.rect
+        pw, ph = page_rect.width, page_rect.height
+        if pw <= 0 or ph <= 0:
+            return
+
+        scale_x = (cw - 2 * padding) / pw
+        scale_y = (ch - 2 * padding) / ph
+        zoom = min(scale_x, scale_y)
+        self._tx_scale = zoom
+        self._tx_ox = (cw - pw * zoom) / 2
+        self._tx_oy = (ch - ph * zoom) / 2
+
+        mat = fitz_module.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        self._render_img = ImageTk.PhotoImage(img)
+        self._canvas.create_image(self._tx_ox, self._tx_oy, anchor="nw", image=self._render_img)
+
+        # Get/cache elements
+        if key not in self._elements_cache:
+            try:
+                from modules.clear_varnish import get_page_elements
+                outermost_idx = getattr(sticker, "outermost_drawing_idx", None)
+                self._elements_cache[key] = get_page_elements(
+                    sticker.pdf_doc, sticker.page_index, outermost_idx
+                )
+            except Exception as exc:
+                log.warning("clear_varnish get_page_elements error: %s", exc)
+                self._elements_cache[key] = []
+
+        elements = self._elements_cache[key]
+        selected = self._selections.get(key, set())
+
+        # Draw element outlines
+        for i, elem in enumerate(elements):
+            rect = elem.get("rect") if isinstance(elem, dict) else getattr(elem, "rect", None)
+            if rect is None:
+                continue
+            x0, y0 = self._fitz_to_canvas(rect[0], rect[1])
+            x1, y1 = self._fitz_to_canvas(rect[2], rect[3])
+
+            if i in selected:
+                self._canvas.create_rectangle(
+                    x0, y0, x1, y1,
+                    outline="#f5a623", width=3,
+                    stipple="gray25", fill="#f5a623",
+                    tags="elem_sel",
+                )
+            else:
+                self._canvas.create_rectangle(
+                    x0, y0, x1, y1,
+                    outline="#999999", width=1, dash=(3, 3),
+                    tags="elem",
+                )
+
+    # ------------------------------------------------------------------
+    # interaction
+    # ------------------------------------------------------------------
+
+    def _on_click(self, event):
+        if not self._stickers:
+            return
+        sticker = self._stickers[self._current_idx]
+        key = self._sticker_key(sticker)
+        elements = self._elements_cache.get(key, [])
+        if not elements:
+            return
+
+        x_pt, y_pt = self._canvas_to_fitz(event.x, event.y)
+
+        try:
+            from modules.clear_varnish import hit_test
+            hit_idx = hit_test(elements, x_pt, y_pt)
+        except Exception:
+            return
+
+        if hit_idx is not None and hit_idx >= 0:
+            sel = self._selections.setdefault(key, set())
+            if hit_idx in sel:
+                sel.discard(hit_idx)
+            else:
+                sel.add(hit_idx)
+            self._draw_current()
+
+    def _on_select_all(self):
+        if not self._stickers:
+            return
+        sticker = self._stickers[self._current_idx]
+        key = self._sticker_key(sticker)
+        elements = self._elements_cache.get(key, [])
+        self._selections[key] = set(range(len(elements)))
+        self._draw_current()
+
+    def _on_clear(self):
+        if not self._stickers:
+            return
+        sticker = self._stickers[self._current_idx]
+        key = self._sticker_key(sticker)
+        self._selections[key] = set()
+        self._draw_current()
+
+    def _prev(self):
+        if len(self._stickers) <= 1:
+            return
+        self._current_idx = (self._current_idx - 1) % len(self._stickers)
+        self._draw_current()
+
+    def _next(self):
+        if len(self._stickers) <= 1:
+            return
+        self._current_idx = (self._current_idx + 1) % len(self._stickers)
+        self._draw_current()
+
+    # ------------------------------------------------------------------
+    # apply / close
+    # ------------------------------------------------------------------
+
+    def _on_apply(self):
+        try:
+            from modules.clear_varnish import export_single_clear
+        except ImportError as exc:
+            log.error("Nie można zaimportować export_single_clear: %s", exc)
+            return
+
+        exported = 0
+        for sticker in self._stickers:
+            key = self._sticker_key(sticker)
+            selected = self._selections.get(key, set())
+            if not selected:
+                continue
+            elements = self._elements_cache.get(key, [])
+            if not elements:
+                continue
+
+            # Build output path
+            src = sticker.source_path or "sticker"
+            base, _ = os.path.splitext(src)
+            out_path = base + "_clear.pdf"
+
+            try:
+                export_single_clear(sticker, selected, elements, out_path, self._bleed_mm)
+                exported += 1
+                log.info("Lakier wybiórczy: %s", out_path)
+            except Exception as exc:
+                log.error("Błąd eksportu lakieru: %s — %s", out_path, exc)
+
+        # Store on parent
+        if hasattr(self._parent, "_clear_selections"):
+            self._parent._clear_selections = dict(self._selections)
+
+        if exported:
+            log.info("Lakier wybiórczy: wyeksportowano %d plik(ów)", exported)
+        else:
+            log.info("Lakier wybiórczy: brak zaznaczonych elementów")
+
+    def _on_close(self):
+        if hasattr(self._parent, "_clear_selections"):
+            self._parent._clear_selections = dict(self._selections)
+        self.destroy()
+
+
 class BleedApp(customtkinter.CTk):
     """Główne okno aplikacji Bleed Tool."""
 
@@ -1244,6 +1537,9 @@ class BleedApp(customtkinter.CTk):
         self._crop_src_img = None           # PIL source image cache
         self._crop_src_path: str | None = None  # cached source path
         self._drag_start: tuple[int, int] | None = None
+
+        # Clear varnish selections
+        self._clear_selections: dict[str, set[int]] = {}
 
         # Batched logging
         self._log_buffer: list[str] = []
@@ -1824,6 +2120,12 @@ class BleedApp(customtkinter.CTk):
             variable=self._white_var,
             font=customtkinter.CTkFont(size=12),
             checkbox_width=18, checkbox_height=18,
+        ).pack(anchor="w", pady=2)
+
+        # Lakier wybiórczy (Clear Varnish)
+        customtkinter.CTkButton(
+            body, text="Lakier...", height=28,
+            command=self._open_clear_window,
         ).pack(anchor="w", pady=2)
 
         # Output
@@ -2923,6 +3225,29 @@ class BleedApp(customtkinter.CTk):
             self.preview_panel.set_job(job, bleed, pdfs)
 
     # =========================================================================
+    # CLEAR VARNISH — lakier wybiórczy
+    # =========================================================================
+
+    def _open_clear_window(self):
+        """Otwórz okno lakieru wybiórczego do zaznaczania elementów."""
+        if not self._files:
+            return
+        from modules.contour import detect_contour
+        from modules.bleed import generate_bleed
+
+        stickers = []
+        for f in self._files:
+            try:
+                ss = detect_contour(f)
+                for s in ss:
+                    s = generate_bleed(s, bleed_mm=DEFAULT_BLEED_MM)
+                    stickers.append(s)
+            except Exception:
+                pass
+        if not stickers:
+            return
+        ClearVarnishWindow(self, stickers, DEFAULT_BLEED_MM)
+
     # FLEXCUT — zaznaczanie naklejek
     # =========================================================================
 
