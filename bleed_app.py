@@ -1709,7 +1709,7 @@ class BleedApp(customtkinter.CTk):
 
         self._crop_shape_var = customtkinter.StringVar(value="Kwadrat")
         self._crop_shape_btn = customtkinter.CTkSegmentedButton(
-            crop_row, values=["Kwadrat", "Zaokraglony", "Okrag", "Owal"],
+            crop_row, values=["Kwadrat", "Zaokraglony", "Okrag"],
             variable=self._crop_shape_var,
             command=self._on_crop_shape_changed,
             width=290, font=customtkinter.CTkFont(size=11),
