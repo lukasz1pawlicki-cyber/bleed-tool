@@ -1657,38 +1657,45 @@ def _build_sheet_cutcontour_stream(
 def _seg_to_sheet_mm(
     seg, placement: Placement, sticker: Sticker,
 ) -> tuple[float, float, float, float] | None:
-    """Konwertuje punkty segmentu z pt (page coords) na mm (sheet coords).
+    """Konwertuje punkty segmentu z pt (fitz coords, y-down) na mm (sheet coords, y-up).
+
+    Fitz Y rośnie w dół, sheet Y rośnie w górę. Odwracamy Y:
+      y_sheet = py_mm + (sticker_h_mm - y_fitz_mm)
+    gdzie sticker_h_mm = page_height_pt * pt_to_mm (content height).
 
     Obsługuje rotację 90° placement'u.
     Returns: (sx, sy, ex, ey) w mm sheet coords, lub None.
     """
-    pt_to_mm = sticker.width_mm / sticker.page_width_pt if sticker.page_width_pt > 0 else 0
+    pt_to_mm_x = sticker.width_mm / sticker.page_width_pt if sticker.page_width_pt > 0 else 0
+    pt_to_mm_y = sticker.height_mm / sticker.page_height_pt if sticker.page_height_pt > 0 else 0
     px_mm = placement.x_mm
     py_mm = placement.y_mm
+    h_mm = sticker.height_mm  # content height (dla odwrócenia Y)
 
     if seg[0] == 'l':
         _, start, end = seg
-        lx0, ly0 = start[0] * pt_to_mm, start[1] * pt_to_mm
-        lx1, ly1 = end[0] * pt_to_mm, end[1] * pt_to_mm
+        lx0, ly0 = start[0] * pt_to_mm_x, start[1] * pt_to_mm_y
+        lx1, ly1 = end[0] * pt_to_mm_x, end[1] * pt_to_mm_y
     elif seg[0] == 'c':
         _, p0, _, _, p3 = seg
-        lx0, ly0 = p0[0] * pt_to_mm, p0[1] * pt_to_mm
-        lx1, ly1 = p3[0] * pt_to_mm, p3[1] * pt_to_mm
+        lx0, ly0 = p0[0] * pt_to_mm_x, p0[1] * pt_to_mm_y
+        lx1, ly1 = p3[0] * pt_to_mm_x, p3[1] * pt_to_mm_y
     else:
         return None
 
     # Rotacja 90° — lokalne (x,y) → sheet (y, w-x), gdzie w = sticker.width_mm
     if placement.rotation_deg == 90:
         w = sticker.width_mm
-        sx = px_mm + ly0
-        sy = py_mm + (w - lx0)
-        ex = px_mm + ly1
-        ey = py_mm + (w - lx1)
+        sx = px_mm + (h_mm - ly0)
+        sy = py_mm + lx0
+        ex = px_mm + (h_mm - ly1)
+        ey = py_mm + lx1
     else:
+        # Odwróć Y: fitz y-down → sheet y-up
         sx = px_mm + lx0
-        sy = py_mm + ly0
+        sy = py_mm + (h_mm - ly0)
         ex = px_mm + lx1
-        ey = py_mm + ly1
+        ey = py_mm + (h_mm - ly1)
 
     return (sx, sy, ex, ey)
 
