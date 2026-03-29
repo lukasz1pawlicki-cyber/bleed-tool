@@ -44,6 +44,9 @@ class Sticker:
     # Eksport: nie rozszerzaj MediaBox, usuń CutContour ze źródłowego PDF
     is_bleed_output: bool = False
 
+    # Colorspace źródłowego PDF (True = DeviceCMYK, False = DeviceRGB/inne)
+    is_cmyk: bool = False
+
 
 @dataclass
 class Placement:

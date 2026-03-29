@@ -1221,13 +1221,18 @@ def export_single_sticker(
         log.info("Warstwa 1+2: bleed + grafika rastrowa — OK")
     else:
         # Wektor PDF: solid fill + show_pdf_page
-        # Zawsze RGB fill — ten sam colorspace co grafika źródłowa.
-        # CMYK konwersja powoduje wizualną różnicę kolorów na ekranie.
-        bleed_stream = build_rgb_fill_stream(
-            sticker.bleed_segments, sticker.edge_color_rgb, bleed_pts, out_h
-        )
+        # Bleed fill w tym samym colorspace co grafika źródłowa
+        if sticker.is_cmyk and sticker.edge_color_cmyk:
+            bleed_stream = build_cmyk_fill_stream(
+                sticker.bleed_segments, sticker.edge_color_cmyk, bleed_pts, out_h
+            )
+            log.info("Warstwa 1: podkład bleed (CMYK fill) — OK")
+        else:
+            bleed_stream = build_rgb_fill_stream(
+                sticker.bleed_segments, sticker.edge_color_rgb, bleed_pts, out_h
+            )
+            log.info("Warstwa 1: podkład bleed (RGB fill) — OK")
         inject_content_stream(doc_out, out_page, bleed_stream)
-        log.info("Warstwa 1: podkład bleed (RGB fill) — OK")
 
         doc_src = sticker.pdf_doc
         src_page = doc_src[sticker.page_index]
@@ -1460,10 +1465,14 @@ def _build_sheet_bleed_fill_stream(
     # Segmenty są w fitz coords (y-down), musimy:
     # 1. Przeliczyć do PDF coords naklejki (y-up, z bleed offset)
     # 2. Przeliczyć do pozycji na arkuszu (translation + optional rotation)
-    # Zawsze RGB fill — identyczny kolor z grafiką źródłową
+    # Fill w tym samym colorspace co grafika źródłowa
     ops: list[str] = []
-    r, g, b = sticker.edge_color_rgb
-    ops.append(f"{r:.6f} {g:.6f} {b:.6f} rg")
+    if sticker.is_cmyk and sticker.edge_color_cmyk:
+        c, m, y, k = sticker.edge_color_cmyk
+        ops.append(f"{c:.6f} {m:.6f} {y:.6f} {k:.6f} k")
+    else:
+        r, g, b = sticker.edge_color_rgb
+        ops.append(f"{r:.6f} {g:.6f} {b:.6f} rg")
     ops.append("q")  # save graphics state
 
     # Transformacja: translate do pozycji na arkuszu (PDF y-up)

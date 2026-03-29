@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re as _re
 import numpy as np
 import fitz  # PyMuPDF
 
@@ -1042,6 +1043,19 @@ def _scale_segments(segments: list, scale: float) -> list:
     return scaled
 
 
+def _page_is_cmyk(doc: fitz.Document, page: fitz.Page) -> bool:
+    """Sprawdza czy strona PDF używa DeviceCMYK (operator k/K w content stream)."""
+    try:
+        contents = bytearray()
+        for xref in page.get_contents():
+            contents += doc.xref_stream(xref)
+        cs = contents.decode('latin-1', errors='replace')
+        # Szukaj operatora k (CMYK fill) — 4 liczby + k
+        return bool(_re.search(r'[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+k\b', cs))
+    except Exception:
+        return False
+
+
 # =============================================================================
 # GŁÓWNA FUNKCJA: detect_contour
 # =============================================================================
@@ -1185,6 +1199,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                     page_height_pt=page_h_pt,
                     outermost_drawing_idx=None,
                     edge_color_rgb=edge_rgb,
+                    is_cmyk=_page_is_cmyk(doc, page),
                 )
                 stickers.append(sticker)
                 log.info(
@@ -1273,6 +1288,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                 page_width_pt=page_w_pt,
                 page_height_pt=page_h_pt,
                 outermost_drawing_idx=outermost_idx,
+                is_cmyk=_page_is_cmyk(doc, page),
             )
             # Ustaw kolor krawędzi gdy wykryty z renderowanej strony
             if extends_beyond:

@@ -126,6 +126,32 @@ def rgb_to_cmyk(rgb: tuple[float, float, float]) -> tuple[float, float, float, f
 # KOLOR KRAWĘDZI
 # =============================================================================
 
+def extract_native_cmyk(doc, page) -> tuple[float, float, float, float] | None:
+    """Wyciąga kolor CMYK fill krawędzi z content stream strony PDF.
+
+    Szuka pierwszego nie-białego (0,0,0,0) koloru CMYK fill.
+    Zwraca (c, m, y, k) w zakresie 0-1 lub None jeśli brak CMYK.
+    Używane dla plików CMYK aby uniknąć podwójnej konwersji CMYK→RGB→CMYK.
+    """
+    import re
+    try:
+        contents = bytearray()
+        for xref in page.get_contents():
+            contents += doc.xref_stream(xref)
+        cs = contents.decode('latin-1', errors='replace')
+        # Szukaj operatorów k (CMYK fill) — weź pierwszy nie-biały
+        for m in re.finditer(
+            r'([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+k\b', cs
+        ):
+            c, mm, y, kk = float(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(4))
+            # Pomiń biały (0,0,0,0) — to zazwyczaj tło
+            if c + mm + y + kk > 0.01:
+                return (c, mm, y, kk)
+    except Exception:
+        pass
+    return None
+
+
 def extract_edge_color(drawing: dict) -> tuple[float, float, float]:
     """Zwraca kolor fill zewnętrznego drawingu jako (r, g, b) w zakresie 0-1.
 
@@ -403,12 +429,27 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
         sticker.edge_color_rgb = edge_rgb
         log.warning(f"Brak źródła koloru krawędzi, fallback biały: {sticker.source_path}")
 
-    # 3. Konwersja RGB → CMYK (ICC FOGRA39)
-    edge_cmyk = rgb_to_cmyk(edge_rgb)
+    # 3. Kolor CMYK — natywny z content stream (CMYK PDF) lub konwersja RGB→CMYK
+    if sticker.is_cmyk and sticker.pdf_doc is not None:
+        native_cmyk = extract_native_cmyk(sticker.pdf_doc, sticker.pdf_doc[sticker.page_index])
+        if native_cmyk is not None:
+            edge_cmyk = native_cmyk
+            log.info(
+                f"Kolor krawędzi CMYK (natywny): ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
+                f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
+            )
+        else:
+            edge_cmyk = rgb_to_cmyk(edge_rgb)
+            log.info(
+                f"Kolor krawędzi CMYK (konwersja): ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
+                f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
+            )
+    else:
+        edge_cmyk = rgb_to_cmyk(edge_rgb)
+        log.info(
+            f"Kolor krawędzi CMYK (konwersja): ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
+            f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
+        )
     sticker.edge_color_cmyk = edge_cmyk
-    log.info(
-        f"Kolor krawędzi CMYK: ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
-        f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
-    )
 
     return sticker
