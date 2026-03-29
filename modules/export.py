@@ -1839,72 +1839,31 @@ def export_sheet_print(
                 out_page.insert_image(img_rect, filename=sticker.raster_path)
 
         elif sticker.pdf_doc is not None:
-            # Wektor: show_pdf_page z reuse XObject (cache per sticker)
+            # Wektor: show_pdf_page z cached prepared source
             cache_key = id(sticker.pdf_doc) * 1000 + sticker.page_index
+            prepared_doc = _prepared_cache.get(cache_key)
+            if prepared_doc is None:
+                prepared_doc = _prepare_source_for_embedding(sticker, bleed_mm)
+                _prepared_cache[cache_key] = prepared_doc
+
             sticker_w = sticker.page_width_pt + 2 * bleed_pts
             sticker_h = sticker.page_height_pt + 2 * bleed_pts
 
             px = placement.x_mm * MM_TO_PT
             py = placement.y_mm * MM_TO_PT
 
-            xobj_info = _prepared_cache.get(cache_key)
-            if xobj_info is None:
-                # Pierwsze użycie: show_pdf_page na docelowej pozycji → tworzy XObject
-                prepared_doc = _prepare_source_for_embedding(sticker, bleed_mm)
-                if placement.rotation_deg == 90:
-                    target_rect = fitz.Rect(
-                        px, sheet_h_pt - py - sticker_w,
-                        px + sticker_h, sheet_h_pt - py,
-                    )
-                    out_page.show_pdf_page(target_rect, prepared_doc, 0, rotate=90)
-                else:
-                    target_rect = fitz.Rect(
-                        px, sheet_h_pt - py - sticker_h,
-                        px + sticker_w, sheet_h_pt - py,
-                    )
-                    out_page.show_pdf_page(target_rect, prepared_doc, 0)
-                prepared_doc.close()
-
-                # Znajdź nazwę XObject — do reuse w kolejnych placements
-                xobj_name = None
-                page_xref = out_page.xref
-                xobj_dict = doc_out.xref_get_key(page_xref, "Resources/XObject")
-                if xobj_dict[0] == "dict":
-                    names = re_module.findall(r'/(\w+)\s+\d+\s+\d+\s+R', xobj_dict[1])
-                    if names:
-                        xobj_name = names[-1]
-
-                _prepared_cache[cache_key] = (xobj_name, sticker_w, sticker_h) if xobj_name else None
-                continue  # pierwszy placement już wyrenderowany przez show_pdf_page
-
-            if xobj_info is None:
-                # Fallback: show_pdf_page bez cache (nie znaleziono XObject)
-                prepared_doc = _prepare_source_for_embedding(sticker, bleed_mm)
+            if placement.rotation_deg == 90:
+                target_rect = fitz.Rect(
+                    px, sheet_h_pt - py - sticker_w,
+                    px + sticker_h, sheet_h_pt - py,
+                )
+                out_page.show_pdf_page(target_rect, prepared_doc, 0, rotate=90)
+            else:
                 target_rect = fitz.Rect(
                     px, sheet_h_pt - py - sticker_h,
                     px + sticker_w, sheet_h_pt - py,
                 )
                 out_page.show_pdf_page(target_rect, prepared_doc, 0)
-                prepared_doc.close()
-                continue
-
-            xobj_name, xobj_w, xobj_h = xobj_info
-
-            # Kolejne kopie: reuse XObject via Do operator
-            if placement.rotation_deg == 90:
-                sx = sticker_h / xobj_w if xobj_w > 0 else 1
-                sy = sticker_w / xobj_h if xobj_h > 0 else 1
-                tx = px + sticker_h
-                ty = sheet_h_pt - py - sticker_w
-                stream = f"q 0 {sy:.6f} {-sx:.6f} 0 {tx:.4f} {ty:.4f} cm /{xobj_name} Do Q"
-            else:
-                sx = sticker_w / xobj_w if xobj_w > 0 else 1
-                sy = sticker_h / xobj_h if xobj_h > 0 else 1
-                tx = px
-                ty = sheet_h_pt - py - sticker_h
-                stream = f"q {sx:.6f} 0 0 {sy:.6f} {tx:.4f} {ty:.4f} cm /{xobj_name} Do Q"
-
-            inject_content_stream(doc_out, out_page, stream.encode('ascii'))
 
     # Marks (czarne prostokąty/krzyżyki — na wierzchu, po grafice)
     if sheet.marks:
