@@ -1042,14 +1042,16 @@ class FlexCutWindow(customtkinter.CTkToplevel):
             x1_mm = (max(sx, ex) - self._tx_ox) / scale
             y1_mm = self._tx_sh_mm - (min(sy, ey) - self._tx_oy) / scale
 
-            # Zaznacz naklejki których środek jest w prostokącie
+            # Zaznacz naklejki których prostokąt przecina się z zaznaczeniem
             changed = False
             for idx, p in enumerate(sheet.placements):
                 pw = p.sticker.height_mm if abs(p.rotation_deg) in (90, 270) else p.sticker.width_mm
                 ph = p.sticker.width_mm if abs(p.rotation_deg) in (90, 270) else p.sticker.height_mm
-                cx = p.x_mm + pw / 2
-                cy = p.y_mm + ph / 2
-                if x0_mm <= cx <= x1_mm and y0_mm <= cy <= y1_mm:
+                # Prostokąt naklejki
+                px0, py0 = p.x_mm, p.y_mm
+                px1, py1 = px0 + pw, py0 + ph
+                # Overlap test (dwa prostokąty się przecinają)
+                if px0 < x1_mm and px1 > x0_mm and py0 < y1_mm and py1 > y0_mm:
                     self._selected_placements.add(idx)
                     changed = True
 
