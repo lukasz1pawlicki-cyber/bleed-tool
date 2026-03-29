@@ -174,15 +174,15 @@ def build_white_fill_stream(
     return stream.encode('ascii')
 
 
-def _get_white_segments(cut_segments: list) -> list:
-    """Zwraca segmenty do white fill — cut_segments z opcjonalnym insetem.
+def _get_white_segments(bleed_segments: list) -> list:
+    """Zwraca segmenty do white fill — bleed_segments (grafika+spad).
 
-    Jesli WHITE_INSET_MM > 0, segmenty sa cofniete do srodka o inset,
-    zeby bialy tusz nie wystawal na krawedzi naklejki.
+    White pokrywa cala naklejke ze spadem. Bialy tusz drukowany pod
+    calym obrazem na przezroczystym/metalicznym podlozu.
     """
-    inset_pt = WHITE_INSET_MM * MM_TO_PT
-    if inset_pt < 0.01:
-        return list(cut_segments)
+    if not bleed_segments:
+        return []
+    return list(bleed_segments)
 
     # Inset = offset w kierunku do wewnatrz (ujemna odleglosc)
     try:
@@ -1293,7 +1293,7 @@ def export_single_sticker(
 
     # Osobny plik White (bialy poddruk)
     white_path = None
-    if white and sticker.cut_segments:
+    if white and sticker.bleed_segments:
         base, ext = os.path.splitext(output_path)
         white_path = f"{base}_white{ext}"
         white_doc = fitz.open()
@@ -1301,7 +1301,7 @@ def export_single_sticker(
         cs_white = setup_separation_colorspace(
             white_doc, white_page, SPOT_COLOR_WHITE, SPOT_CMYK_WHITE,
         )
-        white_segments = _get_white_segments(sticker.cut_segments)
+        white_segments = _get_white_segments(sticker.bleed_segments)
         white_stream = build_white_fill_stream(
             white_segments, bleed_pts, out_h, cs_white,
         )
@@ -1514,11 +1514,11 @@ def _build_sheet_white_fill_stream(
 ) -> bytes:
     """Buduje content stream: White fill dla jednego placement na arkuszu.
 
-    Ksztalt: cut_segments (kontur ciecia) z opcjonalnym insetem.
+    Ksztalt: bleed_segments (grafika+spad) — White pokrywa cala naklejke.
     Spot color White — bialy poddruk pod grafika.
     """
     sticker = placement.sticker
-    if not sticker.cut_segments:
+    if not sticker.bleed_segments:
         return b""
 
     bleed_pts = bleed_mm * MM_TO_PT
@@ -1535,7 +1535,7 @@ def _build_sheet_white_fill_stream(
     out_w = sticker_w_pt + 2 * bleed_pts
     out_h = sticker_h_pt + 2 * bleed_pts
 
-    white_segments = _get_white_segments(sticker.cut_segments)
+    white_segments = _get_white_segments(sticker.bleed_segments)
 
     ops: list[str] = []
     ops.append(f"/{cs_name} cs")
@@ -2214,7 +2214,7 @@ def export_sheet_white(
 
     for i, placement in enumerate(sheet.placements):
         sticker = placement.sticker
-        if not sticker.cut_segments:
+        if not sticker.bleed_segments:
             continue
 
         white_stream = _build_sheet_white_fill_stream(
