@@ -2782,6 +2782,8 @@ class BleedApp(customtkinter.CTk):
             return
 
         # 2. Nesting
+        t_load = time.time() - t0
+        self._log(f"  Wczytywanie: {t_load:.2f}s")
         grouping_map = {"Grupuj": "group", "Osobne": "separate", "Mieszaj": "mix"}
         grouping_mode = grouping_map.get(params.get("grouping_mode", "Grupuj"), "group")
         self._log(f"\nNestowanie...")
@@ -2812,6 +2814,9 @@ class BleedApp(customtkinter.CTk):
             bleed_mm=bleed,
             mark_zone_mm=mark_zone,
         )
+
+        t_nest = time.time() - t0 - t_load
+        self._log(f"  Nest: {t_nest:.2f}s, {len(job.sheets)} arkuszy")
 
         # 3. Panelize + Marks + Export
         ns = len(job.sheets)
