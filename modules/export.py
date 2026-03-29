@@ -112,6 +112,22 @@ def build_rgb_fill_stream(
     return stream.encode('ascii')
 
 
+def build_cmyk_fill_stream(
+    segments: list,
+    cmyk: tuple[float, float, float, float],
+    bleed_pts: float,
+    out_h: float,
+) -> bytes:
+    """Buduje content stream: CMYK fill z segmentów (warstwa 1 — bleed).
+
+    Używa DeviceCMYK (operator k) — prepress-ready.
+    """
+    c, m, y, k = cmyk
+    path_ops = _segments_to_pdf_path_ops(segments, bleed_pts, out_h)
+    stream = f"{c:.6f} {m:.6f} {y:.6f} {k:.6f} k\n{path_ops}\nf"
+    return stream.encode('ascii')
+
+
 def build_cutcontour_stream(
     segments: list,
     bleed_pts: float,
@@ -1110,11 +1126,16 @@ def export_single_sticker(
         log.info("Warstwa 1+2: bleed + grafika rastrowa — OK")
     else:
         # Wektor PDF: solid fill + show_pdf_page
-        bleed_stream = build_rgb_fill_stream(
-            sticker.bleed_segments, sticker.edge_color_rgb, bleed_pts, out_h
-        )
+        if sticker.edge_color_cmyk:
+            bleed_stream = build_cmyk_fill_stream(
+                sticker.bleed_segments, sticker.edge_color_cmyk, bleed_pts, out_h
+            )
+        else:
+            bleed_stream = build_rgb_fill_stream(
+                sticker.bleed_segments, sticker.edge_color_rgb, bleed_pts, out_h
+            )
         inject_content_stream(doc_out, out_page, bleed_stream)
-        log.info("Warstwa 1: podkład bleed (wektorowy RGB fill) — OK")
+        log.info("Warstwa 1: podkład bleed (CMYK fill) — OK")
 
         doc_src = sticker.pdf_doc
         src_page = doc_src[sticker.page_index]
@@ -1164,6 +1185,10 @@ def export_single_sticker(
         log.info("Warstwa 3: CutContour — OK")
     else:
         log.info("Warstwa 3: CutContour — pominięta (sam spad)")
+
+    # PDF/X-4: OutputIntent FOGRA39 + TrimBox/BleedBox
+    from modules.pdf_metadata import apply_pdfx4
+    apply_pdfx4(doc_out, bleed_mm=bleed_mm)
 
     # Zapis
     doc_out.save(output_path)
@@ -1313,14 +1338,17 @@ def _build_sheet_bleed_fill_stream(
     out_w = sticker_w_pt + 2 * bleed_pts
     out_h = sticker_h_pt + 2 * bleed_pts
 
-    r, g, b = sticker.edge_color_rgb
-
     # Transformacja segmentów bleed do pozycji na arkuszu
     # Segmenty są w fitz coords (y-down), musimy:
     # 1. Przeliczyć do PDF coords naklejki (y-up, z bleed offset)
     # 2. Przeliczyć do pozycji na arkuszu (translation + optional rotation)
     ops: list[str] = []
-    ops.append(f"{r:.6f} {g:.6f} {b:.6f} rg")
+    if sticker.edge_color_cmyk:
+        c, m, y, k = sticker.edge_color_cmyk
+        ops.append(f"{c:.6f} {m:.6f} {y:.6f} {k:.6f} k")
+    else:
+        r, g, b = sticker.edge_color_rgb
+        ops.append(f"{r:.6f} {g:.6f} {b:.6f} rg")
     ops.append("q")  # save graphics state
 
     # Transformacja: translate do pozycji na arkuszu (PDF y-up)
@@ -1870,6 +1898,10 @@ def export_sheet_print(
         marks_stream = _build_marks_stream(sheet.marks, sheet_h_pt)
         if marks_stream:
             inject_content_stream(doc_out, out_page, marks_stream)
+
+    # PDF/X-4: OutputIntent FOGRA39
+    from modules.pdf_metadata import apply_pdfx4
+    apply_pdfx4(doc_out, bleed_mm=bleed_mm)
 
     doc_out.save(output_path)
     doc_out.close()
