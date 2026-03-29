@@ -48,8 +48,10 @@ def apply_crop(
     """
     if target_size_mm <= 0:
         raise ValueError(f"target_size_mm musi byc > 0, podano {target_size_mm}")
-    if shape not in ("square", "circle"):
+    if shape not in ("square", "circle", "rounded"):
         raise ValueError(f"Nieznany kształt crop: {shape}")
+    if not (0.0 <= offset[0] <= 1.0 and 0.0 <= offset[1] <= 1.0):
+        offset = (max(0.0, min(1.0, offset[0])), max(0.0, min(1.0, offset[1])))
 
     # Rozmiar crop w pikselach
     crop_size_px = int(round(target_size_mm / 25.4 * dpi))
@@ -83,9 +85,11 @@ def apply_crop(
     cropped = src_img.crop((x0, y0, x0 + crop_size_px, y0 + crop_size_px))
     src_img.close()
 
-    # Dla okręgu: dodaj alpha maskę
+    # Dla okręgu/zaokrąglonego: dodaj alpha maskę
     if shape == "circle":
         cropped = _apply_circle_mask(cropped)
+    elif shape == "rounded":
+        cropped = _apply_rounded_rect_mask(cropped)
 
     # Zapisz do pliku tymczasowego
     tmp = tempfile.NamedTemporaryFile(
@@ -199,6 +203,20 @@ def _apply_circle_mask(img: Image.Image) -> Image.Image:
     mask = Image.new("L", (size, size), 0)
     draw = ImageDraw.Draw(mask)
     draw.ellipse((0, 0, size - 1, size - 1), fill=255)
+
+    rgba.putalpha(mask)
+    return rgba
+
+
+def _apply_rounded_rect_mask(img: Image.Image) -> Image.Image:
+    """Nakłada maskę zaokrąglonego kwadratu na obraz. Promień = 15% boku."""
+    size = img.size[0]  # kwadratowy
+    rgba = img.convert("RGBA")
+    r = int(size * 0.15)
+
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=r, fill=255)
 
     rgba.putalpha(mask)
     return rgba

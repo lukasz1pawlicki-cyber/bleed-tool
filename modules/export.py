@@ -193,6 +193,8 @@ def convert_black_to_100k(doc: fitz.Document, page: fitz.Page) -> None:
     page_xref = page.xref
     contents_info = doc.xref_get_key(page_xref, "Contents")
     xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', contents_info[1])
+    if not xrefs:
+        return
 
     count = 0
     for xr_str in xrefs:
@@ -262,12 +264,13 @@ def _convert_separation_all_to_black(doc: fitz.Document, page: fitz.Page) -> int
 
 
 # Regex dla operatorów kolorów (na końcu linii)
-_RE_GRAY_FILL   = re_module.compile(r'^(\s*)([\d.]+)\s+g\s*$')
-_RE_GRAY_STROKE = re_module.compile(r'^(\s*)([\d.]+)\s+G\s*$')
-_RE_RGB_FILL    = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg\s*$')
-_RE_RGB_STROKE  = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+RG\s*$')
-_RE_CMYK_FILL   = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+k\s*$')
-_RE_CMYK_STROKE = re_module.compile(r'^(\s*)([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+K\s*$')
+_NUM = r'[\d.]+(?:[eE][+-]?\d+)?'
+_RE_GRAY_FILL   = re_module.compile(rf'^(\s*)({_NUM})\s+g\s*$')
+_RE_GRAY_STROKE = re_module.compile(rf'^(\s*)({_NUM})\s+G\s*$')
+_RE_RGB_FILL    = re_module.compile(rf'^(\s*)({_NUM})\s+({_NUM})\s+({_NUM})\s+rg\s*$')
+_RE_RGB_STROKE  = re_module.compile(rf'^(\s*)({_NUM})\s+({_NUM})\s+({_NUM})\s+RG\s*$')
+_RE_CMYK_FILL   = re_module.compile(rf'^(\s*)({_NUM})\s+({_NUM})\s+({_NUM})\s+({_NUM})\s+k\s*$')
+_RE_CMYK_STROKE = re_module.compile(rf'^(\s*)({_NUM})\s+({_NUM})\s+({_NUM})\s+({_NUM})\s+K\s*$')
 
 _BLACK_THRESH = 0.1  # Wartości ≤ tego uznajemy za „czarny" (gray/RGB)
 _K_RICH_THRESH = 0.85  # CMYK: K ≥ tego z jakimkolwiek CMY → rich black
@@ -366,6 +369,8 @@ def expand_clip_paths(
 
     # Zbierz xrefy content streamów
     xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xref_str)
+    if not xrefs:
+        return
 
     modified = False
     first_polygon_expanded = False

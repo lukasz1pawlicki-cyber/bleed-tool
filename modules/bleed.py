@@ -223,9 +223,26 @@ def offset_polyline(polyline: np.ndarray, distance: float) -> np.ndarray:
         normals[i] = normal
 
     # Upewnij się że offset jest na zewnątrz (od centroidu)
+    # Shoelace formula: wyznacz kierunek nawinięcia (CW/CCW) polygonu
+    # signed_area > 0 → CCW, signed_area < 0 → CW
+    x = polyline[:, 0]
+    y = polyline[:, 1]
+    x_next = np.roll(x, -1)
+    y_next = np.roll(y, -1)
+    signed_area = np.sum(x * y_next - x_next * y) / 2.0
+
+    # Dla CCW (signed_area > 0): normalne [-dy, dx] wskazują na zewnątrz
+    # Dla CW (signed_area < 0): normalne [-dy, dx] wskazują do wewnątrz → trzeba odwrócić
+    # Weryfikacja: dot product kilku normalnych z wektorem od centroidu
     centroid = polyline.mean(axis=0)
-    test_vec = polyline[0] - centroid
-    if np.dot(test_vec, normals[0]) < 0:
+    test_count = min(10, n)
+    test_indices = np.linspace(0, n - 1, test_count, dtype=int)
+    dot_sum = 0.0
+    for idx in test_indices:
+        test_vec = polyline[idx] - centroid
+        dot_sum += np.dot(test_vec, normals[idx])
+
+    if dot_sum < 0:
         normals = -normals
 
     return polyline + normals * distance
@@ -291,6 +308,11 @@ def offset_segments(
          - Linie → linie (start/end z offset polilinii)
          - Krzywe → least-squares Bézier refit
     """
+    if not segments:
+        return []
+    if distance <= 0:
+        return list(segments)  # no offset needed
+
     polyline, boundaries = flatten_segments_to_polyline(segments, segments_per_curve)
     offset_poly = offset_polyline(polyline, distance)
 
@@ -350,8 +372,10 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
     Returns:
         Ten sam Sticker z wypełnionymi polami bleed.
     """
+    if bleed_mm < 0:
+        raise ValueError(f"bleed_mm musi byc >= 0, podano {bleed_mm}")
     if not sticker.cut_segments:
-        raise ValueError(f"Sticker nie ma segmentów konturu: {sticker.source_path}")
+        raise ValueError("Sticker nie ma cut_segments — uruchom detect_contour() najpierw")
 
     bleed_pts = bleed_mm * MM_TO_PT
     log.info(f"Bleed: {bleed_mm}mm = {bleed_pts:.2f}pt")

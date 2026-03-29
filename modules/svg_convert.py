@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes.util
 import logging
+import math
 import os
 import re
 import tempfile
@@ -157,6 +158,130 @@ def _get_viewbox_size(svg_path: str) -> tuple[float | None, float | None]:
 # Parsowanie SVG path d-attribute
 # ---------------------------------------------------------------------------
 
+def _arc_endpoint_to_center(
+    x1: float, y1: float, rx: float, ry: float,
+    phi_deg: float, fa: int, fs: int, x2: float, y2: float,
+) -> tuple[float, float, float, float, float, float, float, float]:
+    """SVG arc endpoint parameterization → center parameterization.
+
+    Returns: (cx, cy, rx, ry, start_angle, sweep_angle, cos_phi, sin_phi)
+    Implements the algorithm from SVG spec F.6.5-F.6.6.
+    """
+    phi = math.radians(phi_deg)
+    cos_phi = math.cos(phi)
+    sin_phi = math.sin(phi)
+
+    # F.6.5.1 — compute (x1', y1')
+    dx2 = (x1 - x2) / 2.0
+    dy2 = (y1 - y2) / 2.0
+    x1p = cos_phi * dx2 + sin_phi * dy2
+    y1p = -sin_phi * dx2 + cos_phi * dy2
+
+    # F.6.6.2 — ensure radii are large enough
+    rx = abs(rx)
+    ry = abs(ry)
+    x1p2 = x1p * x1p
+    y1p2 = y1p * y1p
+    rx2 = rx * rx
+    ry2 = ry * ry
+
+    lam = x1p2 / rx2 + y1p2 / ry2
+    if lam > 1.0:
+        lam_sqrt = math.sqrt(lam)
+        rx *= lam_sqrt
+        ry *= lam_sqrt
+        rx2 = rx * rx
+        ry2 = ry * ry
+
+    # F.6.5.2 — compute (cx', cy')
+    num = max(rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2, 0.0)
+    den = rx2 * y1p2 + ry2 * x1p2
+    sq = math.sqrt(num / den) if den > 0 else 0.0
+    if fa == fs:
+        sq = -sq
+    cxp = sq * rx * y1p / ry
+    cyp = -sq * ry * x1p / rx
+
+    # F.6.5.3 — compute (cx, cy)
+    cx = cos_phi * cxp - sin_phi * cyp + (x1 + x2) / 2.0
+    cy = sin_phi * cxp + cos_phi * cyp + (y1 + y2) / 2.0
+
+    # F.6.5.5-6 — compute start_angle and sweep_angle
+    def _angle(ux: float, uy: float, vx: float, vy: float) -> float:
+        dot = ux * vx + uy * vy
+        length = math.sqrt(ux * ux + uy * uy) * math.sqrt(vx * vx + vy * vy)
+        cos_val = max(-1.0, min(1.0, dot / length)) if length > 0 else 1.0
+        a = math.acos(cos_val)
+        if ux * vy - uy * vx < 0:
+            a = -a
+        return a
+
+    start_angle = _angle(1.0, 0.0, (x1p - cxp) / rx, (y1p - cyp) / ry)
+    sweep_angle = _angle(
+        (x1p - cxp) / rx, (y1p - cyp) / ry,
+        (-x1p - cxp) / rx, (-y1p - cyp) / ry,
+    )
+
+    # F.6.5.6 — adjust sweep
+    if fs == 0 and sweep_angle > 0:
+        sweep_angle -= 2 * math.pi
+    elif fs == 1 and sweep_angle < 0:
+        sweep_angle += 2 * math.pi
+
+    return cx, cy, rx, ry, start_angle, sweep_angle, cos_phi, sin_phi
+
+
+def _arc_to_beziers(
+    cx: float, cy: float, rx: float, ry: float,
+    start_angle: float, sweep_angle: float,
+    cos_phi: float, sin_phi: float,
+) -> list[tuple[float, float, float, float, float, float]]:
+    """Convert an arc segment to cubic bezier curves.
+
+    Returns list of (cp1x, cp1y, cp2x, cp2y, x, y) tuples.
+    """
+    if abs(sweep_angle) < 1e-10:
+        return []
+
+    n_segs = max(1, int(abs(sweep_angle) / (math.pi / 2) + 0.999))
+    delta = sweep_angle / n_segs
+    segments = []
+
+    for seg_i in range(n_segs):
+        t1 = start_angle + seg_i * delta
+        t2 = t1 + delta
+        half = delta / 2.0
+        tan_half = math.tan(half)
+        alpha = math.sin(delta) * (math.sqrt(4 + 3 * tan_half * tan_half) - 1) / 3
+
+        cos_t1, sin_t1 = math.cos(t1), math.sin(t1)
+        cos_t2, sin_t2 = math.cos(t2), math.sin(t2)
+
+        # Points on the ellipse (pre-rotation)
+        p1x = rx * cos_t1
+        p1y = ry * sin_t1
+        p2x = rx * cos_t2
+        p2y = ry * sin_t2
+
+        # Control points (pre-rotation)
+        cp1x = p1x - alpha * rx * sin_t1
+        cp1y = p1y + alpha * ry * cos_t1
+        cp2x = p2x + alpha * rx * sin_t2
+        cp2y = p2y - alpha * ry * cos_t2
+
+        # Rotate and translate
+        segments.append((
+            cx + cp1x * cos_phi - cp1y * sin_phi,
+            cy + cp1x * sin_phi + cp1y * cos_phi,
+            cx + cp2x * cos_phi - cp2y * sin_phi,
+            cy + cp2x * sin_phi + cp2y * cos_phi,
+            cx + p2x * cos_phi - p2y * sin_phi,
+            cy + p2x * sin_phi + p2y * cos_phi,
+        ))
+
+    return segments
+
+
 def _parse_svg_path_d(d: str) -> list[tuple]:
     """Parsuje SVG path 'd' attribute na listę komend.
 
@@ -172,6 +297,10 @@ def _parse_svg_path_d(d: str) -> list[tuple]:
     cmd = None
     cx, cy = 0.0, 0.0  # current point
     sx, sy = 0.0, 0.0  # subpath start
+    # Track last control point for S/s and T/t reflection
+    last_cp2x, last_cp2y = 0.0, 0.0  # last cubic cp2
+    last_qx, last_qy = 0.0, 0.0      # last quadratic control point
+    prev_cmd: str | None = None
 
     while i < len(tokens):
         t = tokens[i]
@@ -181,6 +310,7 @@ def _parse_svg_path_d(d: str) -> list[tuple]:
             if cmd in ("Z", "z"):
                 commands.append(("Z",))
                 cx, cy = sx, sy
+                prev_cmd = cmd
                 continue
         if cmd is None:
             i += 1
@@ -193,6 +323,7 @@ def _parse_svg_path_d(d: str) -> list[tuple]:
                 cx, cy = x, y
                 sx, sy = x, y
                 i += 2
+                prev_cmd = cmd
                 cmd = "L"  # subsequent are lineTo
             elif cmd == "m":
                 x, y = float(tokens[i]), float(tokens[i + 1])
@@ -200,82 +331,191 @@ def _parse_svg_path_d(d: str) -> list[tuple]:
                 commands.append(("M", cx, cy))
                 sx, sy = cx, cy
                 i += 2
+                prev_cmd = cmd
                 cmd = "l"
             elif cmd == "L":
                 x, y = float(tokens[i]), float(tokens[i + 1])
                 commands.append(("L", x, y))
                 cx, cy = x, y
                 i += 2
+                prev_cmd = cmd
             elif cmd == "l":
                 x, y = float(tokens[i]), float(tokens[i + 1])
                 cx, cy = cx + x, cy + y
                 commands.append(("L", cx, cy))
                 i += 2
+                prev_cmd = cmd
             elif cmd == "H":
                 cx = float(tokens[i])
                 commands.append(("L", cx, cy))
                 i += 1
+                prev_cmd = cmd
             elif cmd == "h":
                 cx += float(tokens[i])
                 commands.append(("L", cx, cy))
                 i += 1
+                prev_cmd = cmd
             elif cmd == "V":
                 cy = float(tokens[i])
                 commands.append(("L", cx, cy))
                 i += 1
+                prev_cmd = cmd
             elif cmd == "v":
                 cy += float(tokens[i])
                 commands.append(("L", cx, cy))
                 i += 1
+                prev_cmd = cmd
             elif cmd == "C":
                 x1 = float(tokens[i]); y1 = float(tokens[i + 1])
                 x2 = float(tokens[i + 2]); y2 = float(tokens[i + 3])
                 x = float(tokens[i + 4]); y = float(tokens[i + 5])
                 commands.append(("C", x1, y1, x2, y2, x, y))
+                last_cp2x, last_cp2y = x2, y2
                 cx, cy = x, y
                 i += 6
+                prev_cmd = cmd
             elif cmd == "c":
                 x1 = cx + float(tokens[i]); y1 = cy + float(tokens[i + 1])
                 x2 = cx + float(tokens[i + 2]); y2 = cy + float(tokens[i + 3])
                 x = cx + float(tokens[i + 4]); y = cy + float(tokens[i + 5])
                 commands.append(("C", x1, y1, x2, y2, x, y))
+                last_cp2x, last_cp2y = x2, y2
                 cx, cy = x, y
                 i += 6
+                prev_cmd = cmd
             elif cmd == "S":
                 x2 = float(tokens[i]); y2 = float(tokens[i + 1])
                 x = float(tokens[i + 2]); y = float(tokens[i + 3])
-                commands.append(("C", cx, cy, x2, y2, x, y))  # simplified
+                # Reflect previous cp2 through current point for cp1
+                if prev_cmd in ("C", "c", "S", "s"):
+                    x1 = 2 * cx - last_cp2x
+                    y1 = 2 * cy - last_cp2y
+                else:
+                    x1, y1 = cx, cy
+                commands.append(("C", x1, y1, x2, y2, x, y))
+                last_cp2x, last_cp2y = x2, y2
                 cx, cy = x, y
                 i += 4
+                prev_cmd = cmd
             elif cmd == "s":
                 x2 = cx + float(tokens[i]); y2 = cy + float(tokens[i + 1])
                 x = cx + float(tokens[i + 2]); y = cy + float(tokens[i + 3])
-                commands.append(("C", cx, cy, x2, y2, x, y))
+                # Reflect previous cp2 through current point for cp1
+                if prev_cmd in ("C", "c", "S", "s"):
+                    x1 = 2 * cx - last_cp2x
+                    y1 = 2 * cy - last_cp2y
+                else:
+                    x1, y1 = cx, cy
+                commands.append(("C", x1, y1, x2, y2, x, y))
+                last_cp2x, last_cp2y = x2, y2
                 cx, cy = x, y
                 i += 4
+                prev_cmd = cmd
             elif cmd == "Q":
                 x1 = float(tokens[i]); y1 = float(tokens[i + 1])
                 x = float(tokens[i + 2]); y = float(tokens[i + 3])
+                last_qx, last_qy = x1, y1
                 # Convert quadratic to cubic
                 c1x = cx + 2 / 3 * (x1 - cx); c1y = cy + 2 / 3 * (y1 - cy)
                 c2x = x + 2 / 3 * (x1 - x); c2y = y + 2 / 3 * (y1 - y)
                 commands.append(("C", c1x, c1y, c2x, c2y, x, y))
                 cx, cy = x, y
                 i += 4
+                prev_cmd = cmd
             elif cmd == "q":
                 x1 = cx + float(tokens[i]); y1 = cy + float(tokens[i + 1])
                 x = cx + float(tokens[i + 2]); y = cy + float(tokens[i + 3])
+                last_qx, last_qy = x1, y1
                 c1x = cx + 2 / 3 * (x1 - cx); c1y = cy + 2 / 3 * (y1 - cy)
                 c2x = x + 2 / 3 * (x1 - x); c2y = y + 2 / 3 * (y1 - y)
                 commands.append(("C", c1x, c1y, c2x, c2y, x, y))
                 cx, cy = x, y
                 i += 4
+                prev_cmd = cmd
+            elif cmd == "T":
+                x = float(tokens[i]); y = float(tokens[i + 1])
+                # Reflect previous quadratic control point
+                if prev_cmd in ("Q", "q", "T", "t"):
+                    x1 = 2 * cx - last_qx
+                    y1 = 2 * cy - last_qy
+                else:
+                    x1, y1 = cx, cy
+                last_qx, last_qy = x1, y1
+                c1x = cx + 2 / 3 * (x1 - cx); c1y = cy + 2 / 3 * (y1 - cy)
+                c2x = x + 2 / 3 * (x1 - x); c2y = y + 2 / 3 * (y1 - y)
+                commands.append(("C", c1x, c1y, c2x, c2y, x, y))
+                cx, cy = x, y
+                i += 2
+                prev_cmd = cmd
+            elif cmd == "t":
+                dx = float(tokens[i]); dy = float(tokens[i + 1])
+                x, y = cx + dx, cy + dy
+                if prev_cmd in ("Q", "q", "T", "t"):
+                    x1 = 2 * cx - last_qx
+                    y1 = 2 * cy - last_qy
+                else:
+                    x1, y1 = cx, cy
+                last_qx, last_qy = x1, y1
+                c1x = cx + 2 / 3 * (x1 - cx); c1y = cy + 2 / 3 * (y1 - cy)
+                c2x = x + 2 / 3 * (x1 - x); c2y = y + 2 / 3 * (y1 - y)
+                commands.append(("C", c1x, c1y, c2x, c2y, x, y))
+                cx, cy = x, y
+                i += 2
+                prev_cmd = cmd
+            elif cmd == "A":
+                rx_a = float(tokens[i]); ry_a = float(tokens[i + 1])
+                x_rot = float(tokens[i + 2])
+                fa = int(float(tokens[i + 3]))
+                fs = int(float(tokens[i + 4]))
+                x = float(tokens[i + 5]); y = float(tokens[i + 6])
+                _emit_arc_commands(commands, cx, cy, rx_a, ry_a,
+                                   x_rot, fa, fs, x, y)
+                cx, cy = x, y
+                i += 7
+                prev_cmd = cmd
+            elif cmd == "a":
+                rx_a = float(tokens[i]); ry_a = float(tokens[i + 1])
+                x_rot = float(tokens[i + 2])
+                fa = int(float(tokens[i + 3]))
+                fs = int(float(tokens[i + 4]))
+                x = cx + float(tokens[i + 5]); y = cy + float(tokens[i + 6])
+                _emit_arc_commands(commands, cx, cy, rx_a, ry_a,
+                                   x_rot, fa, fs, x, y)
+                cx, cy = x, y
+                i += 7
+                prev_cmd = cmd
             else:
                 i += 1  # skip unknown
+                prev_cmd = cmd
         except (IndexError, ValueError):
             break
 
     return commands
+
+
+def _emit_arc_commands(
+    commands: list[tuple],
+    x1: float, y1: float,
+    rx: float, ry: float,
+    x_rot: float, fa: int, fs: int,
+    x2: float, y2: float,
+) -> None:
+    """Konwertuje łuk SVG na komendy C (cubic bezier) i dopisuje do commands."""
+    # Degenerate cases
+    if abs(x1 - x2) < 1e-10 and abs(y1 - y2) < 1e-10:
+        return
+    if rx < 1e-10 or ry < 1e-10:
+        commands.append(("L", x2, y2))
+        return
+
+    center = _arc_endpoint_to_center(x1, y1, rx, ry, x_rot, fa, fs, x2, y2)
+    cx_a, cy_a, rx_a, ry_a, start_angle, sweep_angle, cos_phi, sin_phi = center
+
+    beziers = _arc_to_beziers(
+        cx_a, cy_a, rx_a, ry_a, start_angle, sweep_angle, cos_phi, sin_phi
+    )
+    for cp1x, cp1y, cp2x, cp2y, ex, ey in beziers:
+        commands.append(("C", cp1x, cp1y, cp2x, cp2y, ex, ey))
 
 
 def _is_simple_rect(commands: list[tuple]) -> bool:

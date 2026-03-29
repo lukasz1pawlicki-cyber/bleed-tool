@@ -229,6 +229,13 @@ def nest_job(
     else:
         area_h = sheet_height_mm - top - bottom - 2 * mark_zone_mm
 
+    if area_w <= 0:
+        raise ValueError(f"Printable area width <= 0 (sheet_width={sheet_width_mm}, margins={margins_mm})")
+    if bleed_mm < 0:
+        raise ValueError(f"bleed_mm musi byc >= 0, podano {bleed_mm}")
+    if gap_mm < 0:
+        raise ValueError(f"gap_mm musi byc >= 0, podano {gap_mm}")
+
     # Bleed: kazda naklejka jest wieksza o 2*bleed w obu kierunkach
     bleed2 = 2 * bleed_mm
 
@@ -807,6 +814,13 @@ def _consolidate_last_sheet(
         key=lambda p: -(p.sticker.width_mm * p.sticker.height_mm),
     )
 
+    # Zlozonosc petli: O(P * S * K) gdzie P = naklejki ostatniego arkusza,
+    # S = poprzednie arkusze, K = shelfy per arkusz. W praktyce P jest male
+    # (arkusz < 60% zapelnienia), S i K tez niewielkie. Budowanie indeksu
+    # (np. bisect na remaining_width) nie oplaca sie, bo _find_backfill_item
+    # szuka best-fit wg *height waste* wsrod shelfow spelniajacych oba warunki
+    # (szerokosc + wysokosc), a po kazdym umieszczeniu mutuje cursor_x jednego
+    # shelfa — indeks wymagalby re-insert po kazdej zmianie.
     for placement in sorted_last:
         moved = False
         sticker = placement.sticker

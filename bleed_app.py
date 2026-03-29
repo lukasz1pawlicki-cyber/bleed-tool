@@ -76,6 +76,21 @@ _PREVIEW_MARK = "#000000"
 _SUPPORTED_EXT = ('.pdf', '.svg', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')
 
 
+def _draw_rounded_rect(canvas, x0, y0, x1, y1, r, **kw):
+    """Rysuje zaokrąglony prostokąt na Canvas (łuki + linie)."""
+    # Arc używa outline=, Line używa fill= — rozdziel kwargs
+    line_kw = {k: v for k, v in kw.items() if k != 'outline'}
+    line_kw['fill'] = kw.get('outline', 'black')
+    canvas.create_arc(x0, y0, x0 + 2 * r, y0 + 2 * r, start=90, extent=90, style="arc", **kw)
+    canvas.create_arc(x1 - 2 * r, y0, x1, y0 + 2 * r, start=0, extent=90, style="arc", **kw)
+    canvas.create_arc(x1 - 2 * r, y1 - 2 * r, x1, y1, start=270, extent=90, style="arc", **kw)
+    canvas.create_arc(x0, y1 - 2 * r, x0 + 2 * r, y1, start=180, extent=90, style="arc", **kw)
+    canvas.create_line(x0 + r, y0, x1 - r, y0, **line_kw)
+    canvas.create_line(x0 + r, y1, x1 - r, y1, **line_kw)
+    canvas.create_line(x0, y0 + r, x0, y1 - r, **line_kw)
+    canvas.create_line(x1, y0 + r, x1, y1 - r, **line_kw)
+
+
 # =============================================================================
 # SHEET PREVIEW PANEL (wzorowany na sticker-toolkit)
 # =============================================================================
@@ -98,6 +113,7 @@ class SheetPreviewPanel:
         self.sheet_pdfs: list[tuple[str, str]] = []
         self._current_rendered = None
         self.current_sheet_idx = 0
+        self._render_cache: dict = {}
 
         # Transformacja (zapisywana przy rysowaniu)
         self._tx_ox = 0.0
@@ -158,7 +174,8 @@ class SheetPreviewPanel:
         # Canvas
         self.canvas = tk.Canvas(self.frame, bg=_preview_bg(), highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        self.canvas.bind("<Configure>", lambda e: self._draw_current_sheet())
+        self._resize_after_id = None
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
 
         # Zoom & pan
         self._zoom = 1.0
@@ -180,6 +197,7 @@ class SheetPreviewPanel:
 
     def set_job(self, job, bleed_mm=2.0, sheet_pdfs=None):
         """Ustaw podgląd arkuszy z nestingu."""
+        self._render_cache.clear()
         self.job = job
         self.bleed_mm = bleed_mm
         self.sheet_pdfs = sheet_pdfs or []
@@ -193,6 +211,7 @@ class SheetPreviewPanel:
 
     def set_bleed_results(self, results: list[dict]):
         """Ustaw podgląd przetworzonych plików bleed."""
+        self._render_cache.clear()
         self.job = None
         self.bleed_results = results
         self._bleed_images = []
@@ -205,6 +224,7 @@ class SheetPreviewPanel:
 
     def clear(self):
         """Wyczyść podgląd."""
+        self._render_cache.clear()
         self.job = None
         self.bleed_results = []
         self.sheet_pdfs = []
@@ -376,6 +396,11 @@ class SheetPreviewPanel:
         target_w = max(1, int(sw_mm * scale))
         target_h = max(1, int(sh_mm * scale))
 
+        # LRU-style cache — unikaj ponownego renderowania przy zoom/pan/resize
+        cache_key = (sheet_idx, target_w, target_h)
+        if cache_key in self._render_cache:
+            return self._render_cache[cache_key]
+
         try:
             import numpy as np
 
@@ -412,7 +437,14 @@ class SheetPreviewPanel:
 
             img_print = img_print.convert("RGBA")
             img_final = Image.alpha_composite(img_print, img_cut)
-            return ImageTk.PhotoImage(img_final)
+            result = ImageTk.PhotoImage(img_final)
+
+            # Zapisz w cache (limit 5 wpisów)
+            if len(self._render_cache) >= 5:
+                oldest_key = next(iter(self._render_cache))
+                del self._render_cache[oldest_key]
+            self._render_cache[cache_key] = result
+            return result
 
         except Exception:
             return None
@@ -518,6 +550,12 @@ class SheetPreviewPanel:
         self._pan_y = py + dy
         self._draw_current_sheet()
 
+    def _on_canvas_configure(self, event):
+        """Debounce resize — przerysuj po 150ms bezczynności."""
+        if self._resize_after_id:
+            self.canvas.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.canvas.after(150, self._draw_current_sheet)
+
     def _on_click_release(self, event):
         pass  # pasywny podgląd — brak interakcji
 
@@ -570,6 +608,7 @@ class FlexCutWindow(customtkinter.CTkToplevel):
         self._tx_scale = 1.0
         self._tx_sh_mm = 0.0
         self._current_rendered = None
+        self._render_cache: dict = {}
 
         # Zoom & pan (Right-click drag lub Shift+drag)
         self._zoom = 1.0
@@ -579,6 +618,9 @@ class FlexCutWindow(customtkinter.CTkToplevel):
         # Rubber band selection (Left-click drag)
         self._sel_start = None   # (canvas_x, canvas_y) start of selection rectangle
         self._sel_rect_id = None  # canvas item id for rubber band
+
+        # Debounce resize
+        self._resize_after_id = None
 
         # --- Toolbar ---
         toolbar = customtkinter.CTkFrame(self, fg_color="transparent", height=42)
@@ -646,7 +688,7 @@ class FlexCutWindow(customtkinter.CTkToplevel):
         self.canvas.pack(fill="both", expand=True, padx=6, pady=(4, 6))
 
         # Canvas bindings
-        self.canvas.bind("<Configure>", lambda e: self._draw_current_sheet())
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         self.canvas.bind("<MouseWheel>", self._on_scroll_zoom)
         self.canvas.bind("<Button-4>", self._on_scroll_zoom)
         self.canvas.bind("<Button-5>", self._on_scroll_zoom)
@@ -839,6 +881,12 @@ class FlexCutWindow(customtkinter.CTkToplevel):
             return None
         target_w = max(1, int(sw_mm * scale))
         target_h = max(1, int(sh_mm * scale))
+
+        # LRU-style cache — unikaj ponownego renderowania przy zoom/pan/resize
+        cache_key = (sheet_idx, target_w, target_h)
+        if cache_key in self._render_cache:
+            return self._render_cache[cache_key]
+
         try:
             import numpy as np
             import re as _re
@@ -870,9 +918,23 @@ class FlexCutWindow(customtkinter.CTkToplevel):
             img_cut = Image.fromarray(arr, "RGBA")
             img_print = img_print.convert("RGBA")
             img_final = Image.alpha_composite(img_print, img_cut)
-            return ImageTk.PhotoImage(img_final)
+            result = ImageTk.PhotoImage(img_final)
+
+            # Zapisz w cache (limit 5 wpisów)
+            if len(self._render_cache) >= 5:
+                oldest_key = next(iter(self._render_cache))
+                del self._render_cache[oldest_key]
+            self._render_cache[cache_key] = result
+            return result
         except Exception:
             return None
+
+    # ----- Debounced resize -----
+
+    def _on_canvas_configure(self, event):
+        if self._resize_after_id:
+            self.canvas.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.canvas.after(150, self._draw_current_sheet)
 
     # ----- Zoom (scroll) & Pan (right-click / middle-click drag) -----
 
@@ -1063,6 +1125,7 @@ class FlexCutWindow(customtkinter.CTkToplevel):
 
         # Re-export
         self._on_reexport(self.current_sheet_idx)
+        self._render_cache.clear()
 
         # Odśwież okno FlexCut (nowy PDF na dysku)
         self._update_nav()
@@ -1083,6 +1146,7 @@ class FlexCutWindow(customtkinter.CTkToplevel):
             self._on_reexport(idx)
         except Exception as e:
             self._app_log(f"  [ERR] FlexCut clear: {e}")
+        self._render_cache.clear()
         self._update_nav()
         self._draw_current_sheet()
 
@@ -1124,6 +1188,10 @@ class BleedApp(customtkinter.CTk):
         self._crop_src_img = None           # PIL source image cache
         self._crop_src_path: str | None = None  # cached source path
         self._drag_start: tuple[int, int] | None = None
+
+        # Batched logging
+        self._log_buffer: list[str] = []
+        self._log_flush_scheduled = False
 
         self._build_ui()
         self._setup_dnd()
@@ -1603,10 +1671,10 @@ class BleedApp(customtkinter.CTk):
 
         self._crop_shape_var = customtkinter.StringVar(value="Kwadrat")
         self._crop_shape_btn = customtkinter.CTkSegmentedButton(
-            crop_row, values=["Kwadrat", "Okrag"],
+            crop_row, values=["Kwadrat", "Zaokraglony", "Okrag"],
             variable=self._crop_shape_var,
             command=self._on_crop_shape_changed,
-            width=140, font=customtkinter.CTkFont(size=11),
+            width=220, font=customtkinter.CTkFont(size=11),
         )
         # ukryty domyślnie (pack gdy crop włączony)
 
@@ -1791,7 +1859,7 @@ class BleedApp(customtkinter.CTk):
             return
 
         src_w, src_h = self._crop_src_img.size
-        crop_shape = "circle" if self._crop_shape_var.get() == "Okrag" else "square"
+        crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded"}.get(self._crop_shape_var.get(), "square")
 
         # Crop area jest kwadratowy — dopasuj do mniejszego wymiaru canvas
         canvas_crop = int(min(cw, ch) * 0.85)
@@ -1844,6 +1912,11 @@ class BleedApp(customtkinter.CTk):
                 crop_x0, crop_y0, crop_x1, crop_y1,
                 outline=ACCENT, width=2,
             )
+        elif crop_shape == "rounded":
+            # Zaokrąglony kwadrat — promień = 15% boku
+            r = int(canvas_crop * 0.15)
+            _draw_rounded_rect(canvas, crop_x0, crop_y0, crop_x1, crop_y1, r,
+                               outline=ACCENT, width=2)
         else:
             canvas.create_rectangle(
                 crop_x0, crop_y0, crop_x1, crop_y1,
@@ -2102,7 +2175,7 @@ class BleedApp(customtkinter.CTk):
 
         # Crop
         crop_enabled = self._crop_var.get() and target_height_mm is not None
-        crop_shape = "circle" if self._crop_shape_var.get() == "Okrag" else "square"
+        crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded"}.get(self._crop_shape_var.get(), "square")
         crop_offsets = dict(self._crop_offsets) if crop_enabled else {}
 
         self._processing = True
@@ -2661,14 +2734,25 @@ class BleedApp(customtkinter.CTk):
     # =========================================================================
 
     def _log(self, msg: str):
-        def _append():
-            self._log_text.configure(state="normal")
-            self._log_text.insert("end", msg + "\n")
-            self._log_text.see("end")
-            self._log_text.configure(state="disabled")
-        self.after(0, _append)
+        self._log_buffer.append(msg)
+        if not self._log_flush_scheduled:
+            self._log_flush_scheduled = True
+            self.after(50, self._flush_log)
+
+    def _flush_log(self):
+        self._log_flush_scheduled = False
+        if not self._log_buffer:
+            return
+        text = "\n".join(self._log_buffer) + "\n"
+        self._log_buffer.clear()
+        self._log_text.configure(state="normal")
+        self._log_text.insert("end", text)
+        self._log_text.see("end")
+        self._log_text.configure(state="disabled")
 
     def _clear_log(self):
+        self._log_buffer.clear()
+        self._log_flush_scheduled = False
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
         self._log_text.configure(state="disabled")

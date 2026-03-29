@@ -17,6 +17,7 @@ Zwraca: Sticker z wypełnionymi polami: source_path, width_mm, height_mm,
 from __future__ import annotations
 
 import logging
+import os
 import numpy as np
 import fitz  # PyMuPDF
 
@@ -1058,6 +1059,9 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
 
     UWAGA: pdf_doc pozostaje otwarty! Zamknięcie po stronie konsumenta.
     """
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"Plik nie istnieje: {pdf_path}")
+
     _tmp_pdf = None
     original_path = pdf_path
     svg_contour = None  # kontur wyciągnięty z SVG clipPath
@@ -1240,8 +1244,13 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                         f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
                     )
                 else:
+                    # Adaptacyjny gap_threshold — skalowany do rozmiaru rysunku
+                    # Dla małych rysunków (< 50pt) mniejszy próg; dla dużych standardowy
+                    _draw_diag = max(outermost_drawing['rect'].width,
+                                     outermost_drawing['rect'].height)
+                    _gap_thr = max(0.5, min(2.0, _draw_diag * 0.01))
                     cut_segments = extract_path_segments(
-                        outermost_drawing['items']
+                        outermost_drawing['items'], gap_threshold=_gap_thr
                     )
 
                 w_mm = page_w_pt * PT_TO_MM
