@@ -57,6 +57,7 @@ PLOTTER_SUMMA_S3 = {
     "min_marks": 4,
     "mark_offset_mm": 10,
     "mark_zone_mm": 15,   # offset(10) + size(5) — pełna strefa wykluczenia
+    "leading_offset_mm": 20,  # dodatkowe odsunięcie grafiki od dolnych markerów (Y)
 }
 
 PLOTTER_JWEI = {

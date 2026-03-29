@@ -2802,6 +2802,14 @@ class BleedApp(customtkinter.CTk):
             mark_zone_mm=mark_zone,
         )
 
+        # 2.5. Leading offset — odsunięcie grafiki od dolnych markerów
+        leading_offset = plotter_cfg.get("leading_offset_mm", 0)
+        if leading_offset > 0:
+            for sheet in job.sheets:
+                for p in sheet.placements:
+                    p.y_mm += leading_offset
+                sheet.height_mm += leading_offset
+
         # 3. Panelize + Marks + Export
         ns = len(job.sheets)
         sheet_pdf_paths: list[tuple[str, str]] = []
