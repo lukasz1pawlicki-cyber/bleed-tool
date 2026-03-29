@@ -35,7 +35,7 @@ except ImportError:
     HAS_DND = False
 
 from config import (
-    DEFAULT_BLEED_MM, DEFAULT_GAP_MM, SHEET_SIZES,
+    DEFAULT_BLEED_MM, DEFAULT_GAP_MM, DEFAULT_MARK_ZONE_MM, SHEET_SIZES,
     SHEET_PRESETS, ROLL_PRESETS, DEFAULT_ROLL_MAX_LENGTH_MM,
     PLOTTERS, FLEXCUT_GAP_MM,
 )
@@ -1169,8 +1169,8 @@ class BleedApp(customtkinter.CTk):
                 pass
 
         self.title("Bleed Tool")
-        self.geometry("1000x700")
-        self.minsize(800, 550)
+        self.geometry("1280x780")
+        self.minsize(900, 600)
 
         # Stan — oddzielne listy plików per zakładka
         self._bleed_files: list[str] = []
@@ -1247,25 +1247,28 @@ class BleedApp(customtkinter.CTk):
             corner_radius=14,
         ).pack(padx=14, pady=(0, 12))
 
-        # --- Main area ---
+        # --- Main area z PanedWindow (rozciągalny podział content / preview) ---
         main_area = customtkinter.CTkFrame(self, fg_color=MAIN_BG)
         main_area.pack(side="left", fill="both", expand=True)
 
-        # Podzielone: content (lewy) + preview (prawy)
-        self._content_outer = customtkinter.CTkFrame(main_area, fg_color="transparent")
-        self._content_outer.pack(side="left", fill="both", expand=True)
+        is_dark = customtkinter.get_appearance_mode() == "Dark"
+        sash_bg = "#2c2e33" if is_dark else "#ced4da"
+        self._paned = tk.PanedWindow(
+            main_area, orient="horizontal", sashwidth=5, sashrelief="flat",
+            bg=sash_bg, borderwidth=0,
+        )
+        self._paned.pack(fill="both", expand=True)
 
-        # Content — scrollable area na zakładki
+        # Lewy panel: content (ustawienia, pliki)
+        self._content_outer = customtkinter.CTkFrame(self._paned, fg_color="transparent")
         self._content = customtkinter.CTkScrollableFrame(
             self._content_outer, fg_color="transparent",
         )
         self._content.pack(fill="both", expand=True, padx=16, pady=10)
+        self._paned.add(self._content_outer, minsize=300, stretch="always")
 
-        # Preview (prawy panel) — SheetPreviewPanel
-        self._preview_wrapper = customtkinter.CTkFrame(main_area, fg_color=MAIN_BG, width=380)
-        self._preview_wrapper.pack(side="right", fill="both", padx=(0, 4), pady=4)
-        self._preview_wrapper.pack_propagate(False)
-
+        # Prawy panel: preview + log
+        self._preview_wrapper = customtkinter.CTkFrame(self._paned, fg_color=MAIN_BG)
         self.preview_panel = SheetPreviewPanel(self._preview_wrapper)
         self.preview_panel.frame.pack(fill="both", expand=True, padx=(0, 4), pady=4)
 
@@ -1276,6 +1279,7 @@ class BleedApp(customtkinter.CTk):
             state="disabled",
         )
         self._log_text.pack(fill="x", padx=8, pady=(0, 8))
+        self._paned.add(self._preview_wrapper, minsize=250, width=420, stretch="always")
 
     # =========================================================================
     # SIDEBAR NAVIGATION
@@ -1309,6 +1313,16 @@ class BleedApp(customtkinter.CTk):
         self._nav_buttons[key]["cmd"]()
 
     def _clear_content(self):
+        # Ukryj crop preview (jeśli aktywny) i przywróć normalny canvas
+        if hasattr(self, '_crop_container') and self._crop_container is not None:
+            try:
+                self._crop_container.pack_forget()
+            except Exception:
+                pass
+        try:
+            self.preview_panel.canvas.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        except Exception:
+            pass
         for w in self._content.winfo_children():
             w.destroy()
 
@@ -1769,17 +1783,20 @@ class BleedApp(customtkinter.CTk):
             nav = customtkinter.CTkFrame(self._crop_container, fg_color="transparent")
             nav.pack(fill="x", pady=(0, 5))
             self._crop_prev_btn = customtkinter.CTkButton(
-                nav, text="<", width=30, command=self._crop_prev_file,
+                nav, text="‹", width=30, command=self._crop_prev_file,
             )
-            self._crop_prev_btn.pack(side="left", padx=(0, 5))
-            self._crop_file_label = customtkinter.CTkLabel(
-                nav, text="", font=customtkinter.CTkFont(size=12),
-            )
-            self._crop_file_label.pack(side="left", expand=True)
+            self._crop_prev_btn.pack(side="left", padx=(0, 4))
+            # Prawy przycisk PRZED label — pack(side="right") rezerwuje miejsce
             self._crop_next_btn = customtkinter.CTkButton(
-                nav, text=">", width=30, command=self._crop_next_file,
+                nav, text="›", width=30, command=self._crop_next_file,
             )
-            self._crop_next_btn.pack(side="right", padx=(5, 0))
+            self._crop_next_btn.pack(side="right", padx=(4, 0))
+            # Label wypełnia resztę — długa nazwa obcinana (anchor="center")
+            self._crop_file_label = customtkinter.CTkLabel(
+                nav, text="", font=customtkinter.CTkFont(size=11),
+                anchor="center",
+            )
+            self._crop_file_label.pack(side="left", fill="x", expand=True)
             self._crop_canvas = tk.Canvas(
                 self._crop_container, bg="#e0e0e0", highlightthickness=0, cursor="fleur",
             )
@@ -2587,6 +2604,10 @@ class BleedApp(customtkinter.CTk):
         grouping_mode = grouping_map.get(params.get("grouping_mode", "Grupuj"), "group")
         self._log(f"\nNestowanie...")
 
+        # mark_zone z konfiguracji plotera (JWEI=5mm, Summa=15mm)
+        plotter_cfg = PLOTTERS.get(plotter, {})
+        mark_zone = plotter_cfg.get("mark_zone_mm", DEFAULT_MARK_ZONE_MM)
+
         job = Job(stickers=sticker_copies_list, plotter=plotter)
         job = nest_job(
             job,
@@ -2596,6 +2617,7 @@ class BleedApp(customtkinter.CTk):
             max_sheet_length_mm=params.get("max_sheet_length"),
             grouping_mode=grouping_mode,
             bleed_mm=bleed,
+            mark_zone_mm=mark_zone,
         )
 
         # 3. Panelize + Marks + Export

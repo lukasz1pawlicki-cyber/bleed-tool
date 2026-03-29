@@ -191,7 +191,7 @@ def nest_job(
     max_sheet_length_mm: float | None = None,
     grouping_mode: str = "group",
     bleed_mm: float = 0.0,
-    _center_mode: str = "x",
+    _center_mode: str = "xy",
 ) -> Job:
     """Rozmieszcza naklejki na arkuszach algorytmem shelf (row-by-row).
 
@@ -734,10 +734,10 @@ def nest_job(
     # -------------------------------------------------------------------
     if _center_mode == "xy":
         for s in job.sheets:
-            _center_placements(s, center_y=True)
+            _center_placements(s, center_y=True, bleed2=bleed2)
     elif _center_mode == "x":
         for s in job.sheets:
-            _center_placements(s, center_y=False)
+            _center_placements(s, center_y=False, bleed2=bleed2)
     # _center_mode == "none" → bez centrowania
 
     log.info(
@@ -946,31 +946,31 @@ def _rebuild_shelves(
     return shelves
 
 
-def _center_placements(sheet: Sheet, center_y: bool = False):
+def _center_placements(sheet: Sheet, center_y: bool = False, bleed2: float = 0.0):
     """Centruje zawartosc (placements) na arkuszu.
 
     Zawsze centruje w poziomie (X).
     Opcjonalnie centruje w pionie (Y) — center_y=True.
-
-    Na duzym arkuszu: center_y=False (naklejki od dolu do gory).
-    W sub-arkuszach FlexCut: center_y=True (wycentrowane w obu osiach).
+    bleed2 = 2 * bleed_mm — do obliczenia pełnego footprintu.
     """
     if not sheet.placements:
         return
 
-    def _pw(p):
+    def _fw(p):
+        """Pełna szerokość footprintu (content + bleed) z rotacją."""
         if abs(p.rotation_deg) in (90.0, 270.0):
-            return p.sticker.height_mm
-        return p.sticker.width_mm
+            return p.sticker.height_mm + bleed2
+        return p.sticker.width_mm + bleed2
 
-    def _ph(p):
+    def _fh(p):
+        """Pełna wysokość footprintu (content + bleed) z rotacją."""
         if abs(p.rotation_deg) in (90.0, 270.0):
-            return p.sticker.width_mm
-        return p.sticker.height_mm
+            return p.sticker.width_mm + bleed2
+        return p.sticker.height_mm + bleed2
 
-    # Bounding box zawartosci
+    # Bounding box footprintów (z bleedem)
     content_left = min(p.x_mm for p in sheet.placements)
-    content_right = max(p.x_mm + _pw(p) for p in sheet.placements)
+    content_right = max(p.x_mm + _fw(p) for p in sheet.placements)
 
     # Srodek printable area
     pa_x0, pa_y0, pa_x1, pa_y1 = sheet.printable_rect_mm
@@ -981,7 +981,7 @@ def _center_placements(sheet: Sheet, center_y: bool = False):
     dy = 0.0
     if center_y:
         content_bottom = min(p.y_mm for p in sheet.placements)
-        content_top = max(p.y_mm + _ph(p) for p in sheet.placements)
+        content_top = max(p.y_mm + _fh(p) for p in sheet.placements)
         pa_cy = (pa_y0 + pa_y1) / 2
         cc_y = (content_bottom + content_top) / 2
         dy = pa_cy - cc_y

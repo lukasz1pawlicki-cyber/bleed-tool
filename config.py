@@ -13,7 +13,7 @@ DEFAULT_GAP_MM = 5.0
 DEFAULT_DPI = 300
 DEFAULT_CROP_DPI = 300
 DEFAULT_MARGINS_MM = (5, 5, 5, 5)  # top, right, bottom, left
-DEFAULT_MARK_ZONE_MM = 25          # mark_offset(10) + mark_size(5) + gap(10)
+DEFAULT_MARK_ZONE_MM = 15          # mark_offset(12) + mark_size(3) = 15mm (JWEI/Summa)
 
 # =============================================================================
 # ROZMIARY ARKUSZY (mm)
@@ -56,6 +56,7 @@ PLOTTER_SUMMA_S3 = {
     "mark_size_mm": (5, 5),
     "min_marks": 4,
     "mark_offset_mm": 10,
+    "mark_zone_mm": 15,   # offset(10) + size(5) — pełna strefa wykluczenia
 }
 
 PLOTTER_JWEI = {
@@ -63,6 +64,7 @@ PLOTTER_JWEI = {
     "mark_size_mm": (3, 3),
     "min_marks": 4,
     "mark_offset_mm": 12,
+    "mark_zone_mm": 5,    # markery tylko w rogach — naklejki mogą sięgać pod nie
 }
 
 PLOTTERS = {
