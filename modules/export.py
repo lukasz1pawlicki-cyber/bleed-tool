@@ -2154,16 +2154,17 @@ def export_sheet_cut(
             doc_out, out_page, SPOT_COLOR_FLEXCUT, SPOT_CMYK_FLEXCUT
         )
 
-    # Pozycje FlexCut (do usuwania CutContour na liniach FlexCut)
-    # Przy flex_gap=0 FlexCut pokrywa się z CutContour — nie filtrujemy
-    # (CutContour = pełne cięcie, FlexCut = perforacja — oba współistnieją)
-    fc_gap = getattr(sheet, '_flexcut_gap_mm', None)
-    if fc_gap is not None and fc_gap == 0.0:
-        flexcut_h = []
-        flexcut_v = []
-    else:
-        flexcut_h = getattr(sheet, '_flexcut_h_lines_mm', [])
-        flexcut_v = getattr(sheet, '_flexcut_v_lines_mm', [])
+    # Pozycje FlexCut linii — CutContour na tych pozycjach jest usuwany
+    # (FlexCut ma priorytet: perforacja zamiast pełnego cięcia)
+    flexcut_h = []
+    flexcut_v = []
+    for pl in sheet.panel_lines:
+        if pl.bridge_length_mm <= 0:
+            continue
+        if pl.axis == "horizontal":
+            flexcut_h.append(pl.position_mm)
+        elif pl.axis == "vertical":
+            flexcut_v.append(pl.position_mm)
 
     # Deduplikacja CutContour: filtruje FlexCut + usuwa zduplikowane segmenty
     # (gdy gap<0, sąsiednie naklejki mają wspólne krawędzie)
