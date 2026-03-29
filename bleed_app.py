@@ -2790,12 +2790,23 @@ class BleedApp(customtkinter.CTk):
         plotter_cfg = PLOTTERS.get(plotter, {})
         mark_zone = plotter_cfg.get("mark_zone_mm", DEFAULT_MARK_ZONE_MM)
 
+        # leading_edge_mm: min. odsunięcie grafiki od przedniego pasera (dolna krawędź)
+        # Grafika zaczyna od: bottom_margin + mark_zone
+        # Jeśli leading_edge > bottom + mark_zone → zwiększ bottom
+        leading_edge = plotter_cfg.get("leading_edge_mm", 0)
+        top, right, bottom, left = DEFAULT_MARGINS_MM
+        needed_bottom = leading_edge - mark_zone
+        if needed_bottom > bottom:
+            bottom = needed_bottom
+        margins = (top, right, bottom, left)
+
         job = Job(stickers=sticker_copies_list, plotter=plotter)
         job = nest_job(
             job,
             sheet_width_mm=params["sheet_w"],
             sheet_height_mm=params["sheet_h"],
             gap_mm=gap,
+            margins_mm=margins,
             max_sheet_length_mm=params.get("max_sheet_length"),
             grouping_mode=grouping_mode,
             bleed_mm=bleed,

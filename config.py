@@ -57,6 +57,7 @@ PLOTTER_SUMMA_S3 = {
     "min_marks": 4,
     "mark_offset_mm": 10,
     "mark_zone_mm": 15,   # offset(10) + size(5) — pełna strefa wykluczenia
+    "leading_edge_mm": 20, # odsunięcie od przedniego pasera (dolna krawędź roli)
 }
 
 PLOTTER_JWEI = {
@@ -65,6 +66,7 @@ PLOTTER_JWEI = {
     "min_marks": 4,
     "mark_offset_mm": 12,
     "mark_zone_mm": 5,    # markery tylko w rogach — naklejki mogą sięgać pod nie
+    "leading_edge_mm": 0,  # JWEI: arkusz, brak odsunięcia
 }
 
 PLOTTERS = {
