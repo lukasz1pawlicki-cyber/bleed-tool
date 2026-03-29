@@ -2831,33 +2831,27 @@ class BleedApp(customtkinter.CTk):
         plotter_cfg = PLOTTERS.get(plotter, {})
         mark_zone = plotter_cfg.get("mark_zone_mm", DEFAULT_MARK_ZONE_MM)
 
-        # side_offset: dodatkowy margines od paserów (lewa, prawa, góra)
-        # Realizowany przez zwiększenie margins w nestingu (bezpieczne — nie rusza bottom)
-        side_offset = plotter_cfg.get("side_offset_mm", 0)
-        top, right, bottom, left = DEFAULT_MARGINS_MM
-        margins = (top + side_offset, right + side_offset, bottom, left + side_offset)
-
         job = Job(stickers=sticker_copies_list, plotter=plotter)
         job = nest_job(
             job,
             sheet_width_mm=params["sheet_w"],
             sheet_height_mm=params["sheet_h"],
             gap_mm=gap,
-            margins_mm=margins,
             max_sheet_length_mm=params.get("max_sheet_length"),
             grouping_mode=grouping_mode,
             bleed_mm=bleed,
             mark_zone_mm=mark_zone,
         )
 
-        # 2.5. Leading offset — odsunięcie grafiki od dolnych markerów (tylko Y bottom)
-        # Realizowane PO nestingu aby nie wpływać na algorytm
+        # 2.5. Offset grafiki od markerów — przesunięcie PO nestingu
         leading_offset = plotter_cfg.get("leading_offset_mm", 0)
-        if leading_offset > 0:
+        side_offset = plotter_cfg.get("side_offset_mm", 0)
+        if leading_offset > 0 or side_offset > 0:
             for sheet in job.sheets:
                 for p in sheet.placements:
                     p.y_mm += leading_offset
-                sheet.height_mm += leading_offset
+                    p.x_mm += side_offset
+                sheet.height_mm += leading_offset + side_offset
 
         # 3. Panelize + Marks + Export
         ns = len(job.sheets)
