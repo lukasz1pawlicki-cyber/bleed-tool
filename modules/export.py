@@ -1895,22 +1895,18 @@ def _build_flexcut_stream(
     sheet_w_mm: float,
     sheet_h_mm: float,
     cs_name: str,
-    bleed_mm: float = 0.0,
 ) -> bytes:
     """Buduje content stream: FlexCut linie jako spot color.
 
     FlexCut to ciągła linia w spot color "FlexCut" — ploter (Summa S3 / FlexiSign)
     sam realizuje perforację na podstawie swoich ustawień. W PDF rysujemy zwykłą linię.
 
-    Pozycje linii FlexCut (panel_lines) są w sheet coords — oś placement'ów
-    (content origin). W PDF rendering CutContour jest przesunięty o +bleed_mm
-    (bo segmenty rysowane z bleed offset w local coords). Żeby FlexCut
-    pokrywał się z krawędziami CutContour, dodajemy bleed_mm do pozycji.
+    Pozycje linii FlexCut (panel_lines) są w sheet coords — ta sama przestrzeń
+    co placement.x_mm/y_mm (footprint origin). CutContour cm translacja też
+    używa p.x_mm — więc FlexCut nie potrzebuje dodatkowego offsetu.
     """
     if not panel_lines:
         return b""
-
-    bleed_pts = bleed_mm * MM_TO_PT
 
     # Deduplikacja linii FlexCut — sub-arkusze mogą mieć wspólne krawędzie.
     # Maszyna nie może ciąć 2× w tym samym miejscu (overlap).
@@ -1941,16 +1937,16 @@ def _build_flexcut_stream(
 
     for line in unique_lines:
         if line.axis == "horizontal":
-            y_pt = (line.position_mm + bleed_mm) * MM_TO_PT
-            x0_pt = (line.start_mm + bleed_mm) * MM_TO_PT
-            x1_pt = (line.end_mm + bleed_mm) * MM_TO_PT
+            y_pt = line.position_mm * MM_TO_PT
+            x0_pt = line.start_mm * MM_TO_PT
+            x1_pt = line.end_mm * MM_TO_PT
             ops.append(f"{x0_pt:.4f} {y_pt:.4f} m")
             ops.append(f"{x1_pt:.4f} {y_pt:.4f} l")
             ops.append("S")
         elif line.axis == "vertical":
-            x_pt = (line.position_mm + bleed_mm) * MM_TO_PT
-            y0_pt = (line.start_mm + bleed_mm) * MM_TO_PT
-            y1_pt = (line.end_mm + bleed_mm) * MM_TO_PT
+            x_pt = line.position_mm * MM_TO_PT
+            y0_pt = line.start_mm * MM_TO_PT
+            y1_pt = line.end_mm * MM_TO_PT
             ops.append(f"{x_pt:.4f} {y0_pt:.4f} m")
             ops.append(f"{x_pt:.4f} {y1_pt:.4f} l")
             ops.append("S")
@@ -2162,7 +2158,6 @@ def export_sheet_cut(
     if cs_flexcut and sheet.panel_lines:
         flexcut_stream = _build_flexcut_stream(
             sheet.panel_lines, sheet.width_mm, sheet.height_mm, cs_flexcut,
-            bleed_mm=bleed_mm,
         )
         if flexcut_stream:
             inject_content_stream(doc_out, out_page, flexcut_stream)
