@@ -48,7 +48,7 @@ def apply_crop(
     """
     if target_size_mm <= 0:
         raise ValueError(f"target_size_mm musi byc > 0, podano {target_size_mm}")
-    if shape not in ("square", "circle", "rounded"):
+    if shape not in ("square", "circle", "rounded", "oval"):
         raise ValueError(f"Nieznany kształt crop: {shape}")
     if not (0.0 <= offset[0] <= 1.0 and 0.0 <= offset[1] <= 1.0):
         offset = (max(0.0, min(1.0, offset[0])), max(0.0, min(1.0, offset[1])))
@@ -60,36 +60,49 @@ def apply_crop(
 
     # Wczytaj obraz źródłowy jako PIL Image
     src_img = _load_source_image(file_path, dpi)
+    src_w, src_h = src_img.size
+
+    # Oval: prostokątny crop zachowujący proporcje oryginału
+    if shape == "oval":
+        aspect = src_h / src_w if src_w > 0 else 1.0
+        crop_w_px = crop_size_px
+        crop_h_px = int(round(crop_size_px * aspect))
+        if crop_h_px < 1:
+            crop_h_px = 1
+    else:
+        crop_w_px = crop_size_px
+        crop_h_px = crop_size_px
 
     # Skaluj aby pokryć crop area (cover) — ZAWSZE resize
     # aby proporcje panowania odpowiadały podglądowi canvas
-    src_w, src_h = src_img.size
-    scale = max(crop_size_px / src_w, crop_size_px / src_h)
+    scale = max(crop_w_px / src_w, crop_h_px / src_h)
 
-    new_w = max(crop_size_px, int(round(src_w * scale)))
-    new_h = max(crop_size_px, int(round(src_h * scale)))
+    new_w = max(crop_w_px, int(round(src_w * scale)))
+    new_h = max(crop_h_px, int(round(src_h * scale)))
     if new_w != src_w or new_h != src_h:
         src_img = src_img.resize((new_w, new_h), Image.LANCZOS)
 
     # Oblicz pozycję crop z offsetu
-    pan_x = max(0, new_w - crop_size_px)
-    pan_y = max(0, new_h - crop_size_px)
+    pan_x = max(0, new_w - crop_w_px)
+    pan_y = max(0, new_h - crop_h_px)
     x0 = int(round(offset[0] * pan_x))
     y0 = int(round(offset[1] * pan_y))
 
     # Clamp
-    x0 = max(0, min(x0, new_w - crop_size_px))
-    y0 = max(0, min(y0, new_h - crop_size_px))
+    x0 = max(0, min(x0, new_w - crop_w_px))
+    y0 = max(0, min(y0, new_h - crop_h_px))
 
     # Crop
-    cropped = src_img.crop((x0, y0, x0 + crop_size_px, y0 + crop_size_px))
+    cropped = src_img.crop((x0, y0, x0 + crop_w_px, y0 + crop_h_px))
     src_img.close()
 
-    # Dla okręgu/zaokrąglonego: dodaj alpha maskę
+    # Dla okręgu/zaokrąglonego/owalu: dodaj alpha maskę
     if shape == "circle":
         cropped = _apply_circle_mask(cropped)
     elif shape == "rounded":
         cropped = _apply_rounded_rect_mask(cropped)
+    elif shape == "oval":
+        cropped = _apply_oval_mask(cropped)
 
     # Zapisz do pliku tymczasowego
     tmp = tempfile.NamedTemporaryFile(
@@ -100,7 +113,7 @@ def apply_crop(
     cropped.close()
 
     log.info(
-        f"Crop: {os.path.basename(file_path)} → {crop_size_px}x{crop_size_px}px "
+        f"Crop: {os.path.basename(file_path)} → {crop_w_px}x{crop_h_px}px "
         f"({shape}, offset=({offset[0]:.2f},{offset[1]:.2f}), {dpi}DPI)"
     )
     return tmp.name
@@ -217,6 +230,22 @@ def _apply_rounded_rect_mask(img: Image.Image) -> Image.Image:
     mask = Image.new("L", (size, size), 0)
     draw = ImageDraw.Draw(mask)
     draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=r, fill=255)
+
+    rgba.putalpha(mask)
+    return rgba
+
+
+def _apply_oval_mask(img: Image.Image) -> Image.Image:
+    """Nakłada owalną (eliptyczną) maskę alpha na prostokątny obraz.
+
+    Owal wypełnia cały prostokąt — elipsa o osiach równych wymiarom obrazu.
+    """
+    w, h = img.size
+    rgba = img.convert("RGBA")
+
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, w - 1, h - 1), fill=255)
 
     rgba.putalpha(mask)
     return rgba

@@ -8,6 +8,8 @@ Przykłady:
   python bleed_cli.py plik.pdf
   python bleed_cli.py input/ -o output/ --bleed 3.0
   python bleed_cli.py plik.svg --bleed 2.0
+  python bleed_cli.py --batch ./input_folder -o ./out --bleed 2
+  python bleed_cli.py --batch ./input_folder --recursive -o ./out
 """
 
 from __future__ import annotations
@@ -26,8 +28,14 @@ from config import DEFAULT_BLEED_MM
 
 log = logging.getLogger("bleed-tool")
 
-_SUPPORTED_EXT = ('.pdf', '.svg', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')
-_GLOB_PATTERNS = ("*.pdf", "*.svg", "*.png", "*.jpg", "*.jpeg", "*.tiff", "*.tif", "*.bmp", "*.webp")
+_SUPPORTED_EXT = (
+    '.pdf', '.svg', '.png', '.jpg', '.jpeg', '.tiff', '.tif',
+    '.bmp', '.webp', '.eps', '.epsf', '.ai',
+)
+_GLOB_PATTERNS = (
+    "*.pdf", "*.svg", "*.png", "*.jpg", "*.jpeg", "*.tiff", "*.tif",
+    "*.bmp", "*.webp", "*.eps", "*.epsf", "*.ai",
+)
 
 
 def find_files(path: str) -> list[str]:
@@ -53,27 +61,50 @@ def find_files(path: str) -> list[str]:
         return []
 
 
-def run_bleed(input_path: str, output_dir: str, bleed_mm: float):
-    """Generuje bleed dla plików w input_path."""
+def find_batch_files(folder: str, recursive: bool = False) -> list[str]:
+    """Znajduje wszystkie obsługiwane pliki w katalogu (batch mode)."""
+    if not os.path.isdir(folder):
+        print(f"[!] Katalog nie istnieje: {folder}")
+        return []
+
+    files: list[str] = []
+    if recursive:
+        for pat in _GLOB_PATTERNS:
+            files.extend(glob.glob(os.path.join(folder, "**", pat), recursive=True))
+    else:
+        for pat in _GLOB_PATTERNS:
+            files.extend(glob.glob(os.path.join(folder, pat)))
+
+    return sorted(set(files))
+
+
+def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
+              file_list: list[str] | None = None):
+    """Generuje bleed dla plików w input_path lub z podanej listy file_list."""
     from modules.contour import detect_contour
     from modules.bleed import generate_bleed
     from modules.export import export_single_sticker
 
-    files = find_files(input_path)
+    files = file_list if file_list is not None else find_files(input_path)
     if not files:
         print("Brak plikow do przetworzenia.")
         return
 
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"[i] Przetwarzam {len(files)} plik(ow), bleed={bleed_mm}mm")
+    total = len(files)
+    print(f"[i] Przetwarzam {total} plik(ow), bleed={bleed_mm}mm")
     print(f"[i] Output: {output_dir}\n")
 
     t0 = time.time()
     ok, err = 0, 0
 
-    for filepath in files:
+    for idx, filepath in enumerate(files, start=1):
         name = os.path.splitext(os.path.basename(filepath))[0]
+        basename = os.path.basename(filepath)
+
+        if total > 1:
+            print(f"Processing file {idx}/{total}: {basename}...")
 
         try:
             stickers = detect_contour(filepath)
@@ -111,7 +142,7 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float):
             err += 1
 
     elapsed = time.time() - t0
-    print(f"\n[OK] Gotowe: {ok} naklejek" + (f", {err} bledow" if err else "") + f" ({elapsed:.1f}s)")
+    print(f"\nDone: {ok} OK, {err} errors in {elapsed:.1f}s")
 
 
 def main():
@@ -119,7 +150,23 @@ def main():
         prog="bleed-tool",
         description="Bleed Tool — Generuje bleed dla naklejek wektorowych (PDF/SVG/raster)",
     )
-    parser.add_argument("input", help="Plik lub katalog z plikami")
+    parser.add_argument(
+        "input",
+        nargs="?",
+        default=None,
+        help="Plik lub katalog z plikami (tryb pojedynczy)",
+    )
+    parser.add_argument(
+        "--batch",
+        metavar="FOLDER",
+        default=None,
+        help="Tryb batch: przetworz wszystkie obslugiwane pliki w katalogu",
+    )
+    parser.add_argument(
+        "--recursive", "-r",
+        action="store_true",
+        help="Szukaj plikow rekurencyjnie w podkatalogach (tylko z --batch)",
+    )
     parser.add_argument(
         "-o", "--output",
         default="output",
@@ -142,7 +189,23 @@ def main():
     level = logging.DEBUG if args.verbose else logging.WARNING
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
-    run_bleed(args.input, args.output, args.bleed)
+    if args.batch:
+        # Tryb batch — przetworz caly katalog
+        files = find_batch_files(args.batch, recursive=args.recursive)
+        if not files:
+            ext_list = ", ".join(_SUPPORTED_EXT)
+            print(f"Brak obslugiwanych plikow ({ext_list}) w: {args.batch}")
+            sys.exit(1)
+        run_bleed(args.batch, args.output, args.bleed, file_list=files)
+    elif args.input:
+        # Tryb pojedynczy — oryginalny (backward compatible)
+        if args.recursive:
+            print("[!] Flaga --recursive dziala tylko z --batch")
+            sys.exit(1)
+        run_bleed(args.input, args.output, args.bleed)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

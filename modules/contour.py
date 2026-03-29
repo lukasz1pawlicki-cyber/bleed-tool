@@ -1073,7 +1073,13 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
         sticker = _detect_raster(pdf_path)
         return [sticker]
 
-    if pdf_path.lower().endswith('.svg'):
+    if pdf_path.lower().endswith(('.eps', '.epsf')):
+        from modules.ghostscript_bridge import eps_to_pdf
+        log.info(f"Plik EPS — konwersja do PDF przez Ghostscript")
+        _tmp_pdf = eps_to_pdf(pdf_path)
+        pdf_path = _tmp_pdf
+
+    elif pdf_path.lower().endswith('.svg'):
         from modules.svg_convert import (
             svg_to_pdf, parse_size_from_filename, extract_svg_contour,
         )
@@ -1099,7 +1105,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
             log.info(f"SVG contour: {len(svg_contour)} segmentów z clipPath")
 
     elif not pdf_path.lower().endswith('.pdf'):
-        raise ValueError(f"Nieobslugiwany format pliku. Wymagany PDF, SVG lub obraz rastrowy: {pdf_path}")
+        raise ValueError(f"Nieobslugiwany format pliku. Wymagany PDF, EPS, SVG lub obraz rastrowy: {pdf_path}")
 
     doc = fitz.open(pdf_path)
 

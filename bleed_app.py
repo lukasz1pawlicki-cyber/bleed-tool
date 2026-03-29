@@ -73,7 +73,7 @@ _PREVIEW_FLEXCUT = "#00e676"
 _PREVIEW_MARK = "#000000"
 
 # Obsługiwane formaty
-_SUPPORTED_EXT = ('.pdf', '.svg', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')
+_SUPPORTED_EXT = ('.pdf', '.svg', '.eps', '.epsf', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')
 
 
 def _draw_rounded_rect(canvas, x0, y0, x1, y1, r, **kw):
@@ -1350,6 +1350,11 @@ class BleedApp(customtkinter.CTk):
             command=self._on_run,
         )
         self._run_btn.pack(side="left")
+        self._progress_bar = customtkinter.CTkProgressBar(
+            bar, width=150, height=8, progress_color=ACCENT,
+        )
+        self._progress_bar.set(0)
+        # Hidden by default — shown during processing
         self._status_label = customtkinter.CTkLabel(
             bar, text="", text_color=TEXT_SECONDARY,
         )
@@ -1362,15 +1367,17 @@ class BleedApp(customtkinter.CTk):
     def _show_nest_tab(self):
         self._clear_content()
         parent = self._content
-        LW = 80  # label width
+        LW = 70   # label width
+        FW = 160  # field/control width (jednolita szerokosc dla wszystkich pól)
+        _font = customtkinter.CTkFont(size=11)
+        _font_b = customtkinter.CTkFont(size=11, weight="bold")
 
         # Header
         hdr = customtkinter.CTkFrame(parent, fg_color="transparent")
-        hdr.pack(fill="x", pady=(0, 10))
+        hdr.pack(fill="x", pady=(0, 8))
         customtkinter.CTkLabel(
             hdr, text="Nest",
-            font=customtkinter.CTkFont(size=18, weight="bold"),
-            text_color=TEXT,
+            font=customtkinter.CTkFont(size=18, weight="bold"), text_color=TEXT,
         ).pack(side="left")
         customtkinter.CTkLabel(
             hdr, text="  Rozmieszczanie naklejek na arkuszu",
@@ -1382,32 +1389,28 @@ class BleedApp(customtkinter.CTk):
 
         # === Karta: Arkusz ===
         sheet_card = customtkinter.CTkFrame(parent, fg_color=CARD_BG, corner_radius=10)
-        sheet_card.pack(fill="x", pady=(0, 8))
-        customtkinter.CTkLabel(
-            sheet_card, text="Arkusz",
-            font=customtkinter.CTkFont(size=11, weight="bold"), text_color=TEXT,
-        ).pack(anchor="w", padx=14, pady=(10, 4))
+        sheet_card.pack(fill="x", pady=(0, 6))
         sb = customtkinter.CTkFrame(sheet_card, fg_color="transparent")
-        sb.pack(fill="x", padx=14, pady=(0, 10))
+        sb.pack(fill="x", padx=14, pady=(10, 10))
 
         # Tryb (Arkusze / Rola)
         r = customtkinter.CTkFrame(sb, fg_color="transparent")
         r.pack(fill="x", pady=2)
         customtkinter.CTkLabel(r, text="Tryb", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left")
         self._nest_mode_var = customtkinter.StringVar(value="Arkusze")
         customtkinter.CTkSegmentedButton(
             r, values=["Arkusze", "Rola"],
             variable=self._nest_mode_var,
             command=self._on_nest_mode_change,
-            font=customtkinter.CTkFont(size=11), height=28, width=150,
+            font=_font, height=28, width=FW,
         ).pack(side="left")
 
         # Format — kontener na dwa tryby (sheet / roll)
         r = customtkinter.CTkFrame(sb, fg_color="transparent")
         r.pack(fill="x", pady=2)
         customtkinter.CTkLabel(r, text="Format", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left")
         self._nest_format_container = customtkinter.CTkFrame(r, fg_color="transparent")
         self._nest_format_container.pack(side="left", fill="x", expand=True)
 
@@ -1418,7 +1421,7 @@ class BleedApp(customtkinter.CTk):
         self._sheet_var = customtkinter.StringVar(value="SRA3")
         customtkinter.CTkComboBox(
             self._nest_sheet_frame, variable=self._sheet_var,
-            values=sheet_names, width=110,
+            values=sheet_names, width=FW,
         ).pack(side="left")
 
         # -- Roll frame (szerokość rolki + max długość)
@@ -1428,12 +1431,12 @@ class BleedApp(customtkinter.CTk):
         customtkinter.CTkComboBox(
             self._nest_roll_frame, variable=self._roll_width_var,
             values=roll_values, width=85,
-        ).pack(side="left", padx=(0, 8))
-        customtkinter.CTkLabel(self._nest_roll_frame, text="Max dl.",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 6))
+        customtkinter.CTkLabel(self._nest_roll_frame, text="Max",
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left", padx=(0, 3))
         self._roll_max_len_var = customtkinter.StringVar(value=str(DEFAULT_ROLL_MAX_LENGTH_MM))
         customtkinter.CTkEntry(
-            self._nest_roll_frame, textvariable=self._roll_max_len_var, width=65,
+            self._nest_roll_frame, textvariable=self._roll_max_len_var, width=60,
         ).pack(side="left")
 
         # Auto-ploter: SRA3/SRA3+ → jwei
@@ -1446,59 +1449,53 @@ class BleedApp(customtkinter.CTk):
         r = customtkinter.CTkFrame(sb, fg_color="transparent")
         r.pack(fill="x", pady=2)
         customtkinter.CTkLabel(r, text="Ploter", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left")
         self._plotter_var = customtkinter.StringVar(value="jwei")
         customtkinter.CTkOptionMenu(
             r, variable=self._plotter_var,
-            values=list(PLOTTERS.keys()), width=130,
+            values=list(PLOTTERS.keys()), width=FW,
         ).pack(side="left")
-
-        # Kopie
-        r = customtkinter.CTkFrame(sb, fg_color="transparent")
-        r.pack(fill="x", pady=2)
-        customtkinter.CTkLabel(r, text="Kopie", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
-        self._copies_var = customtkinter.StringVar(value="1")
-        customtkinter.CTkEntry(r, textvariable=self._copies_var, width=60).pack(side="left")
 
         # === Karta: Parametry ===
         params_card = customtkinter.CTkFrame(parent, fg_color=CARD_BG, corner_radius=10)
-        params_card.pack(fill="x", pady=(0, 8))
-        customtkinter.CTkLabel(
-            params_card, text="Parametry",
-            font=customtkinter.CTkFont(size=11, weight="bold"), text_color=TEXT,
-        ).pack(anchor="w", padx=14, pady=(10, 4))
+        params_card.pack(fill="x", pady=(0, 6))
         pb = customtkinter.CTkFrame(params_card, fg_color="transparent")
-        pb.pack(fill="x", padx=14, pady=(0, 10))
+        pb.pack(fill="x", padx=14, pady=(10, 10))
 
-        # Gap
+        # Kopie + Gap w jednym wierszu
         r = customtkinter.CTkFrame(pb, fg_color="transparent")
         r.pack(fill="x", pady=2)
-        customtkinter.CTkLabel(r, text="Gap (mm)", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
+        customtkinter.CTkLabel(r, text="Kopie", width=LW, anchor="w",
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left")
+        self._copies_var = customtkinter.StringVar(value="1")
+        customtkinter.CTkEntry(r, textvariable=self._copies_var, width=55).pack(side="left")
+        customtkinter.CTkLabel(r, text="Gap", anchor="w",
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left", padx=(16, 4))
         self._gap_var = customtkinter.StringVar(value=str(DEFAULT_GAP_MM))
-        customtkinter.CTkEntry(r, textvariable=self._gap_var, width=60).pack(side="left")
+        customtkinter.CTkEntry(r, textvariable=self._gap_var, width=55).pack(side="left")
+        customtkinter.CTkLabel(r, text="mm", font=_font,
+            text_color=TEXT_SECONDARY).pack(side="left", padx=(3, 0))
 
         # Wzory (grupowanie)
         r = customtkinter.CTkFrame(pb, fg_color="transparent")
         r.pack(fill="x", pady=2)
         customtkinter.CTkLabel(r, text="Wzory", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left")
         self._grouping_var = customtkinter.StringVar(value="Grupuj")
         customtkinter.CTkSegmentedButton(
             r, values=["Grupuj", "Osobne", "Mieszaj"],
             variable=self._grouping_var,
-            font=customtkinter.CTkFont(size=11), height=28,
+            font=_font, height=28, width=FW,
         ).pack(side="left")
 
-        # FlexCut — osobne okno
-        fc_row = customtkinter.CTkFrame(pb, fg_color="transparent")
-        fc_row.pack(fill="x", pady=(4, 2))
-        customtkinter.CTkLabel(fc_row, text="FlexCut", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
+        # FlexCut
+        r = customtkinter.CTkFrame(pb, fg_color="transparent")
+        r.pack(fill="x", pady=2)
+        customtkinter.CTkLabel(r, text="FlexCut", width=LW, anchor="w",
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left")
         customtkinter.CTkButton(
-            fc_row, text="FlexCut", height=26, width=130,
-            font=customtkinter.CTkFont(size=11),
+            r, text="FlexCut...", height=28, width=FW,
+            font=_font,
             fg_color=("gray90", "gray30"), hover_color=("gray82", "gray38"),
             text_color=TEXT, corner_radius=6,
             command=self._open_flexcut_window,
@@ -1508,7 +1505,7 @@ class BleedApp(customtkinter.CTk):
         r = customtkinter.CTkFrame(pb, fg_color="transparent")
         r.pack(fill="x", pady=(4, 0))
         customtkinter.CTkLabel(r, text="Output", width=LW, anchor="w",
-            font=customtkinter.CTkFont(size=11), text_color=TEXT_SECONDARY).pack(side="left")
+            font=_font, text_color=TEXT_SECONDARY).pack(side="left")
         self._output_var = customtkinter.StringVar(value=self._output_dir)
         customtkinter.CTkEntry(
             r, textvariable=self._output_var,
@@ -1528,6 +1525,11 @@ class BleedApp(customtkinter.CTk):
             command=self._on_run_nest,
         )
         self._nest_btn.pack(side="left")
+        self._nest_progress_bar = customtkinter.CTkProgressBar(
+            bar, width=150, height=8, progress_color=ACCENT,
+        )
+        self._nest_progress_bar.set(0)
+        # Hidden by default — shown during processing
         self._status_label = customtkinter.CTkLabel(
             bar, text="", text_color=TEXT_SECONDARY,
         )
@@ -1671,10 +1673,10 @@ class BleedApp(customtkinter.CTk):
 
         self._crop_shape_var = customtkinter.StringVar(value="Kwadrat")
         self._crop_shape_btn = customtkinter.CTkSegmentedButton(
-            crop_row, values=["Kwadrat", "Zaokraglony", "Okrag"],
+            crop_row, values=["Kwadrat", "Zaokraglony", "Okrag", "Owal"],
             variable=self._crop_shape_var,
             command=self._on_crop_shape_changed,
-            width=220, font=customtkinter.CTkFont(size=11),
+            width=290, font=customtkinter.CTkFont(size=11),
         )
         # ukryty domyślnie (pack gdy crop włączony)
 
@@ -1859,7 +1861,7 @@ class BleedApp(customtkinter.CTk):
             return
 
         src_w, src_h = self._crop_src_img.size
-        crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded"}.get(self._crop_shape_var.get(), "square")
+        crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded", "Owal": "oval"}.get(self._crop_shape_var.get(), "square")
 
         # Crop area jest kwadratowy — dopasuj do mniejszego wymiaru canvas
         canvas_crop = int(min(cw, ch) * 0.85)
@@ -1907,7 +1909,7 @@ class BleedApp(customtkinter.CTk):
         canvas.create_rectangle(crop_x1, crop_y0, cw, crop_y1, fill="#888888", stipple="gray50", outline="")
 
         # Ramka crop
-        if crop_shape == "circle":
+        if crop_shape == "circle" or crop_shape == "oval":
             canvas.create_oval(
                 crop_x0, crop_y0, crop_x1, crop_y1,
                 outline=ACCENT, width=2,
@@ -2175,11 +2177,14 @@ class BleedApp(customtkinter.CTk):
 
         # Crop
         crop_enabled = self._crop_var.get() and target_height_mm is not None
-        crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded"}.get(self._crop_shape_var.get(), "square")
+        crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded", "Owal": "oval"}.get(self._crop_shape_var.get(), "square")
         crop_offsets = dict(self._crop_offsets) if crop_enabled else {}
 
         self._processing = True
         self._run_btn.configure(state="disabled", text="Przetwarzam...")
+        if hasattr(self, '_progress_bar'):
+            self._progress_bar.set(0)
+            self._progress_bar.pack(side="left", padx=(8, 0))
         self._clear_log()
         self._clear_preview()
         self._log(f"Start: {len(self._files)} plik(ow), bleed={bleed_mm}mm")
@@ -2219,7 +2224,12 @@ class BleedApp(customtkinter.CTk):
         ok, err = 0, 0
         output_paths = []
 
-        for filepath in files:
+        total = len(files)
+        for file_idx, filepath in enumerate(files):
+            # Progress update (thread-safe)
+            self.after(0, lambda v=file_idx/total, idx=file_idx, tot=total:
+                       (self._progress_bar.set(v) if hasattr(self, '_progress_bar') else None,
+                        self._status_label.configure(text=f"Plik {idx+1}/{tot}...")))
             name = os.path.splitext(os.path.basename(filepath))[0]
             actual_path = filepath
 
@@ -2374,6 +2384,9 @@ class BleedApp(customtkinter.CTk):
 
         self._processing = True
         self._nest_btn.configure(state="disabled", text="Rozmieszczam...")
+        if hasattr(self, '_nest_progress_bar'):
+            self._nest_progress_bar.set(0)
+            self._nest_progress_bar.pack(side="left", padx=(8, 0))
         self._clear_log()
         self._clear_preview()
 
@@ -2421,7 +2434,12 @@ class BleedApp(customtkinter.CTk):
         open_docs = []
         input_files = params["input_files"]
 
+        total_files = len(input_files)
         for i, pdf in enumerate(input_files):
+            # Progress update (thread-safe)
+            self.after(0, lambda v=i/total_files, idx=i, tot=total_files:
+                       (self._nest_progress_bar.set(v) if hasattr(self, '_nest_progress_bar') else None,
+                        self._status_label.configure(text=f"Plik {idx+1}/{tot}...")))
             name = os.path.basename(pdf)
             file_copies = file_copies_dict.get(pdf, 1)
             copies = copies_override if copies_override > 1 else file_copies
@@ -2621,6 +2639,9 @@ class BleedApp(customtkinter.CTk):
 
     def _on_nest_done(self, output_paths: list[str]):
         self._processing = False
+        if hasattr(self, '_nest_progress_bar'):
+            self._nest_progress_bar.set(1.0)
+            self._nest_progress_bar.pack_forget()
         if hasattr(self, '_nest_btn'):
             self._nest_btn.configure(state="normal", text="Generuj arkusze")
         self._status_label.configure(
@@ -2693,6 +2714,9 @@ class BleedApp(customtkinter.CTk):
 
     def _on_worker_done(self, output_paths: list[str]):
         self._processing = False
+        if hasattr(self, '_progress_bar'):
+            self._progress_bar.set(1.0)
+            self._progress_bar.pack_forget()
         if hasattr(self, '_run_btn'):
             self._run_btn.configure(state="normal", text="Generuj bleed")
         self._status_label.configure(
