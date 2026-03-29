@@ -1574,9 +1574,9 @@ class BleedApp(customtkinter.CTk):
         self._drop_frame.pack_propagate(False)
 
         if HAS_DND:
-            drop_text = "Przeciagnij pliki PDF / SVG / PNG / JPG\nlub kliknij aby wybrac"
+            drop_text = "Przeciagnij pliki PDF / SVG / EPS / PNG / JPG\nlub kliknij aby wybrac"
         else:
-            drop_text = "Kliknij aby wybrac pliki\nPDF / SVG / PNG / JPG"
+            drop_text = "Kliknij aby wybrac pliki\nPDF / SVG / EPS / PNG / JPG"
 
         drop_label = customtkinter.CTkLabel(
             self._drop_frame, text=drop_text,
@@ -1685,7 +1685,7 @@ class BleedApp(customtkinter.CTk):
         # Czarny 100% K
         self._black_100k_var = customtkinter.BooleanVar(value=False)
         self._black_100k_cb = customtkinter.CTkCheckBox(
-            body, text="Czarny 100% K",
+            body, text="Czarny → 100% K",
             variable=self._black_100k_var,
             font=customtkinter.CTkFont(size=12),
             checkbox_width=18, checkbox_height=18,
