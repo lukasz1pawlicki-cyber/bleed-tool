@@ -81,7 +81,6 @@ PLOTTERS = {
 SPOT_COLOR_CUTCONTOUR = "CutContour"
 SPOT_COLOR_FLEXCUT = "FlexCut"
 SPOT_COLOR_WHITE = "White"
-SPOT_COLOR_CLEAR = "Clear"
 
 # Separation colorspace: DeviceCMYK alternate, Type 2 function
 # CutContour → 100% magenta w alternate CMYK
@@ -90,8 +89,6 @@ SPOT_CMYK_CUTCONTOUR = (0, 1, 0, 0)
 SPOT_CMYK_FLEXCUT = (1, 0, 1, 0)
 # White → różowy w alternate CMYK (widoczny w podglądzie, drukarka czyta spot name "White")
 SPOT_CMYK_WHITE = (0, 0.5, 0, 0)
-# Clear → żółty w alternate CMYK (widoczny w podglądzie, drukarka czyta spot name "Clear")
-SPOT_CMYK_CLEAR = (0, 0, 0.5, 0)
 
 # White underprint inset — cofnięcie białego poddruku od linii cięcia (mm)
 # Zapobiega wystaniu białego tuszu na krawędziach naklejki
