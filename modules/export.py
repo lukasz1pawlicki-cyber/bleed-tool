@@ -1628,9 +1628,27 @@ def _build_sheet_cutcontour_stream(
     else:
         ops.append(f"1 0 0 1 {px:.4f} {py:.4f} cm")
 
-    path_ops = _segments_to_pdf_path_ops(segments, bleed_pts, out_h)
-    ops.append(path_ops)
-    ops.append("S")
+    # Rysuj każdy segment osobno (m→l/c→S) — bezpieczne po deduplikacji
+    # (brak ryzyka niechcianych zamknięć/przekątnych)
+    def tx_pt(x: float, y: float) -> tuple[float, float]:
+        return x + bleed_pts, out_h - (y + bleed_pts)
+
+    for seg in segments:
+        if seg[0] == 'l':
+            sx, sy = tx_pt(seg[1][0], seg[1][1])
+            ex, ey = tx_pt(seg[2][0], seg[2][1])
+            ops.append(f"{sx:.4f} {sy:.4f} m")
+            ops.append(f"{ex:.4f} {ey:.4f} l")
+            ops.append("S")
+        elif seg[0] == 'c':
+            sx, sy = tx_pt(seg[1][0], seg[1][1])
+            cx1, cy1 = tx_pt(seg[2][0], seg[2][1])
+            cx2, cy2 = tx_pt(seg[3][0], seg[3][1])
+            ex, ey = tx_pt(seg[4][0], seg[4][1])
+            ops.append(f"{sx:.4f} {sy:.4f} m")
+            ops.append(f"{cx1:.4f} {cy1:.4f} {cx2:.4f} {cy2:.4f} {ex:.4f} {ey:.4f} c")
+            ops.append("S")
+
     ops.append("Q")
 
     return "\n".join(ops).encode('ascii')
