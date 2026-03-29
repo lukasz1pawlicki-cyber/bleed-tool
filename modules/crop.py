@@ -30,6 +30,7 @@ def apply_crop(
     shape: str = "square",
     offset: tuple[float, float] = (0.5, 0.5),
     dpi: int = DEFAULT_CROP_DPI,
+    radius_pct: int = 15,
 ) -> str:
     """Przycina plik graficzny do kwadratu/okręgu o zadanym rozmiarze.
 
@@ -100,7 +101,7 @@ def apply_crop(
     if shape == "circle":
         cropped = _apply_circle_mask(cropped)
     elif shape == "rounded":
-        cropped = _apply_rounded_rect_mask(cropped)
+        cropped = _apply_rounded_rect_mask(cropped, radius_pct=radius_pct)
     elif shape == "oval":
         cropped = _apply_oval_mask(cropped)
 
@@ -221,11 +222,11 @@ def _apply_circle_mask(img: Image.Image) -> Image.Image:
     return rgba
 
 
-def _apply_rounded_rect_mask(img: Image.Image) -> Image.Image:
-    """Nakłada maskę zaokrąglonego kwadratu na obraz. Promień = 15% boku."""
+def _apply_rounded_rect_mask(img: Image.Image, radius_pct: int = 15) -> Image.Image:
+    """Nakłada maskę zaokrąglonego kwadratu na obraz. Promień = radius_pct% boku."""
     size = img.size[0]  # kwadratowy
     rgba = img.convert("RGBA")
-    r = int(size * 0.15)
+    r = int(size * radius_pct / 100)
 
     mask = Image.new("L", (size, size), 0)
     draw = ImageDraw.Draw(mask)

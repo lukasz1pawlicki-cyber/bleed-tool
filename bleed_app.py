@@ -1698,7 +1698,7 @@ class BleedApp(customtkinter.CTk):
         crop_row = customtkinter.CTkFrame(body, fg_color="transparent")
         crop_row.pack(fill="x", pady=2)
         self._crop_cb = customtkinter.CTkCheckBox(
-            crop_row, text="Przytnij do rozmiaru",
+            crop_row, text="Crop",
             variable=self._crop_var,
             font=customtkinter.CTkFont(size=12),
             checkbox_width=18, checkbox_height=18,
@@ -1715,6 +1715,30 @@ class BleedApp(customtkinter.CTk):
             width=290, font=customtkinter.CTkFont(size=11),
         )
         # ukryty domyślnie (pack gdy crop włączony)
+
+        # Kontrolka promienia zaokrąglenia (widoczna tylko dla "Zaokraglony")
+        self._radius_pct = 15  # domyślnie 15%
+        self._crop_radius_frame = customtkinter.CTkFrame(crop_row, fg_color="transparent")
+        _rf = self._crop_radius_frame
+        customtkinter.CTkButton(
+            _rf, text="◀", width=24, height=24,
+            font=customtkinter.CTkFont(size=11),
+            fg_color=("gray85", "gray35"), hover_color=("gray75", "gray45"),
+            text_color=TEXT, corner_radius=4,
+            command=self._crop_radius_dec,
+        ).pack(side="left")
+        self._crop_radius_label = customtkinter.CTkLabel(
+            _rf, text=f"R {self._radius_pct}%",
+            font=customtkinter.CTkFont(size=11), width=48,
+        )
+        self._crop_radius_label.pack(side="left", padx=2)
+        customtkinter.CTkButton(
+            _rf, text="▶", width=24, height=24,
+            font=customtkinter.CTkFont(size=11),
+            fg_color=("gray85", "gray35"), hover_color=("gray75", "gray45"),
+            text_color=TEXT, corner_radius=4,
+            command=self._crop_radius_inc,
+        ).pack(side="left")
 
         self._height_var.trace_add("write", self._on_height_changed)
 
@@ -1789,16 +1813,40 @@ class BleedApp(customtkinter.CTk):
                 self._on_crop_changed()
 
     def _on_crop_changed(self):
-        """Callback: włącz/wyłącz tryb crop."""
+        """Callback: wł��cz/wyłącz tryb crop."""
         if self._crop_var.get():
             self._crop_shape_btn.pack(side="left", padx=(10, 0))
+            self._update_radius_visibility()
             self._show_crop_preview()
         else:
             self._crop_shape_btn.pack_forget()
+            self._crop_radius_frame.pack_forget()
             self._hide_crop_preview()
 
     def _on_crop_shape_changed(self, _value=None):
         """Callback: zmiana kształtu crop — odśwież podgląd."""
+        self._update_radius_visibility()
+        if self._crop_var.get():
+            self._redraw_crop_canvas()
+
+    def _update_radius_visibility(self):
+        """Pokaż/ukryj kontrolkę promienia zaokrąglenia."""
+        if self._crop_shape_var.get() == "Zaokraglony":
+            self._crop_radius_frame.pack(side="left", padx=(6, 0))
+        else:
+            self._crop_radius_frame.pack_forget()
+
+    def _crop_radius_dec(self):
+        """Zmniejsz promień zaokrąglenia."""
+        self._radius_pct = max(1, self._radius_pct - 5)
+        self._crop_radius_label.configure(text=f"R {self._radius_pct}%")
+        if self._crop_var.get():
+            self._redraw_crop_canvas()
+
+    def _crop_radius_inc(self):
+        """Zwiększ promień zaokrąglenia."""
+        self._radius_pct = min(50, self._radius_pct + 5)
+        self._crop_radius_label.configure(text=f"R {self._radius_pct}%")
         if self._crop_var.get():
             self._redraw_crop_canvas()
 
@@ -1963,8 +2011,7 @@ class BleedApp(customtkinter.CTk):
                 outline=ACCENT, width=2,
             )
         elif crop_shape == "rounded":
-            # Zaokrąglony kwadrat — promień = 15% boku
-            r = int(canvas_crop * 0.15)
+            r = int(canvas_crop * self._radius_pct / 100)
             _draw_rounded_rect(canvas, crop_x0, crop_y0, crop_x1, crop_y1, r,
                                outline=ACCENT, width=2)
         else:
@@ -2289,6 +2336,7 @@ class BleedApp(customtkinter.CTk):
         crop_enabled = self._crop_var.get() and target_height_mm is not None
         crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded", "Owal": "oval"}.get(self._crop_shape_var.get(), "square")
         crop_offsets = dict(self._crop_offsets) if crop_enabled else {}
+        radius_pct = self._radius_pct if crop_shape == "rounded" else 15
 
         self._processing = True
         self._run_btn.configure(state="disabled", text="Przetwarzam...")
@@ -2314,7 +2362,7 @@ class BleedApp(customtkinter.CTk):
             target=self._worker,
             args=(list(self._files), self._output_dir, bleed_mm, black_100k,
                   cutcontour, target_height_mm, crop_enabled, crop_shape,
-                  crop_offsets, white),
+                  crop_offsets, white, radius_pct),
             daemon=True,
         )
         thread.start()
@@ -2323,7 +2371,8 @@ class BleedApp(customtkinter.CTk):
                 black_100k: bool = False, cutcontour: bool = True,
                 target_height_mm: float | None = None,
                 crop_enabled: bool = False, crop_shape: str = "square",
-                crop_offsets: dict | None = None, white: bool = False):
+                crop_offsets: dict | None = None, white: bool = False,
+                radius_pct: int = 15):
         from modules.contour import detect_contour, scale_sticker
         from modules.bleed import generate_bleed
         from modules.export import export_single_sticker
@@ -2355,6 +2404,7 @@ class BleedApp(customtkinter.CTk):
                         target_size_mm=target_height_mm,
                         shape=crop_shape,
                         offset=offset,
+                        radius_pct=radius_pct,
                     )
                     temp_files.append(actual_path)
 
