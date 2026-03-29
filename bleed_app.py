@@ -1101,16 +1101,28 @@ class FlexCutWindow(customtkinter.CTkToplevel):
         def _ph(p):
             return p.sticker.width_mm if abs(p.rotation_deg) in (90, 270) else p.sticker.height_mm
 
-        # Bbox = pełny footprint (content + 2*bleed) + pół gapu na każdą stronę
-        # Deduplikacja w export usuwa duplikaty → maszyna tnie 1× w każdym miejscu
+        # Bbox = środek grupy footprintów ± połowa rozmiaru grupy + pół gapu
+        # FlexCut linie przechodzą dokładnie symetrycznie wokół grupy
         bleed2 = 2 * self.bleed_mm
         gap = getattr(sheet, 'gap_mm', 3.0)
         half_gap = gap / 2
 
-        bx0 = min(p.x_mm for p in sel) - half_gap
-        by0 = min(p.y_mm for p in sel) - half_gap
-        bx1 = max(p.x_mm + _pw(p) + bleed2 for p in sel) + half_gap
-        by1 = max(p.y_mm + _ph(p) + bleed2 for p in sel) + half_gap
+        # Bbox footprintów (bez dodatkowego marginesu)
+        foot_x0 = min(p.x_mm for p in sel)
+        foot_y0 = min(p.y_mm for p in sel)
+        foot_x1 = max(p.x_mm + _pw(p) + bleed2 for p in sel)
+        foot_y1 = max(p.y_mm + _ph(p) + bleed2 for p in sel)
+
+        # Wycentrowany prostokąt z half_gap marginesem
+        cx = (foot_x0 + foot_x1) / 2
+        cy = (foot_y0 + foot_y1) / 2
+        hw = (foot_x1 - foot_x0) / 2 + half_gap
+        hh = (foot_y1 - foot_y0) / 2 + half_gap
+
+        bx0 = cx - hw
+        by0 = cy - hh
+        bx1 = cx + hw
+        by1 = cy + hh
 
         lines = [
             PanelLine("horizontal", by0, bx0, bx1, bridge_length_mm=1.0),
