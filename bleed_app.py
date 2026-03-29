@@ -588,8 +588,8 @@ class FlexCutWindow(customtkinter.CTkToplevel):
     def __init__(self, parent, job, sheet_pdfs, bleed_mm, on_reexport):
         super().__init__(parent)
         self.title("FlexCut")
-        self.geometry("1100x750")
-        self.minsize(800, 500)
+        self.geometry("1280x780")
+        self.minsize(1000, 600)
         self.transient(parent)
         self._parent_app = parent
 
@@ -1717,7 +1717,7 @@ class BleedApp(customtkinter.CTk):
         # ukryty domyślnie (pack gdy crop włączony)
 
         # Kontrolka promienia zaokrąglenia (widoczna tylko dla "Zaokraglony")
-        self._radius_pct = 15  # domyślnie 15%
+        self._radius_pct = 9  # domyślnie 9%
         self._crop_radius_frame = customtkinter.CTkFrame(crop_row, fg_color="transparent")
         _rf = self._crop_radius_frame
         customtkinter.CTkButton(
@@ -1838,14 +1838,14 @@ class BleedApp(customtkinter.CTk):
 
     def _crop_radius_dec(self):
         """Zmniejsz promień zaokrąglenia."""
-        self._radius_pct = max(1, self._radius_pct - 5)
+        self._radius_pct = max(3, self._radius_pct - 3)
         self._crop_radius_label.configure(text=f"R {self._radius_pct}%")
         if self._crop_var.get():
             self._redraw_crop_canvas()
 
     def _crop_radius_inc(self):
         """Zwiększ promień zaokrąglenia."""
-        self._radius_pct = min(50, self._radius_pct + 5)
+        self._radius_pct = min(15, self._radius_pct + 3)
         self._crop_radius_label.configure(text=f"R {self._radius_pct}%")
         if self._crop_var.get():
             self._redraw_crop_canvas()
@@ -1959,11 +1959,25 @@ class BleedApp(customtkinter.CTk):
         src_w, src_h = self._crop_src_img.size
         crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded", "Owal": "oval"}.get(self._crop_shape_var.get(), "square")
 
-        # Crop area jest kwadratowy — dopasuj do mniejszego wymiaru canvas
-        canvas_crop = int(min(cw, ch) * 0.85)
+        # Crop area — owal zachowuje proporcje oryginału, reszta kwadratowa
+        if crop_shape == "oval":
+            aspect = src_h / src_w if src_w > 0 else 1.0
+            max_dim = int(min(cw, ch) * 0.85)
+            if aspect >= 1.0:
+                # Obraz wyższy niż szerszy
+                crop_h = max_dim
+                crop_w = max(1, int(max_dim / aspect))
+            else:
+                # Obraz szerszy niż wyższy
+                crop_w = max_dim
+                crop_h = max(1, int(max_dim * aspect))
+        else:
+            crop_w = int(min(cw, ch) * 0.85)
+            crop_h = crop_w
+        canvas_crop = crop_w  # backward-compat for drag
 
         # Skaluj obraz aby pokrył crop area (cover)
-        scale = max(canvas_crop / src_w, canvas_crop / src_h)
+        scale = max(crop_w / src_w, crop_h / src_h)
         disp_w = int(src_w * scale)
         disp_h = int(src_h * scale)
 
@@ -1972,12 +1986,12 @@ class BleedApp(customtkinter.CTk):
         ox, oy = self._crop_offsets.get(filepath, (0.5, 0.5))
 
         # Obszar przesunięcia
-        pan_x = max(0, disp_w - canvas_crop)
-        pan_y = max(0, disp_h - canvas_crop)
+        pan_x = max(0, disp_w - crop_w)
+        pan_y = max(0, disp_h - crop_h)
 
         # Pozycja lewego górnego rogu obrazu
-        img_x = (cw - canvas_crop) // 2 - int(ox * pan_x)
-        img_y = (ch - canvas_crop) // 2 - int(oy * pan_y)
+        img_x = (cw - crop_w) // 2 - int(ox * pan_x)
+        img_y = (ch - crop_h) // 2 - int(oy * pan_y)
 
         # Resize obrazu
         resized = self._crop_src_img.resize((disp_w, disp_h), Image.LANCZOS)
@@ -1987,15 +2001,17 @@ class BleedApp(customtkinter.CTk):
         canvas.create_image(img_x, img_y, anchor="nw", image=self._crop_canvas_img)
 
         # Crop overlay — przyciemnij poza crop area
-        crop_x0 = (cw - canvas_crop) // 2
-        crop_y0 = (ch - canvas_crop) // 2
-        crop_x1 = crop_x0 + canvas_crop
-        crop_y1 = crop_y0 + canvas_crop
+        crop_x0 = (cw - crop_w) // 2
+        crop_y0 = (ch - crop_h) // 2
+        crop_x1 = crop_x0 + crop_w
+        crop_y1 = crop_y0 + crop_h
 
         # Zapamiętaj wymiary crop do drag
         self._crop_rect = (crop_x0, crop_y0, crop_x1, crop_y1)
         self._crop_disp_size = (disp_w, disp_h)
         self._crop_canvas_crop = canvas_crop
+        self._crop_w = crop_w
+        self._crop_h = crop_h
 
         # Semi-transparent overlay (4 prostokąty wokół)
         overlay_color = "#00000060"
@@ -2011,7 +2027,7 @@ class BleedApp(customtkinter.CTk):
                 outline=ACCENT, width=2,
             )
         elif crop_shape == "rounded":
-            r = int(canvas_crop * self._radius_pct / 100)
+            r = int(crop_w * self._radius_pct / 100)
             _draw_rounded_rect(canvas, crop_x0, crop_y0, crop_x1, crop_y1, r,
                                outline=ACCENT, width=2)
         else:
@@ -2035,10 +2051,11 @@ class BleedApp(customtkinter.CTk):
         ox, oy = self._crop_offsets.get(filepath, (0.5, 0.5))
 
         # Przelicz dx/dy na zmianę offsetu
-        canvas_crop = getattr(self, '_crop_canvas_crop', 100)
         disp_w, disp_h = getattr(self, '_crop_disp_size', (100, 100))
-        pan_x = max(1, disp_w - canvas_crop)
-        pan_y = max(1, disp_h - canvas_crop)
+        crop_w = getattr(self, '_crop_w', 100)
+        crop_h = getattr(self, '_crop_h', 100)
+        pan_x = max(1, disp_w - crop_w)
+        pan_y = max(1, disp_h - crop_h)
 
         # Przeciągamy obraz (odwrotny kierunek do offsetu)
         new_ox = max(0.0, min(1.0, ox - dx / pan_x))
@@ -2336,7 +2353,7 @@ class BleedApp(customtkinter.CTk):
         crop_enabled = self._crop_var.get() and target_height_mm is not None
         crop_shape = {"Okrag": "circle", "Zaokraglony": "rounded", "Owal": "oval"}.get(self._crop_shape_var.get(), "square")
         crop_offsets = dict(self._crop_offsets) if crop_enabled else {}
-        radius_pct = self._radius_pct if crop_shape == "rounded" else 15
+        radius_pct = self._radius_pct if crop_shape == "rounded" else 9
 
         self._processing = True
         self._run_btn.configure(state="disabled", text="Przetwarzam...")
@@ -2372,7 +2389,7 @@ class BleedApp(customtkinter.CTk):
                 target_height_mm: float | None = None,
                 crop_enabled: bool = False, crop_shape: str = "square",
                 crop_offsets: dict | None = None, white: bool = False,
-                radius_pct: int = 15):
+                radius_pct: int = 9):
         from modules.contour import detect_contour, scale_sticker
         from modules.bleed import generate_bleed
         from modules.export import export_single_sticker
