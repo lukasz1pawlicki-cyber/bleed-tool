@@ -36,6 +36,9 @@ from config import (
     SPOT_COLOR_CUTCONTOUR,
     SPOT_COLOR_FLEXCUT,
     SPOT_COLOR_WHITE,
+    CUT_CMYK_CUTCONTOUR,
+    CUT_CMYK_FLEXCUT,
+    CUT_CMYK_REGMARK,
     SPOT_CMYK_CUTCONTOUR,
     SPOT_CMYK_FLEXCUT,
     SPOT_CMYK_WHITE,
@@ -823,35 +826,59 @@ def setup_separation_colorspace(
     doc: fitz.Document,
     page: fitz.Page,
     spot_name: str = SPOT_COLOR_CUTCONTOUR,
-    cmyk_alternate: tuple = SPOT_CMYK_CUTCONTOUR,
+    rgb_alternate: tuple | None = None,
+    cmyk_alternate: tuple | None = None,
 ) -> str:
     """Tworzy Separation colorspace i rejestruje w zasobach strony.
+
+    Dwa tryby alternate colorspace:
+      - rgb_alternate (r,g,b):  DeviceRGB  — cut PDF (GoSign rozpoznaje po kolorze RGB)
+      - cmyk_alternate (c,m,y,k): DeviceCMYK — print/white PDF (prepress, drukarka UV)
+
+    Podaj DOKŁADNIE JEDEN z rgb_alternate / cmyk_alternate.
 
     Args:
         doc: dokument PDF
         page: strona PDF
         spot_name: nazwa spot color (np. "CutContour", "FlexCut")
-        cmyk_alternate: kolor CMYK alternate (c, m, y, k) 0-1
+        rgb_alternate: kolor RGB (r, g, b) 0-1 — dla cut PDF
+        cmyk_alternate: kolor CMYK (c, m, y, k) 0-1 — dla print/white PDF
 
     Returns:
         Nazwa zasobu colorspace (np. "CS_CutContour")
     """
-    c, m, y, k = cmyk_alternate
-
     func_xref = doc.get_new_xref()
-    func_dict = (
-        "<<"
-        "/FunctionType 2"
-        "/Domain [0 1]"
-        f"/C0 [0 0 0 0]"
-        f"/C1 [{c} {m} {y} {k}]"
-        "/N 1"
-        ">>"
-    )
-    doc.update_object(func_xref, func_dict)
 
-    cs_xref = doc.get_new_xref()
-    cs_array = f"[/Separation /{spot_name} /DeviceCMYK {func_xref} 0 R]"
+    if rgb_alternate is not None:
+        r, g, b = rgb_alternate
+        func_dict = (
+            "<<"
+            "/FunctionType 2"
+            "/Domain [0 1]"
+            "/C0 [1 1 1]"
+            f"/C1 [{r} {g} {b}]"
+            "/N 1"
+            ">>"
+        )
+        doc.update_object(func_xref, func_dict)
+        cs_xref = doc.get_new_xref()
+        cs_array = f"[/Separation /{spot_name} /DeviceRGB {func_xref} 0 R]"
+    elif cmyk_alternate is not None:
+        c, m, y, k = cmyk_alternate
+        func_dict = (
+            "<<"
+            "/FunctionType 2"
+            "/Domain [0 1]"
+            f"/C0 [0 0 0 0]"
+            f"/C1 [{c} {m} {y} {k}]"
+            "/N 1"
+            ">>"
+        )
+        doc.update_object(func_xref, func_dict)
+        cs_xref = doc.get_new_xref()
+        cs_array = f"[/Separation /{spot_name} /DeviceCMYK {func_xref} 0 R]"
+    else:
+        raise ValueError(f"Brak rgb_alternate ani cmyk_alternate dla spot '{spot_name}'")
     doc.update_object(cs_xref, cs_array)
 
     cs_resource_name = f"CS_{spot_name}"
@@ -1360,7 +1387,8 @@ def export_single_sticker(
 
     # --- WARSTWA 3: CutContour spot color (opcjonalna) ---
     if cutcontour:
-        cs_name = setup_separation_colorspace(doc_out, out_page)
+        cs_name = setup_separation_colorspace(doc_out, out_page,
+                                                    cmyk_alternate=SPOT_CMYK_CUTCONTOUR)
         cut_stream = build_cutcontour_stream(
             sticker.cut_segments, bleed_pts, out_h, cs_name
         )
@@ -1387,7 +1415,7 @@ def export_single_sticker(
         white_doc = fitz.open()
         white_page = white_doc.new_page(width=out_w, height=out_h)
         cs_white = setup_separation_colorspace(
-            white_doc, white_page, SPOT_COLOR_WHITE, SPOT_CMYK_WHITE,
+            white_doc, white_page, SPOT_COLOR_WHITE, cmyk_alternate=SPOT_CMYK_WHITE,
         )
         white_segments = _get_white_segments(sticker.bleed_segments)
         white_stream = build_white_fill_stream(
@@ -1650,25 +1678,29 @@ def _build_sheet_cutcontour_stream(
     placement: Placement,
     sheet_h_pt: float,
     bleed_mm: float,
-    cs_name: str,
+    cs_name: str | None = None,
     segments_override: list | None = None,
     flexcut_h_pt: list[float] | None = None,
     flexcut_v_pt: list[float] | None = None,
+    cut_ocg_name: str | None = None,
+    cut_cmyk: tuple | None = None,
 ) -> bytes:
     """Buduje content stream: CutContour stroke dla jednego placement.
 
-    Filtrowanie FlexCut odbywa się na gotowych współrzędnych PDF (pt)
-    — po cm transform i tx_pt — porównywanych z pozycjami FlexCut w pt.
-    Eliminuje problemy z konwersją mm↔pt.
+    Dwa tryby:
+      - Separation (cs_name): używa spot color — dla single sticker export
+      - OCG (cut_ocg_name + cut_cmyk): bezpośredni CMYK na OCG warstwie — dla cut PDF (GoSign)
 
     Args:
         placement: Placement z naklejką
         sheet_h_pt: wysokość arkusza w pt
         bleed_mm: bleed w mm
-        cs_name: nazwa colorspace
-        segments_override: jeśli podane, używa tych segmentów zamiast sticker.cut_segments
-        flexcut_h_pt: pozycje FlexCut poziomych w pt (sheet coords)
-        flexcut_v_pt: pozycje FlexCut pionowych w pt (sheet coords)
+        cs_name: nazwa Separation colorspace (tryb spot)
+        segments_override: przefiltrowane segmenty
+        flexcut_h_pt: pozycje FlexCut poziomych w pt
+        flexcut_v_pt: pozycje FlexCut pionowych w pt
+        cut_ocg_name: nazwa OCG property (tryb OCG, np. "PrCut")
+        cut_cmyk: kolor CMYK (c,m,y,k) dla trybu OCG
     """
     sticker = placement.sticker
     if not sticker.cut_segments:
@@ -1701,10 +1733,20 @@ def _build_sheet_cutcontour_stream(
     flex_v_local = [fx - px for fx in (flexcut_v_pt or [])]
 
     ops: list[str] = []
-    ops.append(f"/{cs_name} cs")
-    ops.append(f"/{cs_name} CS")
-    ops.append("1 SCN")
-    ops.append(f"{CUTCONTOUR_STROKE_WIDTH_PT} w")
+    if cut_ocg_name and cut_cmyk:
+        # Tryb OCG: bezpośredni CMYK na warstwie (format pluginu Summa)
+        c, m, y, k = cut_cmyk
+        ops.append(f"/OC /{cut_ocg_name} BDC")
+        ops.append(f"{c:.4f} {m:.4f} {y:.4f} {k:.4f} K")
+        ops.append("0 J")
+        ops.append("0 j")
+        ops.append("0.5669 w")  # 0.2mm jak plugin Summa
+    else:
+        # Tryb Separation (single sticker export)
+        ops.append(f"/{cs_name} cs")
+        ops.append(f"/{cs_name} CS")
+        ops.append("1 SCN")
+        ops.append(f"{CUTCONTOUR_STROKE_WIDTH_PT} w")
     ops.append("q")
 
     if placement.rotation_deg == 90:
@@ -1764,6 +1806,8 @@ def _build_sheet_cutcontour_stream(
         log.info(f"CutContour: pominięto {skipped} segmentów na liniach FlexCut")
 
     ops.append("Q")
+    if cut_ocg_name:
+        ops.append("EMC")
 
     return "\n".join(ops).encode('ascii')
 
@@ -2009,63 +2053,83 @@ def _filter_segments_on_flexcut(
 
 
 def _build_marks_stream(marks: list[Mark], sheet_h_pt: float,
-                        cs_name: str | None = None) -> bytes:
+                        cs_name: str | None = None,
+                        ocg_name: str | None = None) -> bytes:
     """Buduje content stream: znaczniki rejestracji (czarne prostokąty/krzyżyki).
 
-    Jeśli cs_name podany (spot color "Regmark"), rysuje w tym kolorze —
-    GoSign rozpoznaje warstwę po spot colour name.
-    Bez cs_name: czarny DeviceRGB fill (kompatybilność wsteczna).
+    Tryby:
+      - ocg_name: BDC/EMC marked content z OCG (jak plugin Summa do CorelDraw)
+        Kolor: bezpośredni CMYK 0 0 0 1 (100% K). GoSign czyta warstwę po nazwie OCG.
+      - cs_name: Separation spot color (np. print PDF)
+      - brak: czarny DeviceRGB (kompatybilność wsteczna)
     """
     if not marks:
         return b""
 
     ops: list[str] = []
-    if cs_name:
-        # Spot color — GoSign widzi jako osobną warstwę
+    if ocg_name:
+        # BDC/EMC OCG layer — GoSign rozpoznaje po nazwie warstwy
+        # Kolor ustawiany per marker (jak plugin Summa do CorelDraw)
+        ops.append(f"/OC /{ocg_name} BDC")
+    elif cs_name:
+        # Spot color
         ops.append(f"/{cs_name} cs")
         ops.append(f"/{cs_name} CS")
-        ops.append("1 scn")   # 100% tint fill
-        ops.append("1 SCN")   # 100% tint stroke
+        ops.append("1 scn")
+        ops.append("1 SCN")
     else:
-        ops.append("0 0 0 rg")  # Czarny fill
-        ops.append("0 0 0 RG")  # Czarny stroke
+        ops.append("0 0 0 rg")
+        ops.append("0 0 0 RG")
 
     for mark in marks:
         x = mark.x_mm * MM_TO_PT
-        y = mark.y_mm * MM_TO_PT  # PDF y-up, ale mark.y_mm jest od dołu
+        y = mark.y_mm * MM_TO_PT
         w = mark.width_mm * MM_TO_PT
         h = mark.height_mm * MM_TO_PT
 
         if mark.mark_type == "opos_rectangle":
-            # Wypełniony czarny prostokąt
-            ops.append(f"{x:.4f} {y:.4f} {w:.4f} {h:.4f} re")
-            ops.append("f")
+            if ocg_name:
+                # Format identyczny z pluginem Summa do CorelDraw:
+                # pełny stan graficzny + path m/l/h/b* (fill+stroke even-odd)
+                ops.append("0 J")
+                ops.append("0 j")
+                ops.append("0.0003 w")
+                ops.append("[] 0 d")
+                ops.append("0.0000 0.0000 0.0000 1.0000 K")
+                ops.append("0.0000 0.0000 0.0000 1.0000 k")
+                ops.append(f"{x:.4f} {y:.4f} m")
+                ops.append(f"{x + w:.4f} {y:.4f} l")
+                ops.append(f"{x + w:.4f} {y + h:.4f} l")
+                ops.append(f"{x:.4f} {y + h:.4f} l")
+                ops.append("h")
+                ops.append("b*")
+            else:
+                # Kompatybilność wsteczna (print PDF)
+                ops.append(f"{x:.4f} {y:.4f} {w:.4f} {h:.4f} re")
+                ops.append("f")
 
         elif mark.mark_type == "crosshair":
-            # Krzyżyk (stroke)
             cx = x + w / 2
             cy = y + h / 2
-            ops.append("0.5 w")  # szerokość linii
-            # Horizontal
+            ops.append("0.5 w")
             ops.append(f"{x:.4f} {cy:.4f} m")
             ops.append(f"{x + w:.4f} {cy:.4f} l")
             ops.append("S")
-            # Vertical
             ops.append(f"{cx:.4f} {y:.4f} m")
             ops.append(f"{cx:.4f} {y + h:.4f} l")
             ops.append("S")
 
         elif mark.mark_type == "crop_mark":
-            # L-shaped crop marks w narożnikach
             ops.append("0.5 w")
-            # Horizontal
             ops.append(f"{x:.4f} {y:.4f} m")
             ops.append(f"{x + w:.4f} {y:.4f} l")
             ops.append("S")
-            # Vertical
             ops.append(f"{x:.4f} {y:.4f} m")
             ops.append(f"{x:.4f} {y + h:.4f} l")
             ops.append("S")
+
+    if ocg_name:
+        ops.append("EMC")
 
     return "\n".join(ops).encode('ascii')
 
@@ -2074,23 +2138,20 @@ def _build_flexcut_stream(
     panel_lines: list[PanelLine],
     sheet_w_mm: float,
     sheet_h_mm: float,
-    cs_name: str,
+    cs_name: str | None = None,
+    ocg_name: str | None = None,
+    ocg_cmyk: tuple | None = None,
 ) -> bytes:
-    """Buduje content stream: FlexCut linie jako spot color.
+    """Buduje content stream: FlexCut linie.
 
-    FlexCut to ciągła linia w spot color "FlexCut" — ploter (Summa S3 / FlexiSign)
-    sam realizuje perforację na podstawie swoich ustawień. W PDF rysujemy zwykłą linię.
-
-    Pozycje linii FlexCut (panel_lines) są w sheet coords — ta sama przestrzeń
-    co placement.x_mm/y_mm (footprint origin). CutContour cm translacja też
-    używa p.x_mm — więc FlexCut nie potrzebuje dodatkowego offsetu.
+    Dwa tryby:
+      - Separation (cs_name): spot color — single sticker / legacy
+      - OCG (ocg_name + ocg_cmyk): bezpośredni CMYK na OCG warstwie — cut PDF (GoSign)
     """
     if not panel_lines:
         return b""
 
-    # Deduplikacja linii FlexCut — sub-arkusze mogą mieć wspólne krawędzie.
-    # Maszyna nie może ciąć 2× w tym samym miejscu (overlap).
-    # Klucz: (axis, round(position, 1), round(start, 1), round(end, 1))
+    # Deduplikacja linii FlexCut
     seen: set[tuple] = set()
     unique_lines: list = []
     for line in panel_lines:
@@ -2110,10 +2171,20 @@ def _build_flexcut_stream(
         log.info(f"FlexCut deduplikacja: {len(panel_lines)} → {len(unique_lines)} linii")
 
     ops: list[str] = []
-    ops.append(f"/{cs_name} cs")
-    ops.append(f"/{cs_name} CS")
-    ops.append("1 SCN")
-    ops.append(f"{FLEXCUT_STROKE_WIDTH_PT} w")
+    if ocg_name and ocg_cmyk:
+        # Tryb OCG: bezpośredni CMYK (format pluginu Summa)
+        c, m, y, k = ocg_cmyk
+        ops.append(f"/OC /{ocg_name} BDC")
+        ops.append(f"{c:.4f} {m:.4f} {y:.4f} {k:.4f} K")
+        ops.append("0 J")
+        ops.append("0 j")
+        ops.append("0.5669 w")  # 0.2mm
+    else:
+        # Tryb Separation
+        ops.append(f"/{cs_name} cs")
+        ops.append(f"/{cs_name} CS")
+        ops.append("1 SCN")
+        ops.append(f"{FLEXCUT_STROKE_WIDTH_PT} w")
 
     for line in unique_lines:
         if line.axis == "horizontal":
@@ -2130,6 +2201,9 @@ def _build_flexcut_stream(
             ops.append(f"{x_pt:.4f} {y0_pt:.4f} m")
             ops.append(f"{x_pt:.4f} {y1_pt:.4f} l")
             ops.append("S")
+
+    if ocg_name:
+        ops.append("EMC")
 
     stream = "\n".join(ops)
     return stream.encode('ascii') if ops else b""
@@ -2244,14 +2318,14 @@ def export_sheet_print(
                 )
                 out_page.show_pdf_page(target_rect, prepared_doc, 0)
 
-    # Marks (warstwa Regmark — spot color + OCG dla GoSign)
+    # Marks — spot "Regmark"
     if sheet.marks:
         cs_regmark = setup_separation_colorspace(
-            doc_out, out_page, SPOT_COLOR_REGMARK, SPOT_CMYK_REGMARK
+            doc_out, out_page, SPOT_COLOR_REGMARK, cmyk_alternate=SPOT_CMYK_REGMARK
         )
         marks_stream = _build_marks_stream(sheet.marks, sheet_h_pt, cs_name=cs_regmark)
         if marks_stream:
-            inject_content_on_layer(doc_out, out_page, marks_stream, "Regmark")
+            inject_content_stream(doc_out, out_page, marks_stream)
 
     # PDF/X-4: OutputIntent FOGRA39
     from modules.pdf_metadata import apply_pdfx4
@@ -2261,6 +2335,66 @@ def export_sheet_print(
     doc_out.close()
     log.info(f"Print PDF zapisany: {output_path}")
     return output_path
+
+
+# UTF-16BE encoded OCG names (identyczne z pluginem Summa do CorelDraw)
+_OCG_NAMES_UTF16 = {
+    "CutContour": "<FEFF0043007500740043006F006E0074006F00750072>",
+    "FlexCut":    "<FEFF0046006C00650078004300750074>",
+    "Regmark":    "<FEFF005200650067006D00610072006B>",
+}
+
+
+def _setup_cut_ocg_layers(
+    doc: fitz.Document, page: fitz.Page,
+) -> dict[str, str]:
+    """Tworzy 3 OCG warstwy dla cut PDF i rejestruje w Resources/Properties.
+
+    Format identyczny z pluginem Summa do CorelDraw:
+      - OCG: /Name <UTF-16BE>, /Type /OCG (bez /Intent, /Usage)
+      - Rejestracja w /OCProperties (katalog) i /Resources/Properties (strona)
+
+    Returns:
+        {"CutContour": "PrCut", "FlexCut": "PrFlex", "Regmark": "PrReg"}
+        — mapowanie nazwa_logiczna → nazwa_property (do BDC/EMC)
+    """
+    layers = {
+        "CutContour": "PrCut",
+        "FlexCut": "PrFlex",
+        "Regmark": "PrReg",
+    }
+    ocg_xrefs = {}
+
+    # 1. Utwórz OCG obiekty
+    for name, prop_name in layers.items():
+        xref = doc.get_new_xref()
+        utf16_name = _OCG_NAMES_UTF16[name]
+        doc.update_object(xref, f"<</Name {utf16_name} /Type /OCG>>")
+        ocg_xrefs[name] = xref
+
+    # 2. Zarejestruj w katalogu (/OCProperties)
+    cat_xref = doc.pdf_catalog()
+    ocg_refs = " ".join(f"{x} 0 R" for x in ocg_xrefs.values())
+    doc.xref_set_key(cat_xref, "OCProperties",
+        f"<</OCGs [{ocg_refs}] "
+        f"/D <</OFF [] /Order [{ocg_refs}] /RBGroups []>>>>")
+
+    # 3. Zarejestruj w /Resources/Properties strony
+    props_entries = " ".join(
+        f"/{prop_name} {ocg_xrefs[name]} 0 R"
+        for name, prop_name in layers.items()
+    )
+    page_xref = page.xref
+    res_info = doc.xref_get_key(page_xref, "Resources")
+    if res_info[0] == "xref":
+        import re as _re
+        res_xref = int(_re.search(r'(\d+)', res_info[1]).group(1))
+        doc.xref_set_key(res_xref, "Properties", f"<<{props_entries}>>")
+    else:
+        doc.xref_set_key(page_xref, "Resources/Properties", f"<<{props_entries}>>")
+
+    log.info(f"OCG layers: {', '.join(layers.keys())}")
+    return layers
 
 
 def export_sheet_cut(
@@ -2299,21 +2433,10 @@ def export_sheet_cut(
     doc_out = fitz.open()
     out_page = doc_out.new_page(width=sheet_w_pt, height=sheet_h_pt)
 
-    # Setup spot colors
-    cs_cutcontour = setup_separation_colorspace(
-        doc_out, out_page, SPOT_COLOR_CUTCONTOUR, SPOT_CMYK_CUTCONTOUR
-    )
-
-    # FlexCut spot color (jeśli są linie FlexCut)
-    has_flexcut = any(pl.bridge_length_mm > 0 for pl in sheet.panel_lines)
-    cs_flexcut = None
-    if has_flexcut:
-        cs_flexcut = setup_separation_colorspace(
-            doc_out, out_page, SPOT_COLOR_FLEXCUT, SPOT_CMYK_FLEXCUT
-        )
+    # === OCG layers (format pluginu Summa — bez Separation spot colors) ===
+    ocg_layers = _setup_cut_ocg_layers(doc_out, out_page)
 
     # Pozycje FlexCut linii w pt — do filtrowania CutContour
-    # (FlexCut ma priorytet: perforacja zamiast pełnego cięcia)
     flexcut_h_mm = []
     flexcut_v_mm = []
     flexcut_h_pt = []
@@ -2328,44 +2451,42 @@ def export_sheet_cut(
             flexcut_v_mm.append(pl.position_mm)
             flexcut_v_pt.append(pl.position_mm * MM_TO_PT)
 
-    # Deduplikacja CutContour (usuwa zduplikowane segmenty gdy gap<=0)
+    # Deduplikacja CutContour
     deduped = _deduplicate_cut_segments(
         sheet.placements, flexcut_h_mm, flexcut_v_mm, bleed_mm,
         gap_mm=sheet.gap_mm,
     )
 
-    # Zbierz wszystkie CutContour streams → warstwa "Kiss-cut"
-    cut_streams = []
+    # CutContour — CMYK zielony na OCG "CutContour"
     for placement, segments in deduped:
         cut_stream = _build_sheet_cutcontour_stream(
-            placement, sheet_h_pt, bleed_mm, cs_cutcontour,
+            placement, sheet_h_pt, bleed_mm,
             segments_override=segments,
             flexcut_h_pt=flexcut_h_pt,
             flexcut_v_pt=flexcut_v_pt,
+            cut_ocg_name=ocg_layers["CutContour"],
+            cut_cmyk=CUT_CMYK_CUTCONTOUR,
         )
         if cut_stream:
-            cut_streams.append(cut_stream)
+            inject_content_stream(doc_out, out_page, cut_stream)
 
-    if cut_streams:
-        combined_cut = b"\n".join(cut_streams)
-        inject_content_on_layer(doc_out, out_page, combined_cut, "Kiss-cut")
-
-    # FlexCut linie paneli → warstwa "Thru-cut"
-    if cs_flexcut and sheet.panel_lines:
+    # FlexCut — CMYK czerwony na OCG "FlexCut"
+    has_flexcut = any(pl.bridge_length_mm > 0 for pl in sheet.panel_lines)
+    if has_flexcut and sheet.panel_lines:
         flexcut_stream = _build_flexcut_stream(
-            sheet.panel_lines, sheet.width_mm, sheet.height_mm, cs_flexcut,
+            sheet.panel_lines, sheet.width_mm, sheet.height_mm,
+            ocg_name=ocg_layers["FlexCut"],
+            ocg_cmyk=CUT_CMYK_FLEXCUT,
         )
         if flexcut_stream:
-            inject_content_on_layer(doc_out, out_page, flexcut_stream, "Thru-cut")
+            inject_content_stream(doc_out, out_page, flexcut_stream)
 
-    # Marks → spot color "Regmark" + warstwa OCG "Regmark"
+    # Marks — CMYK czarny na OCG "Regmark"
     if sheet.marks:
-        cs_regmark = setup_separation_colorspace(
-            doc_out, out_page, SPOT_COLOR_REGMARK, SPOT_CMYK_REGMARK
-        )
-        marks_stream = _build_marks_stream(sheet.marks, sheet_h_pt, cs_name=cs_regmark)
+        marks_stream = _build_marks_stream(
+            sheet.marks, sheet_h_pt, ocg_name=ocg_layers["Regmark"])
         if marks_stream:
-            inject_content_on_layer(doc_out, out_page, marks_stream, "Regmark")
+            inject_content_stream(doc_out, out_page, marks_stream)
 
     doc_out.save(output_path)
     doc_out.close()
@@ -2406,7 +2527,7 @@ def export_sheet_white(
 
     # Setup White Separation
     cs_white = setup_separation_colorspace(
-        doc_out, out_page, SPOT_COLOR_WHITE, SPOT_CMYK_WHITE,
+        doc_out, out_page, SPOT_COLOR_WHITE, cmyk_alternate=SPOT_CMYK_WHITE,
     )
 
     for i, placement in enumerate(sheet.placements):

@@ -69,8 +69,8 @@ SIDEBAR_ACTIVE_BG = ("#e7f0ff", "#25334a")
 SIDEBAR_ACTIVE_FG = ("#4f6ef7", "#7ba1f7")
 
 # Podglad
-_PREVIEW_CUTCONTOUR = "#00e676"
-_PREVIEW_FLEXCUT = "#ff1744"
+_PREVIEW_CUTCONTOUR = "#00e676"  # Kiss-cut — zielony
+_PREVIEW_FLEXCUT = "#ff1744"    # Thru-cut — czerwony
 _PREVIEW_MARK = "#000000"
 
 # Obsługiwane formaty

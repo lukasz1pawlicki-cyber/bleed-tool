@@ -79,19 +79,21 @@ PLOTTERS = {
 # =============================================================================
 
 SPOT_COLOR_CUTCONTOUR = "CutContour"
-SPOT_COLOR_FLEXCUT = "Thru-cut"
+SPOT_COLOR_FLEXCUT = "FlexCut"
 SPOT_COLOR_WHITE = "White"
 SPOT_COLOR_REGMARK = "Regmark"
 
-# Separation colorspace: DeviceCMYK alternate, Type 2 function
-# CutContour → cyan + yellow = zielony w alternate CMYK
-SPOT_CMYK_CUTCONTOUR = (1, 0, 1, 0)
-# FlexCut → 100% red (M+Y) w alternate CMYK
-SPOT_CMYK_FLEXCUT = (0, 1, 1, 0)
-# White → różowy w alternate CMYK (widoczny w podglądzie, drukarka czyta spot name "White")
-SPOT_CMYK_WHITE = (0, 0.5, 0, 0)
-# Regmark → czarny w alternate CMYK (markery OPOS i bar)
-SPOT_CMYK_REGMARK = (0, 0, 0, 1)
+# --- Cut PDF: bezpośredni DeviceCMYK na OCG warstwach (format pluginu Summa) ---
+# GoSign czyta OCG layer names i mapuje na metody
+CUT_CMYK_CUTCONTOUR = (1, 0, 1, 0)    # zielony (C+Y) — kiss-cut
+CUT_CMYK_FLEXCUT = (0, 1, 1, 0)       # czerwony (M+Y) — thru-cut
+CUT_CMYK_REGMARK = (0, 0, 0, 1)       # czarny (K) — regmark
+
+# --- Print/White PDF: Separation spot colors (prepress, drukarka UV) ---
+SPOT_CMYK_CUTCONTOUR = (1, 0, 1, 0)   # CutContour alternate
+SPOT_CMYK_FLEXCUT = (0, 1, 1, 0)      # FlexCut alternate
+SPOT_CMYK_WHITE = (0, 0.5, 0, 0)      # White alternate (różowy podgląd)
+SPOT_CMYK_REGMARK = (0, 0, 0, 1)      # Regmark alternate
 
 # White underprint inset — cofnięcie białego poddruku od linii cięcia (mm)
 # Zapobiega wystaniu białego tuszu na krawędziach naklejki
