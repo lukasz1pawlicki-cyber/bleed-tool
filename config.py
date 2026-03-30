@@ -13,7 +13,7 @@ DEFAULT_GAP_MM = 5.0
 DEFAULT_DPI = 300
 DEFAULT_CROP_DPI = 300
 DEFAULT_MARGINS_MM = (5, 5, 5, 5)  # top, right, bottom, left
-DEFAULT_MARK_ZONE_MM = 15          # mark_offset(12) + mark_size(3) = 15mm (JWEI/Summa)
+DEFAULT_MARK_ZONE_MM = 13          # mark_offset(10) + mark_size(3) = 13mm (Summa S3)
 
 # =============================================================================
 # ROZMIARY ARKUSZY (mm)
@@ -53,10 +53,10 @@ FLEXCUT_GAP_MM = 5.0        # Szerszy gap w miejscu linii FlexCut
 
 PLOTTER_SUMMA_S3 = {
     "mark_type": "opos_rectangle",
-    "mark_size_mm": (5, 5),
+    "mark_size_mm": (3, 3),
     "min_marks": 4,
     "mark_offset_mm": 10,
-    "mark_zone_mm": 15,   # offset(10) + size(5) — pełna strefa wykluczenia
+    "mark_zone_mm": 13,   # offset(10) + size(3) — pełna strefa wykluczenia
     "leading_offset_mm": 20,  # odsunięcie grafiki od dolnych markerów (Y bottom)
     "side_offset_mm": 10,     # odsunięcie grafiki od lewych/prawych/górnych markerów
 }
@@ -83,10 +83,10 @@ SPOT_COLOR_FLEXCUT = "FlexCut"
 SPOT_COLOR_WHITE = "White"
 
 # Separation colorspace: DeviceCMYK alternate, Type 2 function
-# CutContour → 100% magenta w alternate CMYK
-SPOT_CMYK_CUTCONTOUR = (0, 1, 0, 0)
-# FlexCut → cyan + yellow = zielony w alternate CMYK
-SPOT_CMYK_FLEXCUT = (1, 0, 1, 0)
+# CutContour → cyan + yellow = zielony w alternate CMYK
+SPOT_CMYK_CUTCONTOUR = (1, 0, 1, 0)
+# FlexCut → 100% magenta = czerwony w alternate CMYK
+SPOT_CMYK_FLEXCUT = (0, 1, 0, 0)
 # White → różowy w alternate CMYK (widoczny w podglądzie, drukarka czyta spot name "White")
 SPOT_CMYK_WHITE = (0, 0.5, 0, 0)
 

@@ -127,22 +127,8 @@ def generate_marks(
             sheet.marks.append(bar)
             log.info(f"Mark [bottom bar]: ({bar_x:.1f}, {positions['bottom_left'][1]:.1f})mm, {bar_w:.1f}×{mark_h}mm")
 
-        # GORNA KRAWEDZ: extra markery co ~300mm (jak dotychczas)
-        if sw > 400:
-            n_extra_h = max(0, int((px1 - px0) / 300) - 1)
-            if n_extra_h > 0:
-                spacing = (br_x - bl_x) / (n_extra_h + 1)
-                for i in range(1, n_extra_h + 1):
-                    x = bl_x + spacing * i
-                    mark_top = Mark(
-                        x_mm=x,
-                        y_mm=positions["top_right"][1],
-                        width_mm=mark_w,
-                        height_mm=mark_h,
-                        mark_type=mark_type,
-                    )
-                    sheet.marks.append(mark_top)
-                    log.info(f"Mark [extra top H{i}]: ({x:.1f}mm)")
+        # GORNA KRAWEDZ: tylko 2 narożne znaczniki (top_left + top_right)
+        # Środkowe markery usunięte — Summa S3 potrzebuje tylko narożnych
 
     elif plotter != "jwei" and sw > 400:
         # Inne plotery (nie JWEI): standardowe extra markery na dolnej i gornej krawedzi

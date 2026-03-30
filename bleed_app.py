@@ -69,8 +69,8 @@ SIDEBAR_ACTIVE_BG = ("#e7f0ff", "#25334a")
 SIDEBAR_ACTIVE_FG = ("#4f6ef7", "#7ba1f7")
 
 # Podglad
-_PREVIEW_CUTCONTOUR = "#ff1744"
-_PREVIEW_FLEXCUT = "#00e676"
+_PREVIEW_CUTCONTOUR = "#00e676"
+_PREVIEW_FLEXCUT = "#ff1744"
 _PREVIEW_MARK = "#000000"
 
 # Obsługiwane formaty
@@ -860,7 +860,7 @@ class FlexCutWindow(customtkinter.CTkToplevel):
             elif idx in all_applied:
                 self.canvas.create_rectangle(
                     tx(p.x_mm), ty(p.y_mm + ph), tx(p.x_mm + pw), ty(p.y_mm),
-                    outline="#00e676", width=2, dash=(4, 2),
+                    outline=_PREVIEW_FLEXCUT, width=2, dash=(4, 2),
                 )
 
         # Rysuj zatwierdzone FlexCut linie z panel_lines (cyan)
@@ -871,12 +871,12 @@ class FlexCutWindow(customtkinter.CTkToplevel):
                 y = ty(line.position_mm)
                 x0 = tx(line.start_mm)
                 x1 = tx(line.end_mm)
-                self.canvas.create_line(x0, y, x1, y, fill="#00bcd4", width=2, dash=(5, 3))
+                self.canvas.create_line(x0, y, x1, y, fill=_PREVIEW_FLEXCUT, width=2, dash=(5, 3))
             elif line.axis == "vertical":
                 x = tx(line.position_mm)
                 y0 = ty(line.start_mm)
                 y1 = ty(line.end_mm)
-                self.canvas.create_line(x, y0, x, y1, fill="#00bcd4", width=2, dash=(5, 3))
+                self.canvas.create_line(x, y0, x, y1, fill=_PREVIEW_FLEXCUT, width=2, dash=(5, 3))
 
         # Bbox aktualnego zaznaczenia (pomarańczowy)
         if self._selected_placements:

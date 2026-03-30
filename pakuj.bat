@@ -24,12 +24,8 @@ copy /y bleed_cli.py "%DIST%\" >nul
 copy /y config.py "%DIST%\" >nul
 copy /y models.py "%DIST%\" >nul
 
-:: Kopiuj moduly
-copy /y modules\__init__.py "%DIST%\modules\" >nul
-copy /y modules\bleed.py "%DIST%\modules\" >nul
-copy /y modules\contour.py "%DIST%\modules\" >nul
-copy /y modules\export.py "%DIST%\modules\" >nul
-copy /y modules\svg_convert.py "%DIST%\modules\" >nul
+:: Kopiuj wszystkie moduly
+for %%f in (modules\*.py) do copy /y "%%f" "%DIST%\modules\" >nul
 
 :: Kopiuj launchery i docs
 copy /y uruchom.bat "%DIST%\" >nul
