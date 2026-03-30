@@ -711,6 +711,9 @@ class FlexCutWindow(customtkinter.CTkToplevel):
         self.canvas.bind("<ButtonPress-3>", self._on_pan_start)
         self.canvas.bind("<B3-Motion>", self._on_pan_move)
         self.canvas.bind("<Double-Button-1>", self._on_zoom_reset)
+        # Skrót klawiszowy: Z = Dodaj FlexCut
+        self.bind("<z>", lambda e: self._on_apply())
+        self.bind("<Z>", lambda e: self._on_apply())
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1800,7 +1803,7 @@ class BleedApp(customtkinter.CTk):
         # Czarny 100% K
         self._black_100k_var = customtkinter.BooleanVar(value=False)
         self._black_100k_cb = customtkinter.CTkCheckBox(
-            body, text="Czarny → 100% K",
+            body, text="Czarny -> 100% K",
             variable=self._black_100k_var,
             font=customtkinter.CTkFont(size=12),
             checkbox_width=18, checkbox_height=18,
@@ -2217,6 +2220,8 @@ class BleedApp(customtkinter.CTk):
     def _clear_files(self):
         self._files.clear()
         self._refresh_file_list()
+        self._clear_preview()
+        self._clear_log()
 
     def _refresh_file_list(self):
         # Sprawdź czy widget istnieje (mógł zostać zniszczony przy przełączaniu tabów)
@@ -2995,6 +3000,10 @@ class BleedApp(customtkinter.CTk):
         )
         if output_paths:
             self._show_previews(output_paths)
+            # Dodaj wygenerowane pliki do kolejki nest
+            for p in output_paths:
+                if p not in self._nest_files:
+                    self._nest_files.append(p)
 
     # =========================================================================
     # PREVIEW
