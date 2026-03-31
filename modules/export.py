@@ -39,6 +39,8 @@ from config import (
     CUT_CMYK_CUTCONTOUR,
     CUT_CMYK_FLEXCUT,
     CUT_CMYK_REGMARK,
+    CUT_SUMMA_LAYERS,
+    CUT_JWEI_LAYERS,
     SPOT_CMYK_CUTCONTOUR,
     SPOT_CMYK_FLEXCUT,
     SPOT_CMYK_WHITE,
@@ -179,23 +181,25 @@ def build_white_fill_stream(
     return stream.encode('ascii')
 
 
-def _get_white_segments(bleed_segments: list) -> list:
-    """Zwraca segmenty do white fill — bleed_segments (grafika+spad).
+def _get_white_segments(bleed_segments: list, cut_segments: list | None = None) -> list:
+    """Zwraca segmenty do white fill z insetem WHITE_INSET_MM od linii cięcia.
 
-    White pokrywa cala naklejke ze spadem. Bialy tusz drukowany pod
-    calym obrazem na przezroczystym/metalicznym podlozu.
+    Inset zapobiega wystaniu białego tuszu na krawędziach naklejki.
+    Jeśli cut_segments podane i inset > 0 — oblicza offset do wewnątrz.
+    Fallback: zwraca bleed_segments bez insetu.
     """
     if not bleed_segments:
         return []
-    return list(bleed_segments)
 
-    # Inset = offset w kierunku do wewnatrz (ujemna odleglosc)
+    if WHITE_INSET_MM <= 0 or cut_segments is None or not cut_segments:
+        return list(bleed_segments)
+
+    inset_pt = WHITE_INSET_MM * MM_TO_PT
     try:
         from modules.bleed import flatten_segments_to_polyline, offset_polyline
         from modules.bleed import _fit_cubic_bezier
 
         polyline, boundaries = flatten_segments_to_polyline(cut_segments, 30)
-        # offset_polyline daje offset na zewnatrz; ujemna wartosc = do wewnatrz
         inset_poly = offset_polyline(polyline, -inset_pt)
 
         result = []
@@ -236,11 +240,11 @@ def _get_white_segments(bleed_segments: list) -> list:
                         seg_pts[-1].copy(),
                     ))
 
-        log.info(f"White inset: {WHITE_INSET_MM}mm ({inset_pt:.2f}pt), {len(result)} segmentow")
+        log.info(f"White inset: {WHITE_INSET_MM}mm ({inset_pt:.2f}pt), {len(result)} segmentów")
         return result
     except Exception as e:
-        log.warning(f"White inset nieudany ({e}), uzywam cut_segments bez insetu")
-        return list(cut_segments)
+        log.warning(f"White inset nieudany ({e}), używam bleed_segments bez insetu")
+        return list(bleed_segments)
 
 
 # =============================================================================
@@ -390,6 +394,8 @@ _K_RICH_THRESH = 0.85  # CMYK: K ≥ tego z jakimkolwiek CMY → rich black
 
 def _convert_black_in_stream(text: str) -> tuple[str, int]:
     """Zamienia czarne kolory na 100% K w jednym content stream."""
+    # Normalizacja: zamień \r\n na \n, kompresuj wielokrotne spacje
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     lines = text.split('\n')
     count = 0
     result = []
@@ -527,6 +533,8 @@ def _expand_clips_in_stream(
     Returns:
         (new_text, did_expand_polygon): nowy tekst i czy polygon został rozszerzony.
     """
+    # Normalizacja line endings
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     lines = text.split('\n')
     result: list[str] = []
     i = 0
@@ -1167,9 +1175,10 @@ def export_single_sticker(
     bleed_mm: float = DEFAULT_BLEED_MM,
     black_100k: bool = False,
     cutcontour: bool = True,
+    cutline_mode: str = "kiss-cut",
     white: bool = False,
 ) -> dict:
-    """Eksportuje pojedynczą naklejkę z bleedem i opcjonalnym CutContour.
+    """Eksportuje pojedynczą naklejkę z bleedem i opcjonalnym CutContour/FlexCut.
 
     2-3 warstwy (w pełni wektorowe):
       1) Podkład bleed — RGB solid fill z offsetem konturu
@@ -1194,6 +1203,10 @@ def export_single_sticker(
         raise ValueError("Sticker nie ma edge_color_rgb — uruchom generate_bleed() najpierw")
     if sticker.pdf_doc is None and sticker.raster_path is None:
         raise ValueError("Sticker nie ma otwartego pdf_doc ani raster_path")
+    # Walidacja spójności: is_cmyk wymaga edge_color_cmyk
+    if getattr(sticker, 'is_cmyk', False) and sticker.edge_color_cmyk is None:
+        log.warning("Sticker.is_cmyk=True ale edge_color_cmyk=None — fallback na RGB")
+        sticker.is_cmyk = False
 
     bleed_pts = bleed_mm * MM_TO_PT
     page_w = sticker.page_width_pt
@@ -1204,7 +1217,7 @@ def export_single_sticker(
 
     log.info(
         f"Export: {sticker.source_path} → {output_path} "
-        f"({out_w * 25.4/72:.1f}×{out_h * 25.4/72:.1f}mm z bleedem)"
+        f"({out_w * PT_TO_MM:.1f}×{out_h * PT_TO_MM:.1f}mm z bleedem)"
     )
 
     # Tworzenie PDF wyjściowego
@@ -1240,7 +1253,7 @@ def export_single_sticker(
                     break
 
     if sticker.raster_path is not None or (_is_raster_only_pdf and not _use_vector_for_raster_pdf):
-        # Raster / raster-only PDF: bleed via edge-clamping lub dilation
+        # ====== ŚCIEŻKA RASTROWA: bleed via edge-clamping lub dilation ======
         if sticker.raster_path is not None:
             # Plik rastrowy (PNG/JPG/TIFF)
             src_pil = PILImage.open(sticker.raster_path)
@@ -1333,7 +1346,7 @@ def export_single_sticker(
         os.unlink(tmp.name)
         log.info("Warstwa 1+2: bleed + grafika rastrowa — OK")
     else:
-        # Wektor PDF: solid fill + show_pdf_page
+        # ====== ŚCIEŻKA WEKTOROWA: solid fill + show_pdf_page ======
         # Bleed fill w tym samym colorspace co grafika źródłowa
         if sticker.is_cmyk and sticker.edge_color_cmyk:
             bleed_stream = build_cmyk_fill_stream(
@@ -1385,17 +1398,25 @@ def export_single_sticker(
         out_page.show_pdf_page(target_rect, doc_src, sticker.page_index)
         log.info("Warstwa 2: grafika wektorowa — OK")
 
-    # --- WARSTWA 3: CutContour spot color (opcjonalna) ---
+    # --- WARSTWA 3: Linia cięcia (Kiss-Cut / FlexCut / Brak) ---
     if cutcontour:
+        if cutline_mode == "flexcut":
+            spot_name = SPOT_COLOR_FLEXCUT
+            spot_cmyk = SPOT_CMYK_FLEXCUT
+            label = "FlexCut"
+        else:
+            spot_name = SPOT_COLOR_CUTCONTOUR
+            spot_cmyk = SPOT_CMYK_CUTCONTOUR
+            label = "CutContour"
         cs_name = setup_separation_colorspace(doc_out, out_page,
-                                                    cmyk_alternate=SPOT_CMYK_CUTCONTOUR)
+                                              spot_name, cmyk_alternate=spot_cmyk)
         cut_stream = build_cutcontour_stream(
             sticker.cut_segments, bleed_pts, out_h, cs_name
         )
         inject_content_stream(doc_out, out_page, cut_stream)
-        log.info("Warstwa 3: CutContour — OK")
+        log.info(f"Warstwa 3: {label} — OK")
     else:
-        log.info("Warstwa 3: CutContour — pominięta (sam spad)")
+        log.info("Warstwa 3: linia cięcia — pominięta (sam spad)")
 
     # PDF/X-4: OutputIntent FOGRA39 + TrimBox/BleedBox
     from modules.pdf_metadata import apply_pdfx4
@@ -1417,7 +1438,7 @@ def export_single_sticker(
         cs_white = setup_separation_colorspace(
             white_doc, white_page, SPOT_COLOR_WHITE, cmyk_alternate=SPOT_CMYK_WHITE,
         )
-        white_segments = _get_white_segments(sticker.bleed_segments)
+        white_segments = _get_white_segments(sticker.bleed_segments, sticker.cut_segments)
         white_stream = build_white_fill_stream(
             white_segments, bleed_pts, out_h, cs_white,
         )
@@ -1437,7 +1458,7 @@ def export_single_sticker(
         'output_path': output_path,
         'white_path': white_path,
         'page_size_mm': (sticker.width_mm, sticker.height_mm),
-        'output_size_mm': (out_w * 25.4 / 72.0, out_h * 25.4 / 72.0),
+        'output_size_mm': (out_w * PT_TO_MM, out_h * PT_TO_MM),
         'bleed_mm': bleed_mm,
         'num_cut_segments': len(sticker.cut_segments),
         'num_bleed_segments': len(sticker.bleed_segments),
@@ -1559,13 +1580,16 @@ def _build_sheet_bleed_fill_stream(
     sticker = placement.sticker
     if sticker.bleed_segments is None or sticker.edge_color_rgb is None:
         return b""
+    # Walidacja spójności CMYK
+    if getattr(sticker, 'is_cmyk', False) and sticker.edge_color_cmyk is None:
+        sticker.is_cmyk = False
 
     bleed_pts = bleed_mm * MM_TO_PT
-    px = placement.x_mm * MM_TO_PT  # pozycja w pt na arkuszu
+    px = placement.x_mm * MM_TO_PT
     py = placement.y_mm * MM_TO_PT
 
     # Rozmiar naklejki z bleedem w pt
-    if placement.rotation_deg == 90:
+    if int(placement.rotation_deg) % 360 in (90, 270):
         sticker_w_pt = sticker.page_height_pt
         sticker_h_pt = sticker.page_width_pt
     else:
@@ -1591,7 +1615,7 @@ def _build_sheet_bleed_fill_stream(
 
     # Transformacja: translate do pozycji na arkuszu (PDF y-up)
     # px, py to lewy-dolny róg naklejki w pt (już w PDF coords)
-    if placement.rotation_deg == 90:
+    if int(placement.rotation_deg) % 360 in (90, 270):
         # Rotation 90°: translate + rotate
         # Po rotacji 90° CCW: nowy x=stary y, nowy y=-stary x
         # W PDF: cm matrix [cos sin -sin cos tx ty]
@@ -1642,7 +1666,7 @@ def _build_sheet_white_fill_stream(
     px = placement.x_mm * MM_TO_PT
     py = placement.y_mm * MM_TO_PT
 
-    if placement.rotation_deg == 90:
+    if int(placement.rotation_deg) % 360 in (90, 270):
         sticker_w_pt = sticker.page_height_pt
         sticker_h_pt = sticker.page_width_pt
     else:
@@ -1652,14 +1676,14 @@ def _build_sheet_white_fill_stream(
     out_w = sticker_w_pt + 2 * bleed_pts
     out_h = sticker_h_pt + 2 * bleed_pts
 
-    white_segments = _get_white_segments(sticker.bleed_segments)
+    white_segments = _get_white_segments(sticker.bleed_segments, sticker.cut_segments)
 
     ops: list[str] = []
     ops.append(f"/{cs_name} cs")
     ops.append("1 scn")
     ops.append("q")  # save graphics state
 
-    if placement.rotation_deg == 90:
+    if int(placement.rotation_deg) % 360 in (90, 270):
         tx = px + out_h
         ty = py
         ops.append(f"0 1 -1 0 {tx:.4f} {ty:.4f} cm")
@@ -1710,7 +1734,7 @@ def _build_sheet_cutcontour_stream(
     px = placement.x_mm * MM_TO_PT
     py = placement.y_mm * MM_TO_PT
 
-    if placement.rotation_deg == 90:
+    if int(placement.rotation_deg) % 360 in (90, 270):
         sticker_w_pt = sticker.page_height_pt
         sticker_h_pt = sticker.page_width_pt
     else:
@@ -1749,7 +1773,7 @@ def _build_sheet_cutcontour_stream(
         ops.append(f"{CUTCONTOUR_STROKE_WIDTH_PT} w")
     ops.append("q")
 
-    if placement.rotation_deg == 90:
+    if int(placement.rotation_deg) % 360 in (90, 270):
         tx = px + out_h
         ty = py
         ops.append(f"0 1 -1 0 {tx:.4f} {ty:.4f} cm")
@@ -1842,7 +1866,7 @@ def _seg_to_sheet_mm(
         return None
 
     # Rotacja 90° — lokalne (x,y) → sheet (y, w-x), gdzie w = sticker.width_mm
-    if placement.rotation_deg == 90:
+    if int(placement.rotation_deg) % 360 in (90, 270):
         w = sticker.width_mm
         sx = px_mm + (h_mm - ly0)
         sy = py_mm + lx0
@@ -2004,7 +2028,7 @@ def _filter_segments_on_flexcut(
         else:
             return None
 
-        if placement.rotation_deg == 90:
+        if int(placement.rotation_deg) % 360 in (90, 270):
             sx = px_mm + bleed_mm + (h_mm - ly0)
             sy = py_mm + bleed_mm + lx0
             ex = px_mm + bleed_mm + (h_mm - ly1)
@@ -2151,12 +2175,10 @@ def _build_flexcut_stream(
     if not panel_lines:
         return b""
 
-    # Deduplikacja linii FlexCut
+    # Deduplikacja linii
     seen: set[tuple] = set()
     unique_lines: list = []
     for line in panel_lines:
-        if line.bridge_length_mm <= 0:
-            continue
         key = (line.axis, round(line.position_mm, 1),
                round(min(line.start_mm, line.end_mm), 1),
                round(max(line.start_mm, line.end_mm), 1))
@@ -2274,14 +2296,14 @@ def export_sheet_print(
             img_w = sticker.page_width_pt
             img_h = sticker.page_height_pt
 
-            if placement.rotation_deg == 90:
+            rot = int(placement.rotation_deg) % 360
+            if rot in (90, 270):
                 img_rect = fitz.Rect(
                     px + bleed_pts,
                     sheet_h_pt - py - sticker_w + bleed_pts,
                     px + bleed_pts + img_h,
                     sheet_h_pt - py - bleed_pts,
                 )
-                out_page.insert_image(img_rect, filename=sticker.raster_path, rotate=90)
             else:
                 img_rect = fitz.Rect(
                     px + bleed_pts,
@@ -2289,7 +2311,7 @@ def export_sheet_print(
                     px + bleed_pts + img_w,
                     sheet_h_pt - py - bleed_pts,
                 )
-                out_page.insert_image(img_rect, filename=sticker.raster_path)
+            out_page.insert_image(img_rect, filename=sticker.raster_path, rotate=rot)
 
         elif sticker.pdf_doc is not None:
             # Wektor: show_pdf_page z cached prepared source
@@ -2305,18 +2327,29 @@ def export_sheet_print(
             px = placement.x_mm * MM_TO_PT
             py = placement.y_mm * MM_TO_PT
 
-            if placement.rotation_deg == 90:
+            rot = int(placement.rotation_deg) % 360
+            if rot == 90:
                 target_rect = fitz.Rect(
                     px, sheet_h_pt - py - sticker_w,
                     px + sticker_h, sheet_h_pt - py,
                 )
-                out_page.show_pdf_page(target_rect, prepared_doc, 0, rotate=90)
+            elif rot == 270:
+                target_rect = fitz.Rect(
+                    px, sheet_h_pt - py - sticker_w,
+                    px + sticker_h, sheet_h_pt - py,
+                )
             else:
+                # 0° i 180° — ten sam rect (show_pdf_page obsługuje rotate)
                 target_rect = fitz.Rect(
                     px, sheet_h_pt - py - sticker_h,
                     px + sticker_w, sheet_h_pt - py,
                 )
-                out_page.show_pdf_page(target_rect, prepared_doc, 0)
+            out_page.show_pdf_page(target_rect, prepared_doc, 0, rotate=rot)
+
+    # === Outer bleed (spad wokół grupy naklejek) ===
+    outer_bleed = getattr(sheet, 'outer_bleed_mm', 0.0)
+    if outer_bleed > 0 and sheet.placements:
+        _apply_outer_bleed(doc_out, out_page, sheet, bleed_mm, outer_bleed)
 
     # Marks — spot "Regmark"
     if sheet.marks:
@@ -2337,40 +2370,151 @@ def export_sheet_print(
     return output_path
 
 
-# UTF-16BE encoded OCG names (identyczne z pluginem Summa do CorelDraw)
-_OCG_NAMES_UTF16 = {
-    "CutContour": "<FEFF0043007500740043006F006E0074006F00750072>",
-    "FlexCut":    "<FEFF0046006C00650078004300750074>",
-    "Regmark":    "<FEFF005200650067006D00610072006B>",
-}
+def _apply_outer_bleed(
+    doc: fitz.Document,
+    page: fitz.Page,
+    sheet: Sheet,
+    bleed_mm: float,
+    outer_bleed_mm: float,
+) -> None:
+    """Generuje zewnętrzny spad wokół grupy naklejek.
+
+    Algorytm:
+      1. Renderuje aktualną stronę (ze wszystkimi naklejkami) jako raster
+      2. Cropuje do bbox naklejek
+      3. Rozszerza canvas o outer_bleed_mm (nearest-neighbor dilation)
+      4. Wstawia rozszerzony obraz jako tło (za naklejkami — na dole content streamu)
+
+    Uwzględnia aktualny stan obrotów (renderuje to co jest w PDF).
+    """
+    from PIL import Image as PILImage
+    import numpy as np
+
+    sheet_w_pt = sheet.width_mm * MM_TO_PT
+    sheet_h_pt = sheet.height_mm * MM_TO_PT
+
+    # Oblicz bbox naklejek
+    bleed2 = 2 * bleed_mm
+    def _pw(p):
+        return p.sticker.height_mm + bleed2 if int(p.rotation_deg) % 360 in (90, 270) else p.sticker.width_mm + bleed2
+    def _ph(p):
+        return p.sticker.width_mm + bleed2 if int(p.rotation_deg) % 360 in (90, 270) else p.sticker.height_mm + bleed2
+
+    x0_mm = min(p.x_mm for p in sheet.placements)
+    y0_mm = min(p.y_mm for p in sheet.placements)
+    x1_mm = max(p.x_mm + _pw(p) for p in sheet.placements)
+    y1_mm = max(p.y_mm + _ph(p) for p in sheet.placements)
+
+    ob_mm = outer_bleed_mm
+    ob_pt = ob_mm * MM_TO_PT
+
+    # Render strony jako raster (300 DPI)
+    dpi = 300
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    img = PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    arr = np.array(img)
+
+    # Przelicz bbox na piksele
+    scale = dpi / 72.0
+    # PDF y-up, pixmap y-down
+    px0 = int(x0_mm * MM_TO_PT * scale)
+    py0 = int((sheet_h_pt - y1_mm * MM_TO_PT) * scale)
+    px1 = int(x1_mm * MM_TO_PT * scale)
+    py1 = int((sheet_h_pt - y0_mm * MM_TO_PT) * scale)
+
+    # Clamp
+    px0 = max(0, px0)
+    py0 = max(0, py0)
+    px1 = min(arr.shape[1], px1)
+    py1 = min(arr.shape[0], py1)
+
+    if px1 <= px0 or py1 <= py0:
+        log.warning("Outer bleed: bbox naklejek pusty — pomijam")
+        return
+
+    # Crop do bbox
+    crop = arr[py0:py1, px0:px1].copy()
+    ch, cw = crop.shape[:2]
+
+    # Expand canvas o bleed_px
+    bleed_px = max(1, int(ob_mm * dpi / 25.4))
+    expanded = np.zeros((ch + 2 * bleed_px, cw + 2 * bleed_px, 3), dtype=np.uint8)
+    expanded[bleed_px:bleed_px + ch, bleed_px:bleed_px + cw] = crop
+
+    # Nearest-neighbor dilation — wypełnij bleed zone kolorem z krawędzi
+    # Góra
+    for i in range(bleed_px):
+        expanded[i, bleed_px:bleed_px + cw] = crop[0]
+    # Dół
+    for i in range(bleed_px):
+        expanded[bleed_px + ch + i, bleed_px:bleed_px + cw] = crop[-1]
+    # Lewo
+    for i in range(bleed_px):
+        expanded[:, i] = expanded[:, bleed_px]
+    # Prawo
+    for i in range(bleed_px):
+        expanded[:, bleed_px + cw + i] = expanded[:, bleed_px + cw - 1]
+
+    # Konwertuj na PIL
+    bleed_img = PILImage.fromarray(expanded)
+
+    # Wstaw do PDF — rect obejmujący bbox + bleed
+    import tempfile, os
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    bleed_img.save(tmp.name)
+    tmp.close()
+
+    # Rect w PDF coords
+    insert_x0 = x0_mm * MM_TO_PT - ob_pt
+    insert_y0 = sheet_h_pt - (y1_mm * MM_TO_PT + ob_pt)
+    insert_x1 = x1_mm * MM_TO_PT + ob_pt
+    insert_y1 = sheet_h_pt - (y0_mm * MM_TO_PT - ob_pt)
+    insert_rect = fitz.Rect(insert_x0, insert_y0, insert_x1, insert_y1)
+
+    # Wstaw PRZED istniejącymi content streams (tło)
+    page.insert_image(insert_rect, filename=tmp.name, overlay=False)
+
+    try:
+        os.unlink(tmp.name)
+    except OSError:
+        pass
+
+    log.info(f"Outer bleed: {ob_mm}mm dilation, bbox ({x0_mm:.1f},{y0_mm:.1f})-({x1_mm:.1f},{y1_mm:.1f})mm")
+
+
+def _str_to_utf16be_hex(s: str) -> str:
+    """Konwertuje string na PDF hex string w UTF-16BE (z BOM FEFF)."""
+    encoded = s.encode('utf-16-be')
+    hex_str = 'FEFF' + encoded.hex().upper()
+    return f"<{hex_str}>"
 
 
 def _setup_cut_ocg_layers(
     doc: fitz.Document, page: fitz.Page,
+    layer_config: dict,
 ) -> dict[str, str]:
-    """Tworzy 3 OCG warstwy dla cut PDF i rejestruje w Resources/Properties.
+    """Tworzy OCG warstwy dla cut PDF i rejestruje w Resources/Properties.
 
-    Format identyczny z pluginem Summa do CorelDraw:
-      - OCG: /Name <UTF-16BE>, /Type /OCG (bez /Intent, /Usage)
-      - Rejestracja w /OCProperties (katalog) i /Resources/Properties (strona)
+    Args:
+        layer_config: dict z kluczami "CutContour", "FlexCut", "Regmark".
+            Każdy ma {"ocg_name": str, "cmyk": tuple}.
+            Summa: CUT_SUMMA_LAYERS, JWEI: CUT_JWEI_LAYERS
 
     Returns:
-        {"CutContour": "PrCut", "FlexCut": "PrFlex", "Regmark": "PrReg"}
-        — mapowanie nazwa_logiczna → nazwa_property (do BDC/EMC)
+        {"CutContour": {"prop": "Pr0", "cmyk": (c,m,y,k)}, ...}
     """
-    layers = {
-        "CutContour": "PrCut",
-        "FlexCut": "PrFlex",
-        "Regmark": "PrReg",
-    }
+    result = {}
     ocg_xrefs = {}
 
-    # 1. Utwórz OCG obiekty
-    for name, prop_name in layers.items():
+    # 1. Utwórz OCG obiekty z UTF-16BE names
+    for i, (key, cfg) in enumerate(layer_config.items()):
+        ocg_name = cfg["ocg_name"]
+        prop_name = f"Pr{i}"
         xref = doc.get_new_xref()
-        utf16_name = _OCG_NAMES_UTF16[name]
+        utf16_name = _str_to_utf16be_hex(ocg_name)
         doc.update_object(xref, f"<</Name {utf16_name} /Type /OCG>>")
-        ocg_xrefs[name] = xref
+        ocg_xrefs[key] = xref
+        result[key] = {"prop": prop_name, "cmyk": cfg["cmyk"]}
 
     # 2. Zarejestruj w katalogu (/OCProperties)
     cat_xref = doc.pdf_catalog()
@@ -2381,8 +2525,8 @@ def _setup_cut_ocg_layers(
 
     # 3. Zarejestruj w /Resources/Properties strony
     props_entries = " ".join(
-        f"/{prop_name} {ocg_xrefs[name]} 0 R"
-        for name, prop_name in layers.items()
+        f"/{result[key]['prop']} {ocg_xrefs[key]} 0 R"
+        for key in layer_config
     )
     page_xref = page.xref
     res_info = doc.xref_get_key(page_xref, "Resources")
@@ -2393,8 +2537,9 @@ def _setup_cut_ocg_layers(
     else:
         doc.xref_set_key(page_xref, "Resources/Properties", f"<<{props_entries}>>")
 
-    log.info(f"OCG layers: {', '.join(layers.keys())}")
-    return layers
+    ocg_names = [cfg["ocg_name"] for cfg in layer_config.values()]
+    log.info(f"OCG layers: {', '.join(ocg_names)}")
+    return result
 
 
 def export_sheet_cut(
@@ -2433,8 +2578,11 @@ def export_sheet_cut(
     doc_out = fitz.open()
     out_page = doc_out.new_page(width=sheet_w_pt, height=sheet_h_pt)
 
-    # === OCG layers (format pluginu Summa — bez Separation spot colors) ===
-    ocg_layers = _setup_cut_ocg_layers(doc_out, out_page)
+    # === OCG layers — per ploter (z config) ===
+    from config import PLOTTERS
+    plotter_cfg = PLOTTERS.get(plotter, {})
+    layer_config = plotter_cfg.get("cut_layers", CUT_SUMMA_LAYERS)
+    ocg = _setup_cut_ocg_layers(doc_out, out_page, layer_config)
 
     # Pozycje FlexCut linii w pt — do filtrowania CutContour
     flexcut_h_mm = []
@@ -2457,34 +2605,48 @@ def export_sheet_cut(
         gap_mm=sheet.gap_mm,
     )
 
-    # CutContour — CMYK zielony na OCG "CutContour"
+    # CutContour
+    cut_cfg = ocg["CutContour"]
     for placement, segments in deduped:
         cut_stream = _build_sheet_cutcontour_stream(
             placement, sheet_h_pt, bleed_mm,
             segments_override=segments,
             flexcut_h_pt=flexcut_h_pt,
             flexcut_v_pt=flexcut_v_pt,
-            cut_ocg_name=ocg_layers["CutContour"],
-            cut_cmyk=CUT_CMYK_CUTCONTOUR,
+            cut_ocg_name=cut_cfg["prop"],
+            cut_cmyk=cut_cfg["cmyk"],
         )
         if cut_stream:
             inject_content_stream(doc_out, out_page, cut_stream)
 
-    # FlexCut — CMYK czerwony na OCG "FlexCut"
-    has_flexcut = any(pl.bridge_length_mm > 0 for pl in sheet.panel_lines)
-    if has_flexcut and sheet.panel_lines:
+    # Full-cut panel lines (bridge=0, np. spad) — na warstwie CutContour
+    fullcut_lines = [pl for pl in sheet.panel_lines if pl.bridge_length_mm <= 0]
+    if fullcut_lines:
+        fullcut_stream = _build_flexcut_stream(
+            fullcut_lines, sheet.width_mm, sheet.height_mm,
+            ocg_name=cut_cfg["prop"],
+            ocg_cmyk=cut_cfg["cmyk"],
+        )
+        if fullcut_stream:
+            inject_content_stream(doc_out, out_page, fullcut_stream)
+
+    # FlexCut (tylko linie z bridge > 0)
+    flexcut_lines = [pl for pl in sheet.panel_lines if pl.bridge_length_mm > 0]
+    if flexcut_lines:
+        flex_cfg = ocg["FlexCut"]
         flexcut_stream = _build_flexcut_stream(
-            sheet.panel_lines, sheet.width_mm, sheet.height_mm,
-            ocg_name=ocg_layers["FlexCut"],
-            ocg_cmyk=CUT_CMYK_FLEXCUT,
+            flexcut_lines, sheet.width_mm, sheet.height_mm,
+            ocg_name=flex_cfg["prop"],
+            ocg_cmyk=flex_cfg["cmyk"],
         )
         if flexcut_stream:
             inject_content_stream(doc_out, out_page, flexcut_stream)
 
-    # Marks — CMYK czarny na OCG "Regmark"
+    # Marks
     if sheet.marks:
+        reg_cfg = ocg["Regmark"]
         marks_stream = _build_marks_stream(
-            sheet.marks, sheet_h_pt, ocg_name=ocg_layers["Regmark"])
+            sheet.marks, sheet_h_pt, ocg_name=reg_cfg["prop"])
         if marks_stream:
             inject_content_stream(doc_out, out_page, marks_stream)
 

@@ -163,12 +163,21 @@ def _generate_jwei_marks(
     top: float, right: float, bottom: float, left: float,
     sw: float, sh: float,
 ) -> None:
-    """JWEI: 4 narożne kwadraty, bez bara, bez extra markerów."""
+    """JWEI: 4 narożne kwadraty, bez bara, bez extra markerów.
+
+    Pozycje markerów od krawędzi papieru (nie od marginesu):
+      - X: mark_offset_x_mm (30mm) od lewej/prawej
+      - Y: mark_offset_y_mm (20mm) od górnej/dolnej
+    """
+    from config import PLOTTERS
+    jwei_cfg = PLOTTERS.get("jwei", {})
+    off_x = jwei_cfg.get("mark_offset_x_mm", mark_offset)
+    off_y = jwei_cfg.get("mark_offset_y_mm", mark_offset)
     corners = [
-        (left + mark_offset, bottom + mark_offset),
-        (sw - right - mark_offset - mark_w, bottom + mark_offset),
-        (sw - right - mark_offset - mark_w, sh - top - mark_offset - mark_h),
-        (left + mark_offset, sh - top - mark_offset - mark_h),
+        (off_x, off_y),                                    # bottom-left
+        (sw - off_x - mark_w, off_y),                      # bottom-right
+        (sw - off_x - mark_w, sh - off_y - mark_h),        # top-right
+        (off_x, sh - off_y - mark_h),                      # top-left
     ]
     for x, y in corners:
         sheet.marks.append(Mark(
