@@ -189,8 +189,9 @@ class FileSection(QWidget):
             # Kopie (opcjonalnie, nest)
             if self._show_copies:
                 copies_edit = QLineEdit(str(self._file_copies.get(filepath, 1)))
-                copies_edit.setFixedWidth(36)
+                copies_edit.setFixedWidth(48)
                 copies_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                copies_edit.setStyleSheet("padding: 0 4px; min-height: 24px; max-height: 24px;")
                 font2 = copies_edit.font()
                 font2.setPointSize(9)
                 copies_edit.setFont(font2)
