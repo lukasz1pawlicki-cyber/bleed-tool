@@ -20,8 +20,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Bleed Tool")
-        self.resize(1280, 780)
-        self.setMinimumSize(900, 600)
+        self.resize(1440, 900)
+        self.setMinimumSize(1024, 700)
 
         # Stan
         self._active_tab = "bleed"
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         # Proporcje splitera
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
-        self._splitter.setSizes([380, 600])
+        self._splitter.setSizes([580, 700])
 
         root_layout.addWidget(self._splitter)
 
