@@ -155,6 +155,14 @@ class PreviewPanel(QWidget):
         self._view.setScene(self._scene)
         layout.addWidget(self._view, stretch=1)
 
+        # Placeholder (overlay na view — center)
+        self._placeholder = QLabel("Przeciągnij pliki i kliknij\n\"Generuj bleed\" aby zobaczyć podgląd")
+        self._placeholder.setObjectName("preview-placeholder")
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self._placeholder, stretch=1)
+        self._view.setVisible(False)
+
     # --- Public API ---
 
     def show_bleed_results(self, paths: list[str]):
@@ -254,6 +262,11 @@ class PreviewPanel(QWidget):
     def _render_current(self):
         """Renderuje aktualny PDF do sceny."""
         self._scene.clear()
+        has_content = bool(self._results) or bool(self._job and self._job.sheets)
+        self._view.setVisible(has_content)
+        self._placeholder.setVisible(not has_content)
+        if not has_content:
+            return
         idx = self._current_idx
 
         if self._results and idx < len(self._results):

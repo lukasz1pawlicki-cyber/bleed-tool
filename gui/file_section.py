@@ -102,6 +102,7 @@ class FileSection(QWidget):
         self._list_layout.setSpacing(1)
         self._list_layout.addStretch()
         self._scroll.setWidget(self._list_widget)
+        self._scroll.setVisible(False)  # ukryta gdy brak plików
         layout.addWidget(self._scroll)
 
         # Pasek: licznik + wyczyść
@@ -113,7 +114,6 @@ class FileSection(QWidget):
         bar.addStretch()
         clear_btn = QPushButton("Wyczyść")
         clear_btn.setObjectName("danger")
-        clear_btn.setFixedSize(70, 24)
         clear_btn.clicked.connect(self.clear_files)
         bar.addWidget(clear_btn)
         layout.addLayout(bar)
@@ -203,6 +203,7 @@ class FileSection(QWidget):
             self._list_layout.insertWidget(self._list_layout.count() - 1, row)
 
         self._count_label.setText(f"{len(self._files)} plików")
+        self._scroll.setVisible(len(self._files) > 0)
 
     def _on_copies_change(self, filepath: str, text: str):
         try:

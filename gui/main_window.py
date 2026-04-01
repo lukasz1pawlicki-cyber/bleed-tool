@@ -43,14 +43,9 @@ class MainWindow(QMainWindow):
 
         # Logo
         logo = QLabel("Bleed Tool")
-        logo.setProperty("class", "header")
-        font = logo.font()
-        font.setPointSize(15)
-        font.setBold(True)
-        logo.setFont(font)
-        logo.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        logo.setObjectName("logo")
         sidebar_layout.addWidget(logo)
-        sidebar_layout.addSpacing(12)
+        sidebar_layout.addSpacing(16)
 
         # Nav buttons
         self._nav_buttons: dict[str, QPushButton] = {}
@@ -76,7 +71,8 @@ class MainWindow(QMainWindow):
 
         # Log
         self.log_panel = LogPanel()
-        self.log_panel.setMaximumHeight(180)
+        self.log_panel.setMinimumHeight(60)
+        self.log_panel.setMaximumHeight(160)
         left_layout.addWidget(self.log_panel)
 
         self._splitter.addWidget(left)

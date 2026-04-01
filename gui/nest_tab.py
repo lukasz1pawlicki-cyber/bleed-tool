@@ -33,10 +33,15 @@ class SegmentedButton(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        for val in values:
+        for i, val in enumerate(values):
             btn = QPushButton(val)
             btn.setCheckable(True)
-            btn.setProperty("class", "segment")
+            if i == 0:
+                btn.setProperty("class", "segment-left")
+            elif i == len(values) - 1:
+                btn.setProperty("class", "segment-right")
+            else:
+                btn.setProperty("class", "segment")
             btn.clicked.connect(lambda checked, v=val: self._on_click(v))
             layout.addWidget(btn)
             self._buttons[val] = btn
@@ -77,10 +82,10 @@ class NestTab(QWidget):
         # === Header ===
         hdr = QHBoxLayout()
         title = QLabel("Nest")
-        title.setProperty("class", "header")
+        title.setProperty("class", "page-title")
         hdr.addWidget(title)
         subtitle = QLabel("  Rozmieszczanie naklejek na arkuszu")
-        subtitle.setProperty("class", "subheader")
+        subtitle.setProperty("class", "page-subtitle")
         hdr.addWidget(subtitle)
         hdr.addStretch()
         layout.addLayout(hdr)
@@ -192,13 +197,12 @@ class NestTab(QWidget):
         row_cg.addWidget(self._copies_edit)
         max_btn = QPushButton("Max")
         max_btn.setProperty("class", "toolbar-btn")
-        max_btn.setFixedSize(40, 24)
         max_btn.clicked.connect(self._calc_max_copies)
         row_cg.addWidget(max_btn)
-        row_cg.addSpacing(12)
+        row_cg.addSpacing(4)
         lbl_gap = QLabel("Gap")
-        lbl_gap.setProperty("class", "field-label")
-        lbl_gap.setMinimumWidth(0)
+        lbl_gap.setStyleSheet("min-width: 0; font-size: 13px; font-weight: 500; color: #6e6e73;")
+        lbl_gap.setFixedWidth(28)
         row_cg.addWidget(lbl_gap)
         self._gap_edit = QLineEdit(str(DEFAULT_GAP_MM))
         self._gap_edit.setFixedWidth(55)
@@ -226,7 +230,6 @@ class NestTab(QWidget):
         row_flex.addWidget(lbl_flex)
         self._flexcut_btn = QPushButton("FlexCut...")
         self._flexcut_btn.setObjectName("outline")
-        self._flexcut_btn.setFixedHeight(28)
         self._flexcut_btn.clicked.connect(self._open_flexcut)
         row_flex.addWidget(self._flexcut_btn)
         row_flex.addStretch()

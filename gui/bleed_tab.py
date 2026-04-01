@@ -33,10 +33,10 @@ class BleedTab(QWidget):
         # === Header ===
         hdr = QHBoxLayout()
         title = QLabel("Bleed")
-        title.setProperty("class", "header")
+        title.setProperty("class", "page-title")
         hdr.addWidget(title)
         subtitle = QLabel("  Generuj bleed i CutContour")
-        subtitle.setProperty("class", "subheader")
+        subtitle.setProperty("class", "page-subtitle")
         hdr.addWidget(subtitle)
         hdr.addStretch()
         layout.addLayout(hdr)
@@ -53,10 +53,7 @@ class BleedTab(QWidget):
         card_layout.setSpacing(8)
 
         params_title = QLabel("Parametry")
-        params_title.setProperty("class", "subheader")
-        font = params_title.font()
-        font.setBold(True)
-        params_title.setFont(font)
+        params_title.setProperty("class", "section-title")
         card_layout.addWidget(params_title)
 
         # Row: Bleed (mm)
