@@ -127,7 +127,7 @@ class FlexCutDialog(QDialog):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
 
-        self._prev_btn = QPushButton("\u2039")
+        self._prev_btn = QPushButton("<")
         self._prev_btn.setFixedSize(28, 26)
         self._prev_btn.clicked.connect(self._prev_sheet)
         toolbar.addWidget(self._prev_btn)
@@ -139,7 +139,7 @@ class FlexCutDialog(QDialog):
         self._title.setFont(font)
         toolbar.addWidget(self._title)
 
-        self._next_btn = QPushButton("\u203a")
+        self._next_btn = QPushButton(">")
         self._next_btn.setFixedSize(28, 26)
         self._next_btn.clicked.connect(self._next_sheet)
         toolbar.addWidget(self._next_btn)
@@ -459,7 +459,15 @@ class FlexCutDialog(QDialog):
     # --- Actions ---
 
     def _on_swap_marks(self):
-        """Odwróć markery JWEI: zamień mark_offset_x_mm i mark_offset_y_mm."""
+        """Odwróć markery JWEI: zamień mark_offset_x_mm i mark_offset_y_mm.
+
+        TYLKO dla JWEI — nigdy nie modyfikuje konfiguracji Summa S3.
+        Summa S3 ma osobny algorytm markerów (OPOS) z precyzyjnymi parametrami
+        wymaganymi przez GoSign — nie podlega żadnym modyfikacjom.
+        """
+        if not self.job or self.job.plotter != 'jwei':
+            self._log("Odwróć markery: dostępne tylko dla JWEI")
+            return
         from config import PLOTTERS
         jwei = PLOTTERS.get('jwei')
         if not jwei:
@@ -470,10 +478,10 @@ class FlexCutDialog(QDialog):
         self._swap_marks_btn.setChecked(self._marks_swapped)
         label = f"Markery: {jwei['mark_offset_x_mm']}/{jwei['mark_offset_y_mm']}"
         self._swap_marks_btn.setText(label)
-        # Re-generuj markery i reexport (marks są na print I cut PDF)
+        # Re-generuj markery JWEI i reexport (marks są na print I cut PDF)
         from modules.marks import generate_marks
         for i, sh in enumerate(self.job.sheets):
-            generate_marks(sh, self.job.plotter)
+            generate_marks(sh, 'jwei')  # jawnie JWEI — nigdy summa
             self._safe_reexport_fast(i)
         self._invalidate_print_cache()
         self._render_current(rerender_print=True)

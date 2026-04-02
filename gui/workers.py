@@ -70,7 +70,7 @@ class BleedWorker(QThread):
                     output_paths.append(out)
                     sz = os.path.getsize(out) / 1024
                     self.log_message.emit(
-                        f"  {name}: {sticker.width_mm:.1f}×{sticker.height_mm:.1f}mm → {sz:.0f}KB"
+                        f"  {name}: {sticker.width_mm:.1f}x{sticker.height_mm:.1f}mm -> {sz:.0f}KB"
                     )
                     ok += 1
                     if sticker.pdf_doc is not None:
@@ -178,7 +178,7 @@ class NestWorker(QThread):
                 )
                 sticker_copies_list.append((s, copies))
                 tag = "bleed" if is_bleed_output else "surowy"
-                self.log_message.emit(f"  {name} ({tag}): {pw_mm:.1f}×{ph_mm:.1f}mm ×{copies}")
+                self.log_message.emit(f"  {name} ({tag}): {pw_mm:.1f}x{ph_mm:.1f}mm x{copies}")
             except Exception as e:
                 self.log_message.emit(f"  [ERR] {name}: {e}")
 

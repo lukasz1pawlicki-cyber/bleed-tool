@@ -116,7 +116,8 @@ class Sheet:
     outer_bleed_mm: float = 0.0         # Zewnętrzny spad wokół grupy naklejek (0 = brak)
 
     def __post_init__(self):
-        if self.width_mm <= 0 or self.height_mm <= 0:
+        # height_mm=0 dozwolone dla roli — dynamicznie ustawiane w _finalize_sheet
+        if self.width_mm <= 0 or self.height_mm < 0:
             raise ValueError(f"Sheet z nieprawidłowymi wymiarami: {self.width_mm}×{self.height_mm}mm")
 
     @property

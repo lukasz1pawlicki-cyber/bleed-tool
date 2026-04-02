@@ -141,21 +141,21 @@ class NestTab(QWidget):
         self._roll_combo = QComboBox()
         self._roll_combo.setEditable(True)
         self._roll_combo.addItems([str(w) for w in self._roll_widths])
-        self._roll_combo.setFixedWidth(85)
+        self._roll_combo.setFixedWidth(100)
         rf_layout.addWidget(self._roll_combo)
         add_btn = QPushButton("+")
         add_btn.setProperty("class", "ghost")
         add_btn.setFixedSize(24, 24)
         add_btn.clicked.connect(self._roll_add)
         rf_layout.addWidget(add_btn)
-        rm_btn = QPushButton("−")
+        rm_btn = QPushButton("-")
         rm_btn.setProperty("class", "ghost")
         rm_btn.setFixedSize(24, 24)
         rm_btn.clicked.connect(self._roll_remove)
         rf_layout.addWidget(rm_btn)
         rf_layout.addWidget(QLabel("Max"))
         self._roll_max_edit = QLineEdit(str(DEFAULT_ROLL_MAX_LENGTH_MM))
-        self._roll_max_edit.setFixedWidth(60)
+        self._roll_max_edit.setFixedWidth(85)
         rf_layout.addWidget(self._roll_max_edit)
         row_format.addWidget(self._roll_frame)
         self._roll_frame.setVisible(False)
@@ -342,6 +342,9 @@ class NestTab(QWidget):
         self._roll_frame.setVisible(not is_sheet)
         if is_sheet:
             self._on_sheet_changed(self._sheet_combo.currentText())
+        else:
+            # Rola → automatycznie Summa S3
+            self._plotter_combo.setCurrentText("summa_s3")
 
     def _on_sheet_changed(self, name: str):
         if name in ("SRA3", "SRA3+"):
@@ -412,8 +415,8 @@ class NestTab(QWidget):
         n_rotated = count_fit(fh, fw, avail_w, avail_h, gap)
         n_max = max(n_normal, n_rotated, 1)
         self._copies_edit.setText(str(n_max))
-        orient = "obrót 90°" if n_rotated > n_normal else "normalne"
-        self._log(f"Max: {n_max} kopii ({orient}, {fw:.0f}×{fh:.0f}mm na {avail_w:.0f}×{avail_h:.0f}mm)")
+        orient = "obrot 90" if n_rotated > n_normal else "normalne"
+        self._log(f"Max: {n_max} kopii ({orient}, {fw:.0f}x{fh:.0f}mm na {avail_w:.0f}x{avail_h:.0f}mm)")
 
     def _get_sheet_size(self) -> tuple[float, float]:
         mode = self._mode_seg.value()

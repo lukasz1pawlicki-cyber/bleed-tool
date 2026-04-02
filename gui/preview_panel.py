@@ -97,7 +97,7 @@ class PreviewPanel(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
 
-        self._prev_btn = QPushButton("‹")
+        self._prev_btn = QPushButton("<")
         self._prev_btn.setFixedSize(28, 26)
         self._prev_btn.clicked.connect(self._prev)
         toolbar.addWidget(self._prev_btn)
@@ -110,7 +110,7 @@ class PreviewPanel(QWidget):
         self._title_label.setFont(font)
         toolbar.addWidget(self._title_label)
 
-        self._next_btn = QPushButton("›")
+        self._next_btn = QPushButton(">")
         self._next_btn.setFixedSize(28, 26)
         self._next_btn.clicked.connect(self._next)
         toolbar.addWidget(self._next_btn)
@@ -245,13 +245,13 @@ class PreviewPanel(QWidget):
                 r = self._results[idx]
                 self._title_label.setText(f"Podgląd {idx + 1}/{n}")
                 w, h = r["size_mm"]
-                self._info_label.setText(f"{w:.0f}×{h:.0f}mm")
+                self._info_label.setText(f"{w:.0f}x{h:.0f}mm")
             elif self._job:
                 sheet = self._job.sheets[idx]
                 placed = len(sheet.placements)
                 self._title_label.setText(f"Arkusz {idx + 1}/{n}")
                 self._info_label.setText(
-                    f"{sheet.width_mm:.0f}×{sheet.height_mm:.0f}mm | {placed} szt"
+                    f"{sheet.width_mm:.0f}x{sheet.height_mm:.0f}mm | {placed} szt"
                 )
         else:
             self._title_label.setText("Podgląd")

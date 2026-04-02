@@ -39,8 +39,10 @@ def generate_marks(
 ) -> Sheet:
     """Generuje znaczniki rejestracji na arkuszu.
 
-    Dla Summa S3: algorytm identyczny z pluginem Summa GoSign Tools.
-    Dla JWEI: 4 narożne kwadraty.
+    WAŻNE: Summa S3 i JWEI mają CAŁKOWICIE osobne algorytmy markerów.
+    Summa S3 OPOS: precyzyjne parametry wymagane przez GoSign (mark_offset=10mm,
+    margin_lr=12mm, OPOS XY bar). Nie modyfikować bez testów na ploterze!
+    JWEI: 4 narożne kwadraty z mark_offset_x/y_mm.
 
     Args:
         sheet: Sheet z placements i panel_lines
@@ -62,12 +64,19 @@ def generate_marks(
     sw = sheet.width_mm
     sh = sheet.height_mm
 
+    if sh <= 0:
+        log.warning(f"Marks: arkusz ma height={sh}mm — pomijam generację markerów (rola nie sfinalizowana?)")
+        sheet.marks = []
+        return sheet
+
     sheet.marks = []
 
     if plotter == "summa_s3":
+        # Summa S3 OPOS — osobny algorytm, NIE dzielony z JWEI
         _generate_summa_marks(sheet, mark_type, mark_w, mark_h, mark_offset,
                               top, right, bottom, left, sw, sh)
     elif plotter == "jwei":
+        # JWEI — osobny algorytm, NIE dzielony z Summa
         _generate_jwei_marks(sheet, mark_type, mark_w, mark_h, mark_offset,
                              top, right, bottom, left, sw, sh)
     else:
@@ -86,6 +95,15 @@ def _generate_summa_marks(
 ) -> None:
     """Generuje markery Summa S3 OPOS — algorytm 1:1 z pluginu GoSign Tools.
 
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║ KRYTYCZNE: Parametry tego algorytmu są precyzyjnie dopasowane      ║
+    ║ do wymagań GoSign / Summa S3 OPOS. NIE MODYFIKOWAĆ bez testów     ║
+    ║ na fizycznym ploterze! Zmiana pozycji/rozmiaru markerów powoduje   ║
+    ║ błędy detekcji OPOS na Summa S3.                                  ║
+    ║                                                                    ║
+    ║ Ten algorytm jest CAŁKOWICIE niezależny od JWEI.                   ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+
     Plugin oblicza bbox grafiki i rozkłada markery wokół niej.
     My używamy arkusza (sheet) jako bbox — markery na krawędziach arkusza.
 
@@ -97,6 +115,9 @@ def _generate_summa_marks(
 
     Nasze uproszczenie: bbox = printable area (po odjęciu marginesów arkusza).
     Pozycje narożników = mark_offset od krawędzi arkusza (jak dotychczas).
+
+    Parametry z config (NIE ZMIENIAĆ):
+      mark_size = 3×3mm, mark_offset = 10mm, OPOS XY bar height = 3mm
     """
     # Pozycje narożne (kompatybilne z resztą programu)
     bl = (left + mark_offset, bottom + mark_offset)
@@ -165,9 +186,12 @@ def _generate_jwei_marks(
 ) -> None:
     """JWEI: 4 narożne kwadraty, bez bara, bez extra markerów.
 
+    Algorytm CAŁKOWICIE niezależny od Summa S3 OPOS.
+
     Pozycje markerów od krawędzi papieru (nie od marginesu):
-      - X: mark_offset_x_mm (30mm) od lewej/prawej
-      - Y: mark_offset_y_mm (20mm) od górnej/dolnej
+      - X: mark_offset_x_mm (5mm) od lewej/prawej
+      - Y: mark_offset_y_mm (50mm) od górnej/dolnej
+    Wartości X/Y mogą być zamienione przez 'Odwróć markery' w FlexCut dialog.
     """
     from config import PLOTTERS
     jwei_cfg = PLOTTERS.get("jwei", {})

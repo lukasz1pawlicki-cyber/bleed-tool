@@ -174,7 +174,7 @@ class FileSection(QWidget):
             hl.setSpacing(4)
 
             # Przycisk usuwania
-            rm = QPushButton("×")
+            rm = QPushButton("x")
             rm.setProperty("class", "ghost")
             rm.setFixedSize(18, 18)
             rm.setToolTip("Usuń")
