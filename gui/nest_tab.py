@@ -245,7 +245,8 @@ class NestTab(QWidget):
         out_lbl = QLabel("Output")
         out_lbl.setProperty("class", "field-label")
         out_row.addWidget(out_lbl)
-        self._output_edit = QLineEdit(os.path.join(os.path.dirname(os.path.dirname(__file__)), "output"))
+        self._output_edit = QLineEdit("")
+        self._output_edit.setPlaceholderText("Katalog pliku wejściowego")
         self._output_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         out_row.addWidget(self._output_edit)
         browse_btn = QPushButton("...")
@@ -280,7 +281,18 @@ class NestTab(QWidget):
         layout.addLayout(bar)
         layout.addStretch()
 
-    # --- Properties ---
+        # Aktualizuj output po dodaniu plików
+        self._file_section.files_changed.connect(self._on_files_changed)
+
+    # --- Public API ---
+
+    def clear(self):
+        """Wyczyść pliki i zresetuj output."""
+        self._file_section.clear_files()
+        self._output_edit.setText("")
+        self._status_label.setText("")
+        self._last_job = None
+        self._last_pdfs = []
 
     @property
     def files(self) -> list[str]:
@@ -303,6 +315,24 @@ class NestTab(QWidget):
             return max(1, int(self._copies_edit.text()))
         except ValueError:
             return 1
+
+    @property
+    def output_dir(self) -> str:
+        txt = self._output_edit.text().strip()
+        if txt:
+            return txt
+        if self.files:
+            return os.path.dirname(self.files[0])
+        return os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
+
+    def _on_files_changed(self):
+        """Ustaw output na katalog ostatnio dodanego pliku."""
+        if self.files:
+            self._output_edit.setText(os.path.dirname(self.files[-1]))
+
+    def add_files(self, paths: list[str]):
+        """Dodaj pliki programowo (np. z bleed tab)."""
+        self._file_section._add_files(paths)
 
     # --- Mode switching ---
 
@@ -410,12 +440,14 @@ class NestTab(QWidget):
         dlg = FlexCutDialog(
             self._last_job, self._last_pdfs, self._last_bleed,
             reexport_fn=self._reexport_sheet,
+            reexport_cut_fn=self._reexport_cut_only,
+            reexport_fast_fn=self._reexport_fast,
             log_fn=self._log, parent=self,
         )
         dlg.exec()
 
     def _reexport_sheet(self, idx: int):
-        """Re-export jednego arkusza."""
+        """Re-export jednego arkusza (print + cut + white)."""
         if not self._last_job or idx >= len(self._last_job.sheets):
             return
         from modules.marks import generate_marks
@@ -429,6 +461,28 @@ class NestTab(QWidget):
         export_sheet(sheet, pp, cp, bleed_mm=0, plotter=self.plotter,
                      white=white, white_output_path=wp)
         self._log(f"  Re-export arkusz {idx + 1}: OK")
+
+    def _reexport_cut_only(self, idx: int):
+        """Re-export TYLKO cut PDF jednego arkusza (szybki — bez print/white)."""
+        if not self._last_job or idx >= len(self._last_job.sheets):
+            return
+        from modules.export import export_sheet_cut
+        sheet = self._last_job.sheets[idx]
+        _, cp = self._last_pdfs[idx]
+        export_sheet_cut(sheet, cp, bleed_mm=0, plotter=self.plotter)
+
+    def _reexport_fast(self, idx: int):
+        """Re-export print + cut (bez white, bez regeneracji markerów).
+
+        Szybszy od pełnego reexport — używany przy rotate/bleed w FlexCut.
+        """
+        if not self._last_job or idx >= len(self._last_job.sheets):
+            return
+        from modules.export import export_sheet_print, export_sheet_cut
+        sheet = self._last_job.sheets[idx]
+        pp, cp = self._last_pdfs[idx]
+        export_sheet_print(sheet, pp, bleed_mm=0)
+        export_sheet_cut(sheet, cp, bleed_mm=0, plotter=self.plotter)
 
     # --- Browse ---
 
@@ -455,7 +509,7 @@ class NestTab(QWidget):
         self._worker = NestWorker(
             files=self.files,
             file_copies=self._file_section.file_copies,
-            output_dir=self._output_edit.text(),
+            output_dir=self.output_dir,
             sheet_w=sheet_w,
             sheet_h=sheet_h if mode == "Arkusze" else None,
             max_sheet_length=sheet_h if mode == "Rola" else None,

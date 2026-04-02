@@ -901,7 +901,7 @@ def setup_separation_colorspace(
             existing_cs = doc.xref_get_key(res_xref, "ColorSpace")
             if existing_cs[0] == "dict":
                 # Dodaj do istniejącego dict
-                cs_dict = existing_cs[1].rstrip(">>")
+                cs_dict = existing_cs[1].removesuffix(">>")
                 cs_dict += f"/{cs_resource_name} {cs_xref} 0 R>>"
                 doc.xref_set_key(res_xref, "ColorSpace", cs_dict)
             else:
@@ -921,13 +921,45 @@ def setup_separation_colorspace(
     return cs_resource_name
 
 
+def _fix_content_stream_newlines(doc: fitz.Document, page: fitz.Page) -> None:
+    """Zapewnia newline na końcu KAŻDEGO content stream na stronie.
+
+    Zapobiega konkatenacji operatorów przez PostScript RIP-y
+    (np. 'qqqqqqq1.0' na Xerox). Dotyczy zarówno naszych streams
+    (inject_content_stream) jak i PyMuPDF-owych (show_pdf_page, insert_image).
+    """
+    import re as _re
+    contents = doc.xref_get_key(page.xref, "Contents")
+    if contents[0] == "null":
+        return
+    xrefs = _re.findall(r"(\d+) 0 R", contents[1])
+    if not xrefs and contents[0] == "xref":
+        xrefs = _re.findall(r"(\d+)", contents[1])
+    for xr_str in xrefs:
+        xr = int(xr_str)
+        try:
+            stream = doc.xref_stream(xr)
+            if stream and not stream.endswith(b"\n"):
+                doc.update_stream(xr, stream + b"\n")
+        except Exception:
+            pass
+
+
 def inject_content_stream(
     doc: fitz.Document, page: fitz.Page, stream_bytes: bytes
 ) -> None:
-    """Dodaje content stream do strony jako nowy xref."""
+    """Dodaje content stream do strony jako nowy xref.
+
+    Każdy stream jest owinięty w q/Q (graphics state isolation)
+    i zakończony newline — zapobiega konkatenacji operatorów
+    przez RIP-y (np. 'qqqqq1.0' na Xerox PostScript).
+    """
+    # Zapewnij newline na początku i końcu + q/Q wrapper
+    wrapped = b"q\n" + stream_bytes.rstrip() + b"\nQ\n"
+
     xref = doc.get_new_xref()
     doc.update_object(xref, "<<>>")
-    doc.update_stream(xref, stream_bytes)
+    doc.update_stream(xref, wrapped)
 
     page_xref = page.xref
     contents = doc.xref_get_key(page_xref, "Contents")
@@ -1010,13 +1042,13 @@ def inject_content_on_layer(
         # Dodaj nowy klucz do słownika
         new_entry = f"/{form_name} {form_xref} 0 R"
         if new_entry not in obj_str:
-            obj_str = obj_str.rstrip().rstrip(">").rstrip() + f" {new_entry}>>"
+            obj_str = obj_str.rstrip().removesuffix(">>").rstrip() + f" {new_entry}>>"
             doc.update_object(target_xref, obj_str)
     else:
         # XObject jest w Resources — użyj xref_set_key
         xi = doc.xref_get_key(target_xref, target_key)
         if xi[0] == "dict":
-            existing = xi[1].rstrip(">>").rstrip()
+            existing = xi[1].removesuffix(">>").rstrip()
             doc.xref_set_key(target_xref, target_key,
                              f"{existing}/{form_name} {form_xref} 0 R>>")
         elif xi[0] == "null" or xi[0] not in ("dict", "xref"):
@@ -1418,12 +1450,14 @@ def export_single_sticker(
     else:
         log.info("Warstwa 3: linia cięcia — pominięta (sam spad)")
 
+    _fix_content_stream_newlines(doc_out, doc_out[0])
+
     # PDF/X-4: OutputIntent FOGRA39 + TrimBox/BleedBox
     from modules.pdf_metadata import apply_pdfx4
     apply_pdfx4(doc_out, bleed_mm=bleed_mm)
 
     # Zapis
-    doc_out.save(output_path)
+    doc_out.save(output_path, deflate=True, garbage=3)
     doc_out.close()
 
     log.info(f"Zapisano: {output_path}")
@@ -1604,6 +1638,7 @@ def _build_sheet_bleed_fill_stream(
     # 1. Przeliczyć do PDF coords naklejki (y-up, z bleed offset)
     # 2. Przeliczyć do pozycji na arkuszu (translation + optional rotation)
     # Fill w tym samym colorspace co grafika źródłowa
+    # inject_content_stream opakowuje w q/Q — tu NIE dodajemy
     ops: list[str] = []
     if sticker.is_cmyk and sticker.edge_color_cmyk:
         c, m, y, k = sticker.edge_color_cmyk
@@ -1611,38 +1646,21 @@ def _build_sheet_bleed_fill_stream(
     else:
         r, g, b = sticker.edge_color_rgb
         ops.append(f"{r:.6f} {g:.6f} {b:.6f} rg")
-    ops.append("q")  # save graphics state
 
     # Transformacja: translate do pozycji na arkuszu (PDF y-up)
     # px, py to lewy-dolny róg naklejki w pt (już w PDF coords)
     if int(placement.rotation_deg) % 360 in (90, 270):
         # Rotation 90°: translate + rotate
-        # Po rotacji 90° CCW: nowy x=stary y, nowy y=-stary x
-        # W PDF: cm matrix [cos sin -sin cos tx ty]
         # 90° CCW: [0 1 -1 0 tx ty]
-        tx = px + out_h  # po rotacji, origin przesuwa się
+        tx = px + out_h
         ty = py
         ops.append(f"0 1 -1 0 {tx:.4f} {ty:.4f} cm")
     else:
         ops.append(f"1 0 0 1 {px:.4f} {py:.4f} cm")
 
-    # Teraz rysujemy w lokalnym coordinate system naklejki
-    # Segmenty bleed w fitz coords → PDF coords lokalne
-    for seg in sticker.bleed_segments:
-        if seg[0] == 'l':
-            start_x = seg[1][0] + bleed_pts
-            start_y = out_h - (seg[1][1] + bleed_pts)
-            end_x = seg[2][0] + bleed_pts
-            end_y = out_h - (seg[2][1] + bleed_pts)
-        elif seg[0] == 'c':
-            start_x = seg[1][0] + bleed_pts
-            start_y = out_h - (seg[1][1] + bleed_pts)
-
-    # Bardziej bezpośredni sposób: użyj _segments_to_pdf_path_ops
     path_ops = _segments_to_pdf_path_ops(sticker.bleed_segments, bleed_pts, out_h)
     ops.append(path_ops)
     ops.append("f")
-    ops.append("Q")  # restore graphics state
 
     return "\n".join(ops).encode('ascii')
 
@@ -1678,10 +1696,10 @@ def _build_sheet_white_fill_stream(
 
     white_segments = _get_white_segments(sticker.bleed_segments, sticker.cut_segments)
 
+    # inject_content_stream opakowuje w q/Q — tu NIE dodajemy
     ops: list[str] = []
     ops.append(f"/{cs_name} cs")
     ops.append("1 scn")
-    ops.append("q")  # save graphics state
 
     if int(placement.rotation_deg) % 360 in (90, 270):
         tx = px + out_h
@@ -1693,7 +1711,6 @@ def _build_sheet_white_fill_stream(
     path_ops = _segments_to_pdf_path_ops(white_segments, bleed_pts, out_h)
     ops.append(path_ops)
     ops.append("f")
-    ops.append("Q")  # restore graphics state
 
     return "\n".join(ops).encode('ascii')
 
@@ -1749,12 +1766,19 @@ def _build_sheet_cutcontour_stream(
     if not segments:
         return b""
 
-    # Tolerancja filtrowania FlexCut (w pt) — 2mm margines
-    flex_tol_pt = 2.0 * MM_TO_PT
+    # FlexCut filtrowanie — tylko gdy segmenty NIE były pre-filtrowane
+    # (segments_override z _deduplicate_cut_segments już jest przefiltrowane
+    #  z poprawnym uwzględnieniem rotacji; drugi filtr jest zbędny i błędny
+    #  dla obróconych placementów — porównuje lokalne coords z sheet-space FlexCut)
+    skip_flexcut_filter = segments_override is not None
 
-    # Przelicz FlexCut pozycje na lokalne cm coords (odejmij cm origin)
-    flex_h_local = [fy - py for fy in (flexcut_h_pt or [])]
-    flex_v_local = [fx - px for fx in (flexcut_v_pt or [])]
+    if not skip_flexcut_filter:
+        flex_tol_pt = 2.0 * MM_TO_PT
+        flex_h_local = [fy - py for fy in (flexcut_h_pt or [])]
+        flex_v_local = [fx - px for fx in (flexcut_v_pt or [])]
+    else:
+        flex_h_local = []
+        flex_v_local = []
 
     ops: list[str] = []
     if cut_ocg_name and cut_cmyk:
@@ -1865,12 +1889,12 @@ def _seg_to_sheet_mm(
     else:
         return None
 
-    # Rotacja 90° — lokalne (x,y) → sheet (y, w-x), gdzie w = sticker.width_mm
+    # Rotacja 90° — cm: 0 1 -1 0 (px+out_h) py
+    # page_x = raw_y + px, page_y = raw_x + py (Y-flip znosi się w cm)
     if int(placement.rotation_deg) % 360 in (90, 270):
-        w = sticker.width_mm
-        sx = px_mm + (h_mm - ly0)
+        sx = px_mm + ly0
         sy = py_mm + lx0
-        ex = px_mm + (h_mm - ly1)
+        ex = px_mm + ly1
         ey = py_mm + lx1
     else:
         # Odwróć Y: fitz y-down → sheet y-up
@@ -2029,9 +2053,10 @@ def _filter_segments_on_flexcut(
             return None
 
         if int(placement.rotation_deg) % 360 in (90, 270):
-            sx = px_mm + bleed_mm + (h_mm - ly0)
+            # cm: 0 1 -1 0 (px+out_h) py → page_x = raw_y + px, page_y = raw_x + py
+            sx = px_mm + bleed_mm + ly0
             sy = py_mm + bleed_mm + lx0
-            ex = px_mm + bleed_mm + (h_mm - ly1)
+            ex = px_mm + bleed_mm + ly1
             ey = py_mm + bleed_mm + lx1
         else:
             sx = px_mm + bleed_mm + lx0
@@ -2360,14 +2385,57 @@ def export_sheet_print(
         if marks_stream:
             inject_content_stream(doc_out, out_page, marks_stream)
 
+    # Nazwa folderu output — 5mm od dolnej krawędzi
+    _insert_folder_label(out_page, output_path, sheet_w_pt, sheet_h_pt)
+
+    # Napraw content streams — newline na końcu (zapobiega PS error na Xerox RIP)
+    _fix_content_stream_newlines(doc_out, out_page)
+
     # PDF/X-4: OutputIntent FOGRA39
     from modules.pdf_metadata import apply_pdfx4
     apply_pdfx4(doc_out, bleed_mm=bleed_mm)
 
-    doc_out.save(output_path)
+    doc_out.save(output_path, deflate=True, garbage=3)
     doc_out.close()
     log.info(f"Print PDF zapisany: {output_path}")
     return output_path
+
+
+def _insert_folder_label(
+    page: fitz.Page,
+    output_path: str,
+    sheet_w_pt: float,
+    sheet_h_pt: float,
+) -> None:
+    """Wstawia nazwę folderu output 5mm od dolnej krawędzi arkusza.
+
+    Tekst wycentrowany, szary, 7pt — informacja dla operatora.
+    """
+    import os
+    folder_name = os.path.basename(os.path.dirname(os.path.abspath(output_path)))
+    if not folder_name:
+        return
+
+    y_from_bottom_mm = 5.0
+    y_pt = sheet_h_pt - y_from_bottom_mm * MM_TO_PT
+    x_center_pt = sheet_w_pt / 2.0
+
+    fontsize = 7
+    color = (0.5, 0.5, 0.5)  # szary
+    fontname = "helv"
+
+    # Oblicz szerokość tekstu do wycentrowania
+    text_width = fitz.get_text_length(folder_name, fontname=fontname, fontsize=fontsize)
+    x_pt = x_center_pt - text_width / 2.0
+
+    page.insert_text(
+        fitz.Point(x_pt, y_pt),
+        folder_name,
+        fontsize=fontsize,
+        fontname=fontname,
+        color=color,
+    )
+    log.info(f"Folder label: '{folder_name}' @ 5mm od dołu")
 
 
 def _apply_outer_bleed(
@@ -2435,6 +2503,34 @@ def _apply_outer_bleed(
     # Crop do bbox
     crop = arr[py0:py1, px0:px1].copy()
     ch, cw = crop.shape[:2]
+
+    # Wypełnij wewnętrzne białe gapy (sub-pikselowe luki między naklejkami)
+    # Iteracyjny nearest-neighbor fill: białe piksele zastępowane kolorem sąsiada
+    # Używa slice-based shift (NIE np.roll — roll zawija krawędzie!)
+    WHITE_THRESH = 245
+    ch, cw = crop.shape[:2]
+    for _iter in range(5):  # max 5 iteracji — wypełnia gapy do ~5px
+        mask = np.all(crop > WHITE_THRESH, axis=2)
+        if not mask.any():
+            break
+        filled = False
+        # (src_slice_y, src_slice_x, dst_slice_y, dst_slice_x)
+        shifts = [
+            (slice(1, ch), slice(None), slice(0, ch - 1), slice(None)),    # góra (dy=-1)
+            (slice(0, ch - 1), slice(None), slice(1, ch), slice(None)),    # dół (dy=+1)
+            (slice(None), slice(1, cw), slice(None), slice(0, cw - 1)),    # lewo (dx=-1)
+            (slice(None), slice(0, cw - 1), slice(None), slice(1, cw)),    # prawo (dx=+1)
+        ]
+        for sy, sx, dy, dx in shifts:
+            neighbor = crop[sy, sx]
+            neighbor_mask = np.all(neighbor > WHITE_THRESH, axis=2)
+            target_mask = mask[dy, dx]
+            fill_here = target_mask & ~neighbor_mask
+            if fill_here.any():
+                crop[dy, dx][fill_here] = neighbor[fill_here]
+                filled = True
+        if not filled:
+            break
 
     # Expand canvas o bleed_px
     bleed_px = max(1, int(ob_mm * dpi / 25.4))
@@ -2650,7 +2746,8 @@ def export_sheet_cut(
         if marks_stream:
             inject_content_stream(doc_out, out_page, marks_stream)
 
-    doc_out.save(output_path)
+    _fix_content_stream_newlines(doc_out, out_page)
+    doc_out.save(output_path, deflate=True, garbage=3)
     doc_out.close()
     log.info(f"Cut PDF zapisany: {output_path}")
     return output_path
@@ -2702,6 +2799,8 @@ def export_sheet_white(
         )
         if white_stream:
             inject_content_stream(doc_out, out_page, white_stream)
+
+    _fix_content_stream_newlines(doc_out, out_page)
 
     # PDF/X-4 metadata
     try:

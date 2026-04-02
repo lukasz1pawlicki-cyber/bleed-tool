@@ -116,7 +116,8 @@ class BleedTab(QWidget):
         out_lbl = QLabel("Output")
         out_lbl.setProperty("class", "field-label")
         out_row.addWidget(out_lbl)
-        self._output_edit = QLineEdit(os.path.join(os.path.dirname(os.path.dirname(__file__)), "output"))
+        self._output_edit = QLineEdit("")
+        self._output_edit.setPlaceholderText("Katalog pliku wejściowego")
         self._output_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         out_row.addWidget(self._output_edit)
         browse_btn = QPushButton("...")
@@ -159,7 +160,13 @@ class BleedTab(QWidget):
         # Enable black_100k when PDF/SVG loaded
         self._file_section.files_changed.connect(self._on_files_changed)
 
-    # --- Properties ---
+    # --- Public API ---
+
+    def clear(self):
+        """Wyczyść pliki i zresetuj output."""
+        self._file_section.clear_files()
+        self._output_edit.setText("")
+        self._status_label.setText("")
 
     @property
     def files(self) -> list[str]:
@@ -179,7 +186,13 @@ class BleedTab(QWidget):
 
     @property
     def output_dir(self) -> str:
-        return self._output_edit.text()
+        txt = self._output_edit.text().strip()
+        if txt:
+            return txt
+        # Fallback: katalog pierwszego pliku wejściowego
+        if self.files:
+            return os.path.dirname(self.files[0])
+        return os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
 
     # --- Callbacks ---
 
@@ -188,6 +201,9 @@ class BleedTab(QWidget):
         self._black_100k_cb.setEnabled(has_pdf)
         if not has_pdf:
             self._black_100k_cb.setChecked(False)
+        # Ustaw output na katalog ostatnio dodanego pliku
+        if self.files:
+            self._output_edit.setText(os.path.dirname(self.files[-1]))
 
     def _browse_output(self):
         d = QFileDialog.getExistingDirectory(self, "Folder wyjściowy", self._output_edit.text())

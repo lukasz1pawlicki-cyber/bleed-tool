@@ -154,8 +154,13 @@ class NestWorker(QThread):
                 cw_pt = (pw_mm - 2 * b) * MM_TO_PT
                 ch_pt = (ph_mm - 2 * b) * MM_TO_PT
 
-                # Prostokątny kontur (brak CutContour → brak linii cięcia)
-                cut_segs = []
+                # Prostokątny kontur cięcia (wymiary trim area)
+                cut_segs = [
+                    ('l', (0, 0), (cw_pt, 0)),
+                    ('l', (cw_pt, 0), (cw_pt, ch_pt)),
+                    ('l', (cw_pt, ch_pt), (0, ch_pt)),
+                    ('l', (0, ch_pt), (0, 0)),
+                ]
                 bleed_segs = []
 
                 s = Sticker(

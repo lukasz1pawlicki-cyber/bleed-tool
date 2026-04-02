@@ -48,6 +48,10 @@ from config import (
 
 log = logging.getLogger(__name__)
 
+# Tolerancja dopasowania shelf — kompensuje kumulację błędów pt→mm.
+# 5 naklejek × 0.03mm błędu = 0.15mm. 0.5mm pokrywa z zapasem.
+FIT_TOLERANCE_MM = 0.5
+
 
 # =============================================================================
 # SHELF (ROW) DATA STRUCTURE
@@ -99,9 +103,9 @@ def _best_fit_for_shelf(
     w, h = sticker.width_mm + bleed2, sticker.height_mm + bleed2
     candidates: list[_NestingItem] = []
 
-    if w <= remaining_w + FLOAT_TOLERANCE_MM:
+    if w <= remaining_w + FIT_TOLERANCE_MM:
         candidates.append(_NestingItem(sticker, w, h, 0.0))
-    if allow_rotation and abs(w - h) > 0.1 and h <= remaining_w + FLOAT_TOLERANCE_MM:
+    if allow_rotation and abs(w - h) > 0.1 and h <= remaining_w + FIT_TOLERANCE_MM:
         candidates.append(_NestingItem(sticker, h, w, 90.0))
 
     if not candidates:
@@ -124,9 +128,9 @@ def _best_fit_for_new_shelf(
     w, h = sticker.width_mm + bleed2, sticker.height_mm + bleed2
     candidates: list[_NestingItem] = []
 
-    if w <= area_w + FLOAT_TOLERANCE_MM:
+    if w <= area_w + FIT_TOLERANCE_MM:
         candidates.append(_NestingItem(sticker, w, h, 0.0))
-    if allow_rotation and abs(w - h) > 0.1 and h <= area_w + FLOAT_TOLERANCE_MM:
+    if allow_rotation and abs(w - h) > 0.1 and h <= area_w + FIT_TOLERANCE_MM:
         candidates.append(_NestingItem(sticker, h, w, 90.0))
 
     if not candidates:
@@ -161,9 +165,9 @@ def _find_backfill_item(
         remaining = shelf.remaining_width()
         candidates: list[_NestingItem] = []
 
-        if w <= remaining + FLOAT_TOLERANCE_MM and h + gap_mm <= shelf.height + FLOAT_TOLERANCE_MM:
+        if w <= remaining + FIT_TOLERANCE_MM and h + gap_mm <= shelf.height + FIT_TOLERANCE_MM:
             candidates.append(_NestingItem(sticker, w, h, 0.0))
-        if allow_rotation and abs(w - h) > 0.1 and h <= remaining + FLOAT_TOLERANCE_MM and w + gap_mm <= shelf.height + FLOAT_TOLERANCE_MM:
+        if allow_rotation and abs(w - h) > 0.1 and h <= remaining + FIT_TOLERANCE_MM and w + gap_mm <= shelf.height + FIT_TOLERANCE_MM:
             candidates.append(_NestingItem(sticker, h, w, 90.0))
 
         for c in candidates:
@@ -265,7 +269,7 @@ def nest_job(
     valid: list[Sticker] = []
     for sticker in sticker_list:
         min_dim = min(sticker.width_mm + bleed2, sticker.height_mm + bleed2)
-        if min_dim <= area_w + FLOAT_TOLERANCE_MM:
+        if min_dim <= area_w + FIT_TOLERANCE_MM:
             valid.append(sticker)
         else:
             log.warning(
@@ -288,8 +292,9 @@ def nest_job(
         fw, fh = next(iter(unique_sizes))
         total_count = len(valid)
         def _grid_count(w, h):
-            nx = int(_math.floor((area_w + FLOAT_TOLERANCE_MM) / w)) if w > 0 else 0
-            ny = int(_math.floor(((area_h or 99999) + FLOAT_TOLERANCE_MM) / h)) if h > 0 else 0
+            g = gap_mm
+            nx = int(_math.floor((area_w + g) / (w + g) + FLOAT_TOLERANCE_MM)) if w > 0 else 0
+            ny = int(_math.floor(((area_h or 99999) + g) / (h + g) + FLOAT_TOLERANCE_MM)) if h > 0 else 0
             return nx * ny
         n_normal = _grid_count(fw, fh)
         n_rotated = _grid_count(fh, fw) if abs(fw - fh) > 0.1 else n_normal
@@ -422,7 +427,7 @@ def nest_job(
             rotation_deg=item.rotation_deg,
         )
         sheet.placements.append(placement)
-        cur_shelf.cursor_x += item.width_mm + gap_mm
+        cur_shelf.cursor_x = round(cur_shelf.cursor_x + item.width_mm + gap_mm, 2)
         return True
 
     def _place_in_new_shelf(item: _NestingItem) -> bool:
@@ -471,9 +476,9 @@ def nest_job(
             w, h = sticker.width_mm + bleed2, sticker.height_mm + bleed2
             candidates: list[_NestingItem] = []
 
-            if w <= remaining + FLOAT_TOLERANCE_MM and h + gap_mm <= shelf_candidate.height + FLOAT_TOLERANCE_MM:
+            if w <= remaining + FIT_TOLERANCE_MM and h + gap_mm <= shelf_candidate.height + FIT_TOLERANCE_MM:
                 candidates.append(_NestingItem(sticker, w, h, 0.0))
-            if allow_rotation and abs(w - h) > 0.1 and h <= remaining + FLOAT_TOLERANCE_MM and w + gap_mm <= shelf_candidate.height + FLOAT_TOLERANCE_MM:
+            if allow_rotation and abs(w - h) > 0.1 and h <= remaining + FIT_TOLERANCE_MM and w + gap_mm <= shelf_candidate.height + FIT_TOLERANCE_MM:
                 candidates.append(_NestingItem(sticker, h, w, 90.0))
 
             for c in candidates:
@@ -894,7 +899,7 @@ def _consolidate_last_sheet(
             remaining_h = (area_h or 0) - shelves_top
             if remaining_h > 0:
                 new_item = _best_fit_for_new_shelf(sticker, area_w, bleed2=bleed2)
-                if new_item is not None and new_item.height_mm + gap_mm <= remaining_h + FLOAT_TOLERANCE_MM:
+                if new_item is not None and new_item.height_mm + gap_mm <= remaining_h + FIT_TOLERANCE_MM:
                     new_shelf_y = shelves_top
                     new_placement = Placement(
                         sticker=sticker,

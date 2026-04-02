@@ -2,6 +2,13 @@
 Bleed Tool — flexcut_dialog.py
 =================================
 Dialog FlexCut: interaktywne zaznaczanie naklejek, rubber band, skróty Z/R/S.
+
+Optymalizacja wydajności:
+  - Cache print pixmap (renderowany raz, reużywany)
+  - FlexCut add/clear: ZERO I/O — przerysowanie overlayów w pamięci
+  - Swap marks: tylko cut PDF reexport (bez print)
+  - Rotate/Bleed: pełny reexport (unavoidable — print się zmienia)
+  - Zastosuj: pełny reexport wszystkich arkuszy
 """
 
 import os
@@ -85,7 +92,10 @@ class _FlexCutView(QGraphicsView):
 class FlexCutDialog(QDialog):
     """Dialog do interaktywnego zaznaczania FlexCut."""
 
-    def __init__(self, job, sheet_pdfs, bleed_mm, reexport_fn=None, log_fn=None, parent=None):
+    def __init__(self, job, sheet_pdfs, bleed_mm,
+                 reexport_fn=None, reexport_cut_fn=None,
+                 reexport_fast_fn=None,
+                 log_fn=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("FlexCut")
         self.resize(1280, 780)
@@ -94,15 +104,20 @@ class FlexCutDialog(QDialog):
         self.job = job
         self.sheet_pdfs = sheet_pdfs
         self.bleed_mm = bleed_mm
-        self._reexport = reexport_fn
+        self._reexport = reexport_fn              # pełny (print+cut+white+marks)
+        self._reexport_cut = reexport_cut_fn      # tylko cut PDF
+        self._reexport_fast = reexport_fast_fn    # print+cut (bez white/marks)
         self._log = log_fn or (lambda msg: None)
         self.current_sheet_idx = 0
         self._selected: set[int] = set()
-        self._render_cache: dict = {}
         self._initial_fit_done = False
         self._dpi = 150
         self._scale = self._dpi / 72.0
         self._sheet_h_pt = 0.0
+
+        # Cache print pixmap — renderowany raz, reużywany dopóki print się nie zmieni
+        self._cached_print_pixmap: QPixmap | None = None
+        self._cached_print_idx: int = -1
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -128,6 +143,16 @@ class FlexCutDialog(QDialog):
         self._next_btn.setFixedSize(28, 26)
         self._next_btn.clicked.connect(self._next_sheet)
         toolbar.addWidget(self._next_btn)
+
+        # "Odwróć markery" — tylko JWEI
+        self._marks_swapped = False
+        self._swap_marks_btn = QPushButton("Odwróć markery")
+        self._swap_marks_btn.setProperty("class", "toolbar-btn")
+        self._swap_marks_btn.setCheckable(True)
+        self._swap_marks_btn.clicked.connect(self._on_swap_marks)
+        toolbar.addWidget(self._swap_marks_btn)
+        if not (self.job and getattr(self.job, 'plotter', '') == 'jwei'):
+            self._swap_marks_btn.setVisible(False)
 
         toolbar.addStretch()
 
@@ -213,20 +238,46 @@ class FlexCutDialog(QDialog):
         from config import MM_TO_PT
         return (self._sheet_h_pt - y_mm * MM_TO_PT) * self._scale
 
-    # --- Reexport wrapper ---
+    # --- Reexport wrappers ---
 
     def _safe_reexport(self, idx: int):
-        """Wywoluje reexport z obsluga bledow."""
+        """Pełny reexport (print + cut + white) z obsługą błędów."""
         if not self._reexport:
             return
         try:
             self._reexport(idx)
         except Exception:
-            self._log(f"[BLAD] Re-export arkusz {idx + 1}:\n{traceback.format_exc()}")
+            self._log(f"[BŁĄD] Re-export arkusz {idx + 1}:\n{traceback.format_exc()}")
+
+    def _safe_reexport_cut(self, idx: int):
+        """Reexport TYLKO cut PDF z obsługą błędów."""
+        fn = self._reexport_cut or self._reexport  # fallback na pełny
+        if not fn:
+            return
+        try:
+            fn(idx)
+        except Exception:
+            self._log(f"[BŁĄD] Re-export CUT arkusz {idx + 1}:\n{traceback.format_exc()}")
+
+    def _safe_reexport_fast(self, idx: int):
+        """Reexport print + cut (bez white/marks) z obsługą błędów."""
+        fn = self._reexport_fast or self._reexport  # fallback na pełny
+        if not fn:
+            return
+        try:
+            fn(idx)
+        except Exception:
+            self._log(f"[BŁĄD] Re-export FAST arkusz {idx + 1}:\n{traceback.format_exc()}")
 
     # --- Rendering ---
 
-    def _render_current(self):
+    def _render_current(self, rerender_print: bool = True):
+        """Renderuje podgląd arkusza.
+
+        Args:
+            rerender_print: True = renderuj print PDF od nowa (po rotate/bleed).
+                            False = użyj cached pixmap (po FlexCut/marks).
+        """
         saved_transform = self._view.transform() if self._initial_fit_done else None
 
         self._scene.clear()
@@ -235,26 +286,37 @@ class FlexCutDialog(QDialog):
         if not self.job or idx >= len(self.sheet_pdfs):
             return
         pp, cp = self.sheet_pdfs[idx]
-        if not os.path.isfile(pp):
-            return
 
         import fitz
-        doc = fitz.open(pp)
-        page = doc[0]
-        mat = fitz.Matrix(self._scale, self._scale)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        qimg = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
-        qpixmap = QPixmap.fromImage(qimg.copy())
-        self._sheet_h_pt = page.rect.height
-        doc.close()
 
-        self._scene.addPixmap(qpixmap)
+        # --- Print pixmap (tło) — z cache jeśli możliwe ---
+        need_print_render = (
+            rerender_print
+            or self._cached_print_pixmap is None
+            or self._cached_print_idx != idx
+        )
+        if need_print_render:
+            if not os.path.isfile(pp):
+                return
+            doc = fitz.open(pp)
+            page = doc[0]
+            mat = fitz.Matrix(self._scale, self._scale)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            qimg = QImage(pix.samples, pix.width, pix.height, pix.stride,
+                          QImage.Format.Format_RGB888)
+            self._cached_print_pixmap = QPixmap.fromImage(qimg.copy())
+            self._sheet_h_pt = page.rect.height
+            self._cached_print_idx = idx
+            doc.close()
 
-        # Overlay: cut PDF (jesli istnieje — pokazuje CutContour/FlexCut z eksportu)
+        self._scene.addPixmap(self._cached_print_pixmap)
+
+        # --- Cut overlay (zawsze renderowany — może się zmienić) ---
         if os.path.isfile(cp):
             try:
                 doc_cut = fitz.open(cp)
                 page_cut = doc_cut[0]
+                mat = fitz.Matrix(self._scale, self._scale)
                 pix_cut = page_cut.get_pixmap(matrix=mat, alpha=True)
                 qimg_cut = QImage(pix_cut.samples, pix_cut.width, pix_cut.height,
                                   pix_cut.stride, QImage.Format.Format_RGBA8888)
@@ -265,8 +327,37 @@ class FlexCutDialog(QDialog):
             except Exception:
                 pass
 
-        # Klikalne prostokaty naklejek (niewidoczne — do hit-test)
-        sheet = self.job.sheets[idx]
+        # Klikalne prostokąty naklejek (niewidoczne — do hit-test)
+        self._build_hit_rects()
+
+        # Overlay: panel_lines (linie FlexCut i full-cut)
+        self._draw_panel_lines()
+
+        # Overlay: selekcja
+        self._draw_selection()
+
+        if saved_transform is not None:
+            self._view.setTransform(saved_transform)
+        else:
+            self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._initial_fit_done = True
+
+    def _refresh_overlays(self):
+        """Szybkie przerysowanie overlayów (panel lines + selekcja) BEZ renderowania PDF.
+
+        ~0ms — zero I/O, zero PDF. Używane przy dodawaniu/usuwaniu FlexCut linii.
+        """
+        # Usuń stare panel lines i selection z sceny
+        for item in list(self._scene.items()):
+            d1 = item.data(1)
+            if d1 in ("selection", "panel_line"):
+                self._scene.removeItem(item)
+        self._draw_panel_lines()
+        self._draw_selection()
+
+    def _build_hit_rects(self):
+        """Buduje niewidoczne prostokąty do klikania naklejek."""
+        sheet = self.job.sheets[self.current_sheet_idx]
         bleed2 = 2 * self.bleed_mm
         for i, p in enumerate(sheet.placements):
             rot = int(p.rotation_deg) % 360
@@ -288,18 +379,6 @@ class FlexCutDialog(QDialog):
             rect_item.setData(0, i)
             self._scene.addItem(rect_item)
             self._placement_rects.append(rect_item)
-
-        # Overlay: panel_lines (linie FlexCut i full-cut)
-        self._draw_panel_lines()
-
-        # Overlay: selekcja
-        self._draw_selection()
-
-        if saved_transform is not None:
-            self._view.setTransform(saved_transform)
-        else:
-            self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-            self._initial_fit_done = True
 
     # --- Panel lines overlay ---
 
@@ -352,8 +431,7 @@ class FlexCutDialog(QDialog):
         self._draw_selection()
 
     def _on_area_select(self, scene_rect: QRectF):
-        """Rubber-band — zaznacz naklejki w prostokacie."""
-        self._selected.clear()
+        """Rubber-band — zaznacz naklejki w prostokącie (agregacja z poprzednim zaznaczeniem)."""
         for i, rect_item in enumerate(self._placement_rects):
             if scene_rect.intersects(rect_item.rect()):
                 self._selected.add(i)
@@ -380,8 +458,33 @@ class FlexCutDialog(QDialog):
 
     # --- Actions ---
 
+    def _on_swap_marks(self):
+        """Odwróć markery JWEI: zamień mark_offset_x_mm i mark_offset_y_mm."""
+        from config import PLOTTERS
+        jwei = PLOTTERS.get('jwei')
+        if not jwei:
+            return
+        self._marks_swapped = not self._marks_swapped
+        x, y = jwei['mark_offset_x_mm'], jwei['mark_offset_y_mm']
+        jwei['mark_offset_x_mm'], jwei['mark_offset_y_mm'] = y, x
+        self._swap_marks_btn.setChecked(self._marks_swapped)
+        label = f"Markery: {jwei['mark_offset_x_mm']}/{jwei['mark_offset_y_mm']}"
+        self._swap_marks_btn.setText(label)
+        # Re-generuj markery i reexport (marks są na print I cut PDF)
+        from modules.marks import generate_marks
+        for i, sh in enumerate(self.job.sheets):
+            generate_marks(sh, self.job.plotter)
+            self._safe_reexport_fast(i)
+        self._invalidate_print_cache()
+        self._render_current(rerender_print=True)
+        self._log(f"Markery JWEI: X={jwei['mark_offset_x_mm']}mm, Y={jwei['mark_offset_y_mm']}mm")
+
     def _on_add_flexcut(self):
-        """Dodaj FlexCut wokol zaznaczonych naklejek."""
+        """Dodaj FlexCut wokol zaznaczonych naklejek.
+
+        SZYBKA ŚCIEŻKA: zero I/O — tylko modyfikacja danych + przerysowanie overlayów.
+        Cut PDF zostanie wygenerowany przy 'Zastosuj'.
+        """
         if not self._selected:
             self._log("FlexCut: zaznacz naklejki najpierw")
             return
@@ -417,12 +520,15 @@ class FlexCutDialog(QDialog):
             PanelLine("vertical", bx1, by0, by1, bridge_length_mm=1.0),
         ])
         self._selected.clear()
-        self._safe_reexport(self.current_sheet_idx)
-        self._render_cache.clear()
-        self._render_current()
+        # Szybka ścieżka: tylko przerysuj overlaye (zero I/O)
+        self._refresh_overlays()
         self._log(f"FlexCut: dodano ({bx0:.1f},{by0:.1f})-({bx1:.1f},{by1:.1f})mm")
 
     def _on_rotate_180(self):
+        """Obróć zaznaczone naklejki o 180°.
+
+        FAST REEXPORT: print+cut (bez white, bez marks regen).
+        """
         if not self._selected or not self.job:
             self._log("Obr\u00f3\u0107 180\u00b0: brak zaznaczonych")
             return
@@ -432,40 +538,58 @@ class FlexCutDialog(QDialog):
                 p = sheet.placements[idx]
                 p.rotation_deg = (p.rotation_deg + 180) % 360
         self._selected.clear()
-        self._safe_reexport(self.current_sheet_idx)
-        self._render_cache.clear()
-        self._render_current()
+        self._safe_reexport_fast(self.current_sheet_idx)
+        self._invalidate_print_cache()
+        self._render_current(rerender_print=True)
         self._log("Obr\u00f3\u0107 180\u00b0: OK")
 
     def _on_add_bleed(self):
+        """Dodaj zewnętrzny spad wokół grupy naklejek.
+
+        PEŁNY REEXPORT: print PDF się zmienia (dilation).
+        """
         if not self.job or not self.job.sheets:
             return
         sheet = self.job.sheets[self.current_sheet_idx]
         if not sheet.placements:
             return
         sheet.outer_bleed_mm = 2.0
-        self._safe_reexport(self.current_sheet_idx)
-        self._render_cache.clear()
-        self._render_current()
+        self._safe_reexport_fast(self.current_sheet_idx)
+        self._invalidate_print_cache()
+        self._render_current(rerender_print=True)
         self._log("Spad: 2mm")
 
     def _on_apply(self):
+        """Zastosuj: pełny reexport wszystkich arkuszy (finalna wersja PDF)."""
         if not self.job:
             return
         for idx in range(len(self.job.sheets)):
             self._safe_reexport(idx)
-        self._render_cache.clear()
-        self._render_current()
         self._log("Zastosuj: wyeksportowano")
+        self.accept()
 
     def _on_clear(self):
+        """Wyczyść FlexCut linie i spad."""
         if not self.job:
             return
         sheet = self.job.sheets[self.current_sheet_idx]
+        had_bleed = sheet.outer_bleed_mm > 0
         sheet.panel_lines = []
         sheet.outer_bleed_mm = 0.0
         self._selected.clear()
-        self._safe_reexport(self.current_sheet_idx)
-        self._render_cache.clear()
-        self._render_current()
+        if had_bleed:
+            # Print się zmienił (usunięcie bleed) → fast reexport
+            self._safe_reexport_fast(self.current_sheet_idx)
+            self._invalidate_print_cache()
+            self._render_current(rerender_print=True)
+        else:
+            # Tylko panel lines → szybka ścieżka
+            self._refresh_overlays()
         self._log("Wyczyszczono")
+
+    # --- Cache management ---
+
+    def _invalidate_print_cache(self):
+        """Unieważnia cache print pixmap — wymusza ponowne renderowanie."""
+        self._cached_print_pixmap = None
+        self._cached_print_idx = -1

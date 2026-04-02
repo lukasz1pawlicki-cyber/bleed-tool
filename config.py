@@ -9,7 +9,7 @@ Stałe potrzebne do pipeline bleed + nest: contour → bleed → nest → paneli
 # =============================================================================
 
 DEFAULT_BLEED_MM = 2.0
-DEFAULT_GAP_MM = 5.0
+DEFAULT_GAP_MM = 0
 DEFAULT_DPI = 300
 DEFAULT_CROP_DPI = 300
 DEFAULT_MARGINS_MM = (5, 5, 5, 5)  # top, right, bottom, left
@@ -66,9 +66,9 @@ PLOTTER_JWEI = {
     "mark_size_mm": (3, 3),
     "min_marks": 4,
     "mark_offset_mm": 12,           # domyślny (używany jako fallback)
-    "mark_offset_x_mm": 30,         # 30mm od lewej/prawej krawędzi papieru
-    "mark_offset_y_mm": 20,         # 20mm od górnej/dolnej krawędzi papieru
-    "mark_zone_mm": 5,              # margin(5) + zone(5) = 10mm od krawędzi arkusza
+    "mark_offset_x_mm": 5,          # 5mm od lewej/prawej krawędzi papieru
+    "mark_offset_y_mm": 50,         # 50mm od górnej/dolnej krawędzi papieru
+    "mark_zone_mm": 5,              # strefa wykluczenia grafiki od krawędzi arkusza
 }
 
 PLOTTERS = {

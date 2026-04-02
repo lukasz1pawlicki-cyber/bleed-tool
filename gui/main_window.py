@@ -117,6 +117,10 @@ class MainWindow(QMainWindow):
         self._bleed_tab.preview_ready.connect(self._on_bleed_preview)
         self._nest_tab.preview_ready.connect(self._on_nest_preview)
 
+        # Wyczyść z dowolnej zakładki → clear all
+        self._bleed_tab._file_section.clear_requested.connect(self.clear_all)
+        self._nest_tab._file_section.clear_requested.connect(self.clear_all)
+
     def _add_nav_btn(self, layout, key: str, text: str) -> QPushButton:
         btn = QPushButton(text)
         btn.setProperty("class", "nav-btn")
@@ -140,14 +144,29 @@ class MainWindow(QMainWindow):
     # --- Preview slots ---
 
     def _on_bleed_preview(self, paths: list):
-        """Slot: bleed zakończony → pokaż podgląd."""
+        """Slot: bleed zakończony → pokaż podgląd + dodaj do nest."""
         if self._preview_panel:
             self._preview_panel.show_bleed_results(paths)
+        # Auto-agregacja: dodaj outputy bleed do listy plików w nest
+        if self._nest_tab and paths:
+            self._nest_tab.add_files(paths)
 
     def _on_nest_preview(self, job, sheet_pdfs, bleed_mm):
         """Slot: nest zakończony → pokaż podgląd arkuszy."""
         if self._preview_panel:
             self._preview_panel.show_nest_job(job, sheet_pdfs, bleed_mm)
+
+    # --- Clear all ---
+
+    def clear_all(self):
+        """Wyczyść pliki z obu zakładek + podgląd + log."""
+        if self._bleed_tab:
+            self._bleed_tab.clear()
+        if self._nest_tab:
+            self._nest_tab.clear()
+        if self._preview_panel:
+            self._preview_panel.clear()
+        self.log_panel.clear_log()
 
     # --- Convenience ---
 

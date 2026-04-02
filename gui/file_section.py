@@ -75,6 +75,7 @@ class FileSection(QWidget):
     """Drop zone + lista plików z opcjonalnym polem kopii per plik."""
 
     files_changed = pyqtSignal()  # emitowany gdy lista się zmieni
+    clear_requested = pyqtSignal()  # emitowany gdy kliknięto "Wyczyść"
 
     def __init__(self, show_copies: bool = False, parent=None):
         super().__init__(parent)
@@ -114,7 +115,7 @@ class FileSection(QWidget):
         bar.addStretch()
         clear_btn = QPushButton("Wyczyść")
         clear_btn.setObjectName("danger")
-        clear_btn.clicked.connect(self.clear_files)
+        clear_btn.clicked.connect(self._on_clear_clicked)
         bar.addWidget(clear_btn)
         layout.addLayout(bar)
 
@@ -133,6 +134,10 @@ class FileSection(QWidget):
         self._file_copies.clear()
         self._rebuild_list()
         self.files_changed.emit()
+
+    def _on_clear_clicked(self):
+        """Kliknięcie Wyczyść → emituje clear_requested (globalny clear)."""
+        self.clear_requested.emit()
 
     # --- Internal ---
 
