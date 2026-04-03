@@ -22,7 +22,8 @@ class BleedWorker(QThread):
 
     def __init__(self, files, output_dir, bleed_mm=2.0, black_100k=False,
                  cutline_mode="kiss-cut", target_height_mm=None, white=False,
-                 parent=None):
+                 crop_enabled=False, crop_shape="square", crop_offsets=None,
+                 radius_pct=9, parent=None):
         super().__init__(parent)
         self._files = files
         self._output_dir = output_dir
@@ -31,6 +32,10 @@ class BleedWorker(QThread):
         self._cutline_mode = cutline_mode
         self._target_height_mm = target_height_mm
         self._white = white
+        self._crop_enabled = crop_enabled
+        self._crop_shape = crop_shape
+        self._crop_offsets = crop_offsets or {}
+        self._radius_pct = radius_pct
 
     def run(self):
         try:
@@ -50,14 +55,30 @@ class BleedWorker(QThread):
         total = len(self._files)
 
         cutcontour = self._cutline_mode != "none"
+        temp_files = []
 
         for i, pdf in enumerate(self._files):
             self.progress.emit(i, total)
             name = os.path.basename(pdf)
             try:
-                stickers = detect_contour(pdf)
+                actual_path = pdf
+                # Crop: przyciej przed pipeline
+                if self._crop_enabled and self._target_height_mm:
+                    from modules.crop import apply_crop
+                    offset = self._crop_offsets.get(pdf, (0.5, 0.5))
+                    actual_path = apply_crop(
+                        pdf, self._target_height_mm,
+                        shape=self._crop_shape,
+                        offset=offset,
+                        radius_pct=self._radius_pct,
+                    )
+                    temp_files.append(actual_path)
+                    self.log_message.emit(f"  Crop: {self._crop_shape}")
+
+                stickers = detect_contour(actual_path)
                 for sticker in stickers:
-                    if self._target_height_mm:
+                    # Skalowanie do docelowej wysokosci (pomijane gdy crop)
+                    if self._target_height_mm and not self._crop_enabled:
                         sticker = scale_sticker(sticker, self._target_height_mm)
                     sticker = generate_bleed(sticker, bleed_mm=self._bleed_mm)
                     stem = os.path.splitext(name)[0]
@@ -78,6 +99,13 @@ class BleedWorker(QThread):
             except Exception as e:
                 self.log_message.emit(f"  [ERR] {name}: {e}")
                 err += 1
+
+        # Cleanup temp z crop
+        for tmp in temp_files:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
         elapsed = time.time() - t0
         summary = f"\nGotowe: {ok} naklejek"
@@ -151,16 +179,77 @@ class NestWorker(QThread):
                 ph_mm = page.rect.height * PT_TO_MM
                 b = 0  # Nest nie dodaje bleeda
                 b_pt = b * MM_TO_PT
+                page_h_pt = page.rect.height
                 cw_pt = (pw_mm - 2 * b) * MM_TO_PT
                 ch_pt = (ph_mm - 2 * b) * MM_TO_PT
 
-                # Prostokątny kontur cięcia (wymiary trim area)
-                cut_segs = [
-                    ('l', (0, 0), (cw_pt, 0)),
-                    ('l', (cw_pt, 0), (cw_pt, ch_pt)),
-                    ('l', (cw_pt, ch_pt), (0, ch_pt)),
-                    ('l', (0, ch_pt), (0, 0)),
-                ]
+                # Ekstrakcja CutContour z content streamów PDF
+                cut_segs = None
+                import re as _re
+                contents_info = doc.xref_get_key(page.xref, "Contents")
+                xref_list = []
+                if contents_info[0] == "array":
+                    xref_list = [int(x) for x in _re.findall(r'(\d+)\s+\d+\s+R', contents_info[1])]
+                elif contents_info[0] == "xref":
+                    m = _re.search(r'(\d+)\s+\d+\s+R', contents_info[1])
+                    if m:
+                        xref_list = [int(m.group(1))]
+
+                for xref in xref_list:
+                    try:
+                        sd = doc.xref_stream(xref)
+                        if sd and b"CutContour" in sd:
+                            cut_segs = []
+                            last_x, last_y = None, None
+                            for line in sd.decode('latin-1', errors='replace').split('\n'):
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                parts = line.split()
+                                if len(parts) < 2:
+                                    continue
+                                op = parts[-1]
+                                try:
+                                    if op == 'm' and len(parts) >= 3:
+                                        last_x = float(parts[-3])
+                                        last_y = float(parts[-2])
+                                    elif op == 'l' and len(parts) >= 3:
+                                        ex, ey = float(parts[-3]), float(parts[-2])
+                                        if last_x is not None:
+                                            cut_segs.append(('l',
+                                                (last_x - b_pt, page_h_pt - last_y - b_pt),
+                                                (ex - b_pt, page_h_pt - ey - b_pt)))
+                                        last_x, last_y = ex, ey
+                                    elif op == 'c' and len(parts) >= 7:
+                                        cx1, cy1 = float(parts[-7]), float(parts[-6])
+                                        cx2, cy2 = float(parts[-5]), float(parts[-4])
+                                        ex, ey = float(parts[-3]), float(parts[-2])
+                                        if last_x is not None:
+                                            cut_segs.append(('c',
+                                                (last_x - b_pt, page_h_pt - last_y - b_pt),
+                                                (cx1 - b_pt, page_h_pt - cy1 - b_pt),
+                                                (cx2 - b_pt, page_h_pt - cy2 - b_pt),
+                                                (ex - b_pt, page_h_pt - ey - b_pt)))
+                                        last_x, last_y = ex, ey
+                                except (ValueError, IndexError):
+                                    continue
+                            if not cut_segs:
+                                cut_segs = None
+                            else:
+                                self.log_message.emit(f"    CutContour: {len(cut_segs)} segmentów z PDF")
+                            break
+                    except Exception:
+                        pass
+
+                # Fallback: prostokątny kontur cięcia
+                if cut_segs is None:
+                    cut_segs = [
+                        ('l', (0, 0), (cw_pt, 0)),
+                        ('l', (cw_pt, 0), (cw_pt, ch_pt)),
+                        ('l', (cw_pt, ch_pt), (0, ch_pt)),
+                        ('l', (0, ch_pt), (0, 0)),
+                    ]
+
                 bleed_segs = []
 
                 s = Sticker(

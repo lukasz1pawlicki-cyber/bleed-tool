@@ -286,6 +286,7 @@ def nest_job(
     # Smart pre-rotation: jeśli obrót 90° zmieści więcej na jednym arkuszu
     # -------------------------------------------------------------------
     import math as _math
+    _pre_rotate_90 = False
     unique_sizes = set((round(s.width_mm + bleed2, 2), round(s.height_mm + bleed2, 2)) for s in valid)
     if len(unique_sizes) == 1:
         # Jeden rozmiar — sprawdź czy obrót 90° daje lepsze wypełnienie

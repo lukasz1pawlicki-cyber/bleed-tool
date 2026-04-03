@@ -117,6 +117,10 @@ class MainWindow(QMainWindow):
         self._bleed_tab.preview_ready.connect(self._on_bleed_preview)
         self._nest_tab.preview_ready.connect(self._on_nest_preview)
 
+        # Crop preview: live update w panelu podglądu
+        self._bleed_tab.crop_preview_requested.connect(self._preview_panel.show_crop_preview)
+        self._preview_panel.crop_offset_changed.connect(self._bleed_tab.update_crop_offset)
+
         # Wyczyść z dowolnej zakładki → clear all
         self._bleed_tab._file_section.clear_requested.connect(self.clear_all)
         self._nest_tab._file_section.clear_requested.connect(self.clear_all)

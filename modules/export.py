@@ -1212,22 +1212,24 @@ def export_single_sticker(
 ) -> dict:
     """Eksportuje pojedynczą naklejkę z bleedem i opcjonalnym CutContour/FlexCut.
 
-    2-3 warstwy (w pełni wektorowe):
-      1) Podkład bleed — RGB solid fill z offsetem konturu
-      2) Oryginalna grafika wektorowa (show_pdf_page z rozszerzonym MediaBox)
-      3) CutContour jako Separation spot color (opcjonalnie)
+    Ścieżka eksportu zależy od typu źródła:
+      RASTER (sticker.raster_path != None):
+        - PNG/JPG/TIFF z raster_crop_box → crop do content area
+        - RGBA: expanded canvas + dilation + bleed mask (kształt)
+        - RGB: edge-clamping (prostokąt)
 
-    Biały poddruk (white=True) generuje osobny plik *_white.pdf obok output.
+      RASTER-ONLY PDF (pdf_doc != None, outermost_drawing_idx == None):
+        - Prosty clip → render 300dpi + dilation + mask
+        - Curve clip → ścieżka wektorowa (expand_clip_paths)
 
-    Args:
-        sticker: Sticker z wypełnionymi polami konturu i bleed
-        output_path: ścieżka do pliku wyjściowego
-        black_100k: zamiana czarnych kolorów na 100%% K
-        bleed_mm: wielkość bleed w mm
-        white: bialy poddruk (White ink) pod grafika
+      WEKTOR PDF (pdf_doc != None, outermost_drawing_idx != None):
+        - Solid fill (bleed_segments) + show_pdf_page + CutContour
 
-    Returns:
-        dict z informacjami o wygenerowanym PDF
+    Warstwy wyjściowe (1-4):
+      1) Podkład bleed (RGB/CMYK fill z bleed_segments)
+      2) Grafika oryginalna (wektor: show_pdf_page / raster: insert_image)
+      3) CutContour spot color Separation (opcjonalnie)
+      4) Biały poddruk (opcjonalnie, osobny plik *_white.pdf)
     """
     if sticker.bleed_segments is None:
         raise ValueError("Sticker nie ma bleed_segments — uruchom generate_bleed() najpierw")
@@ -1291,24 +1293,48 @@ def export_single_sticker(
             src_pil = PILImage.open(sticker.raster_path)
             has_raster_alpha = src_pil.mode in ('RGBA', 'LA', 'PA')
 
+            # Crop do content area (jeśli wykryto w contour.py)
+            if sticker.raster_crop_box is not None:
+                cx, cy, cx2, cy2 = sticker.raster_crop_box
+                src_pil = src_pil.crop((cx, cy, cx2, cy2))
+                log.info(f"Raster crop do content: ({cx},{cy})-({cx2},{cy2}) = {src_pil.size}")
+
             if has_raster_alpha:
-                # Obraz z alpha — expanded canvas + dilation + bleed mask
-                # 1) Dylatacja wypełnia kolory bleed (pełny zasięg)
-                # 2) Maska z bleed_segments ogranicza do gładkiego kształtu
-                rgba = np.array(src_pil.convert('RGBA'))
-                bleed_px = max(1, round(bleed_pts * rgba.shape[1] / page_w))
-                h_r, w_r = rgba.shape[:2]
+                # Obraz z alpha — composite na BIAŁE tło, potem dilation + mask.
+                # 1) Composite RGBA na białe tło → RGB (jak na białym winylu).
+                #    Glow/cień naturalnie blenduje się z białym.
+                # 2) Expanded canvas + dilation — rozszerza kolory krawędzi na bleed.
+                #    Dilation na skomposytowanym RGB (nie na surowym RGBA) —
+                #    krawędź to biała obwódka, nie ciemne wnętrze.
+                # 3) Maska z bleed_segments ogranicza do gładkiego kształtu.
+                rgba_img = src_pil.convert('RGBA')
+                white_bg = PILImage.new('RGB', rgba_img.size, (255, 255, 255))
+                white_bg.paste(rgba_img, mask=rgba_img.split()[3])
+                composited = np.array(white_bg)
+                white_bg.close()
+
+                bleed_px = max(1, round(bleed_pts * composited.shape[1] / page_w))
+                h_r, w_r = composited.shape[:2]
                 new_h = h_r + 2 * bleed_px
                 new_w = w_r + 2 * bleed_px
-                expanded = np.zeros((new_h, new_w, 4), dtype=np.uint8)
-                expanded[bleed_px:bleed_px + h_r, bleed_px:bleed_px + w_r] = rgba
 
-                # Dylatacja — wypełnij kolory wystarczająco daleko
+                # Expanded canvas (biały = tło)
+                expanded = np.full((new_h, new_w, 3), 255, dtype=np.uint8)
+                expanded[bleed_px:bleed_px + h_r, bleed_px:bleed_px + w_r] = composited
+
+                # Maska treści (nie-białe piksele = content) do dilation
+                # Alpha z oryginalnego RGBA mówi gdzie jest content
+                alpha_orig = np.array(rgba_img)[:, :, 3]
+                alpha_expanded = np.zeros((new_h, new_w), dtype=np.uint8)
+                alpha_expanded[bleed_px:bleed_px + h_r, bleed_px:bleed_px + w_r] = alpha_orig
+
+                # Dilation — rozszerz kolory z krawędzi content na bleed zone
+                expanded_rgba = np.dstack([expanded, alpha_expanded])
                 fill_range = bleed_px * 3
-                rgba_filled = _fill_transparent_pixels(expanded, fill_range)
+                rgba_filled = _fill_transparent_pixels(expanded_rgba, fill_range)
                 rgb_filled = rgba_filled[:, :, :3]
 
-                # Maska z bleed_segments — gładki kształt (okrąg/polygon)
+                # Maska z bleed_segments — gładki kształt
                 bleed_mask = _render_bleed_mask(
                     sticker.bleed_segments, new_w, new_h,
                     page_w, page_h, bleed_pts,
@@ -1316,7 +1342,7 @@ def export_single_sticker(
                 result_rgba = np.dstack([rgb_filled, bleed_mask])
                 ext_img = PILImage.fromarray(result_rgba, "RGBA")
                 log.info(
-                    f"Raster alpha: bleed via dilation + mask "
+                    f"Raster alpha: composite+dilation+mask "
                     f"({w_r}x{h_r} -> {new_w}x{new_h}, bleed_px={bleed_px})"
                 )
             else:

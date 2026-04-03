@@ -42,6 +42,7 @@ class Sticker:
 
     # Raster source (PNG/JPG/TIFF — alternatywa dla pdf_doc):
     raster_path: Optional[str] = None         # sciezka do oryginalnego pliku rastrowego
+    raster_crop_box: Optional[tuple] = None   # (x, y, x2, y2) w px — crop do content area
 
     # Flaga: plik jest już gotowym outputem bleed (bleed_ prefix)
     # Eksport: nie rozszerzaj MediaBox, usuń CutContour ze źródłowego PDF

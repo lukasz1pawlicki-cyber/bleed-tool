@@ -20,6 +20,7 @@ class BleedTab(QWidget):
     """Zakładka Bleed — pełny formularz z generowaniem."""
 
     preview_ready = pyqtSignal(list)  # output_paths po zakończeniu
+    crop_preview_requested = pyqtSignal(dict)  # {file, shape, offset, radius_pct} lub {} gdy off
 
     def __init__(self, log_fn=None, parent=None):
         super().__init__(parent)
@@ -110,6 +111,48 @@ class BleedTab(QWidget):
         self._white_cb = QCheckBox("Biały poddruk (White)")
         card_layout.addWidget(self._white_cb)
 
+        # --- Crop ---
+        crop_row = QHBoxLayout()
+        crop_row.setSpacing(8)
+        self._crop_cb = QCheckBox("Crop")
+        self._crop_cb.setEnabled(False)
+        self._crop_cb.toggled.connect(self._on_crop_toggled)
+        crop_row.addWidget(self._crop_cb)
+
+        self._crop_shape_group = QButtonGroup(self)
+        self._rb_square = QRadioButton("Kwadrat")
+        self._rb_rounded = QRadioButton("Zaokraglony")
+        self._rb_circle = QRadioButton("Okrag")
+        self._rb_square.setChecked(True)
+        self._crop_shape_group.addButton(self._rb_square, 0)
+        self._crop_shape_group.addButton(self._rb_rounded, 1)
+        self._crop_shape_group.addButton(self._rb_circle, 2)
+        for rb in (self._rb_square, self._rb_rounded, self._rb_circle):
+            crop_row.addWidget(rb)
+            rb.setVisible(False)
+
+        # Radius (tylko zaokraglony)
+        self._radius_label = QLabel("R 9%")
+        self._radius_label.setVisible(False)
+        crop_row.addWidget(self._radius_label)
+        self._radius_dec_btn = QPushButton("-")
+        self._radius_dec_btn.setProperty("class", "ghost")
+        self._radius_dec_btn.setFixedSize(24, 24)
+        self._radius_dec_btn.setVisible(False)
+        self._radius_dec_btn.clicked.connect(self._crop_radius_dec)
+        crop_row.addWidget(self._radius_dec_btn)
+        self._radius_inc_btn = QPushButton("+")
+        self._radius_inc_btn.setProperty("class", "ghost")
+        self._radius_inc_btn.setFixedSize(24, 24)
+        self._radius_inc_btn.setVisible(False)
+        self._radius_inc_btn.clicked.connect(self._crop_radius_inc)
+        crop_row.addWidget(self._radius_inc_btn)
+        self._radius_pct = 9
+
+        self._crop_shape_group.idToggled.connect(self._on_crop_shape_changed)
+        crop_row.addStretch()
+        card_layout.addLayout(crop_row)
+
         # Row: Output
         out_row = QHBoxLayout()
         out_row.setSpacing(8)
@@ -157,8 +200,11 @@ class BleedTab(QWidget):
         layout.addLayout(bar)
         layout.addStretch()
 
-        # Enable black_100k when PDF/SVG loaded
+        # Enable black_100k / crop when files loaded
         self._file_section.files_changed.connect(self._on_files_changed)
+        self._height_edit.textChanged.connect(self._on_height_changed)
+        # Crop offsets per file (x_ratio, y_ratio)
+        self._crop_offsets: dict[str, tuple[float, float]] = {}
 
     # --- Public API ---
 
@@ -185,6 +231,18 @@ class BleedTab(QWidget):
         return {0: "kiss-cut", 1: "flexcut", 2: "none"}.get(checked, "kiss-cut")
 
     @property
+    def crop_enabled(self) -> bool:
+        return self._crop_cb.isChecked() and self._parse_height() is not None
+
+    @property
+    def crop_shape(self) -> str:
+        if self._rb_circle.isChecked():
+            return "circle"
+        if self._rb_rounded.isChecked():
+            return "rounded"
+        return "square"
+
+    @property
     def output_dir(self) -> str:
         txt = self._output_edit.text().strip()
         if txt:
@@ -201,9 +259,61 @@ class BleedTab(QWidget):
         self._black_100k_cb.setEnabled(has_pdf)
         if not has_pdf:
             self._black_100k_cb.setChecked(False)
+        # Crop wymaga height
+        has_height = bool(self._height_edit.text().strip())
+        self._crop_cb.setEnabled(bool(self.files) and has_height)
+        if not self._crop_cb.isEnabled():
+            self._crop_cb.setChecked(False)
         # Ustaw output na katalog ostatnio dodanego pliku
         if self.files:
             self._output_edit.setText(os.path.dirname(self.files[-1]))
+
+    def _on_height_changed(self, _text: str = ""):
+        has_height = bool(self._height_edit.text().strip())
+        self._crop_cb.setEnabled(bool(self.files) and has_height)
+        if not self._crop_cb.isEnabled():
+            self._crop_cb.setChecked(False)
+
+    def _on_crop_toggled(self, checked: bool):
+        for rb in (self._rb_square, self._rb_rounded, self._rb_circle):
+            rb.setVisible(checked)
+        self._on_crop_shape_changed()
+        self._emit_crop_preview()
+
+    def _on_crop_shape_changed(self, *_args):
+        is_rounded = self._rb_rounded.isChecked() and self._crop_cb.isChecked()
+        self._radius_label.setVisible(is_rounded)
+        self._radius_dec_btn.setVisible(is_rounded)
+        self._radius_inc_btn.setVisible(is_rounded)
+        self._emit_crop_preview()
+
+    def _crop_radius_dec(self):
+        self._radius_pct = max(1, self._radius_pct - 2)
+        self._radius_label.setText(f"R {self._radius_pct}%")
+        self._emit_crop_preview()
+
+    def _crop_radius_inc(self):
+        self._radius_pct = min(50, self._radius_pct + 2)
+        self._radius_label.setText(f"R {self._radius_pct}%")
+        self._emit_crop_preview()
+
+    def _emit_crop_preview(self):
+        """Emituj sygnał z danymi crop do preview panel."""
+        if not self._crop_cb.isChecked() or not self.files:
+            self.crop_preview_requested.emit({})
+            return
+        filepath = self.files[0]
+        offset = self._crop_offsets.get(filepath, (0.5, 0.5))
+        self.crop_preview_requested.emit({
+            "file": filepath,
+            "shape": self.crop_shape,
+            "offset": offset,
+            "radius_pct": self._radius_pct,
+        })
+
+    def update_crop_offset(self, filepath: str, offset: tuple):
+        """Aktualizacja offsetu z preview panel (drag)."""
+        self._crop_offsets[filepath] = offset
 
     def _browse_output(self):
         d = QFileDialog.getExistingDirectory(self, "Folder wyjściowy", self._output_edit.text())
@@ -239,6 +349,10 @@ class BleedTab(QWidget):
             cutline_mode=self.cutline_mode,
             target_height_mm=self._parse_height(),
             white=self._white_cb.isChecked(),
+            crop_enabled=self.crop_enabled,
+            crop_shape=self.crop_shape,
+            crop_offsets=dict(self._crop_offsets),
+            radius_pct=self._radius_pct,
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)

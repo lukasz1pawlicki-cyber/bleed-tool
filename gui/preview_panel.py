@@ -2,6 +2,7 @@
 Bleed Tool — preview_panel.py
 ================================
 Podgląd PDF na QGraphicsView z zoom/pan.
+Tryb crop: podgląd obrazu z overlayem kształtu crop + drag offset.
 """
 
 import os
@@ -9,10 +10,14 @@ import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+    QGraphicsEllipseItem, QGraphicsRectItem,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QPixmap, QImage, QPen, QColor, QWheelEvent, QMouseEvent
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from PyQt6.QtGui import (
+    QPixmap, QImage, QPen, QColor, QBrush, QWheelEvent, QMouseEvent,
+    QPainterPath,
+)
 
 from gui.theme import PREVIEW_CUTCONTOUR, PREVIEW_FLEXCUT, PREVIEW_MARK
 
@@ -20,7 +25,11 @@ log = logging.getLogger(__name__)
 
 
 class _PDFGraphicsView(QGraphicsView):
-    """QGraphicsView z zoom (scroll) i pan (prawy przycisk / środkowy)."""
+    """QGraphicsView z zoom (scroll) i pan (prawy przycisk / środkowy).
+    Tryb crop: lewy przycisk drag → przesuwanie offsetu crop.
+    """
+
+    crop_drag = pyqtSignal(float, float)  # (delta_x_ratio, delta_y_ratio)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,6 +43,14 @@ class _PDFGraphicsView(QGraphicsView):
         self.setBackgroundBrush(QColor("#e9ecef"))
         self._panning = False
         self._pan_start = None
+        self._crop_mode = False      # aktywny crop preview
+        self._crop_dragging = False
+        self._crop_drag_start = None
+        self._crop_dim = 0           # rozmiar crop area w px (do przeliczenia delta)
+
+    def set_crop_mode(self, enabled: bool, crop_dim: int = 0):
+        self._crop_mode = enabled
+        self._crop_dim = crop_dim
 
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
@@ -43,6 +60,10 @@ class _PDFGraphicsView(QGraphicsView):
         if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
             self._panning = True
             self._pan_start = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif event.button() == Qt.MouseButton.LeftButton and self._crop_mode:
+            self._crop_dragging = True
+            self._crop_drag_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
             super().mousePressEvent(event)
@@ -57,12 +78,25 @@ class _PDFGraphicsView(QGraphicsView):
             self.verticalScrollBar().setValue(
                 self.verticalScrollBar().value() - int(delta.y())
             )
+        elif self._crop_dragging and self._crop_drag_start is not None:
+            delta = event.position() - self._crop_drag_start
+            self._crop_drag_start = event.position()
+            # Przelicz piksele ekranu na ratio (0..1)
+            if self._crop_dim > 0:
+                # Uwzglednij zoom (transform scale)
+                scale = self.transform().m11()
+                dx_ratio = delta.x() / (self._crop_dim * scale)
+                dy_ratio = delta.y() / (self._crop_dim * scale)
+                self.crop_drag.emit(dx_ratio, dy_ratio)
         else:
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
             self._panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        elif event.button() == Qt.MouseButton.LeftButton and self._crop_dragging:
+            self._crop_dragging = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             super().mouseReleaseEvent(event)
@@ -78,7 +112,11 @@ class _PDFGraphicsView(QGraphicsView):
 
 
 class PreviewPanel(QWidget):
-    """Panel podglądu PDF z nawigacją, legendą, zoom/pan."""
+    """Panel podglądu PDF z nawigacją, legendą, zoom/pan.
+    Tryb crop: wyświetla obraz z overlayem kształtu crop.
+    """
+
+    crop_offset_changed = pyqtSignal(str, tuple)  # (filepath, (ox, oy))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,6 +126,7 @@ class PreviewPanel(QWidget):
         self._bleed_mm: float = 0.0
         self._current_idx: int = 0
         self._cache: dict = {}
+        self._crop_data: dict = {}  # aktywny crop preview
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -153,6 +192,7 @@ class PreviewPanel(QWidget):
         self._scene = QGraphicsScene()
         self._view = _PDFGraphicsView()
         self._view.setScene(self._scene)
+        self._view.crop_drag.connect(self._on_crop_drag)
         layout.addWidget(self._view, stretch=1)
 
         # Placeholder (overlay na view — center)
@@ -262,6 +302,7 @@ class PreviewPanel(QWidget):
     def _render_current(self):
         """Renderuje aktualny PDF do sceny."""
         self._scene.clear()
+        self._view.set_crop_mode(False)
         has_content = bool(self._results) or bool(self._job and self._job.sheets)
         self._view.setVisible(has_content)
         self._placeholder.setVisible(not has_content)
@@ -328,3 +369,113 @@ class PreviewPanel(QWidget):
         except Exception as e:
             log.warning(f"Render PDF failed: {path}: {e}")
             return None
+
+    # --- Crop preview ---
+
+    def show_crop_preview(self, data: dict):
+        """Pokaż podgląd crop z overlayem kształtu.
+
+        data: {"file", "shape", "offset", "radius_pct"} lub {} aby wyłączyć.
+        """
+        self._crop_data = data
+        if not data:
+            # Wyłącz crop preview — przywróć normalny podgląd
+            if self._results:
+                self._render_current()
+            return
+
+        filepath = data["file"]
+        shape = data["shape"]
+        ox, oy = data.get("offset", (0.5, 0.5))
+        radius_pct = data.get("radius_pct", 9)
+
+        # Pokaż view
+        self._view.setVisible(True)
+        self._placeholder.setVisible(False)
+        self._scene.clear()
+
+        # Załaduj obraz
+        try:
+            from modules.crop import load_preview_image
+            from PIL import Image as PILImage
+            pil_img = load_preview_image(filepath, max_size=600)
+            src_w, src_h = pil_img.size
+
+            # Crop area — kwadrat (bok = min wymiar * 0.85)
+            crop_dim = int(min(src_w, src_h) * 0.85)
+
+            # Skaluj obraz aby pokrył crop area (cover)
+            scale = max(crop_dim / src_w, crop_dim / src_h)
+            disp_w = int(src_w * scale)
+            disp_h = int(src_h * scale)
+            pil_img = pil_img.resize((disp_w, disp_h), PILImage.LANCZOS)
+
+            # Pozycja obrazu (offset pan)
+            pan_x = max(0, disp_w - crop_dim)
+            pan_y = max(0, disp_h - crop_dim)
+            img_x = -int(ox * pan_x)
+            img_y = -int(oy * pan_y)
+
+            # Konwertuj PIL -> QPixmap
+            rgb_data = pil_img.convert("RGB").tobytes()
+            qimg = QImage(rgb_data, disp_w, disp_h, disp_w * 3,
+                          QImage.Format.Format_RGB888)
+            qpix = QPixmap.fromImage(qimg)
+
+            # Dodaj obraz do sceny
+            img_item = self._scene.addPixmap(qpix)
+            img_item.setPos(img_x, img_y)
+
+            # Overlay — przyciemnij poza crop
+            dim_brush = QBrush(QColor(0, 0, 0, 120))
+            no_pen = QPen(Qt.PenStyle.NoPen)
+
+            # 4 prostokąty wokół crop area
+            self._scene.addRect(QRectF(img_x, img_y, disp_w, -img_y),
+                                no_pen, dim_brush)  # góra
+            self._scene.addRect(QRectF(img_x, crop_dim, disp_w, disp_h - crop_dim + img_y),
+                                no_pen, dim_brush)  # dół
+            self._scene.addRect(QRectF(img_x, 0, -img_x, crop_dim),
+                                no_pen, dim_brush)  # lewo
+            self._scene.addRect(QRectF(crop_dim, 0, disp_w - crop_dim + img_x, crop_dim),
+                                no_pen, dim_brush)  # prawo
+
+            # Ramka crop
+            frame_pen = QPen(QColor(255, 255, 255, 200), 2)
+            if shape == "circle":
+                self._scene.addEllipse(QRectF(0, 0, crop_dim, crop_dim), frame_pen)
+            elif shape == "rounded":
+                r = crop_dim * radius_pct / 100
+                path = QPainterPath()
+                path.addRoundedRect(QRectF(0, 0, crop_dim, crop_dim), r, r)
+                self._scene.addPath(path, frame_pen)
+            else:
+                self._scene.addRect(QRectF(0, 0, crop_dim, crop_dim), frame_pen)
+
+            # Ustaw crop mode na view (drag do przesuwania)
+            self._view.set_crop_mode(True, crop_dim)
+
+            # Info
+            self._title_label.setText("Crop")
+            self._info_label.setText(f"{shape} | offset ({ox:.2f}, {oy:.2f})")
+
+            self._view.fit_content()
+        except Exception as e:
+            log.warning(f"Crop preview failed: {e}")
+
+    def _on_crop_drag(self, dx_ratio: float, dy_ratio: float):
+        """Drag w crop preview → aktualizuj offset i odśwież."""
+        if not self._crop_data:
+            return
+        filepath = self._crop_data.get("file")
+        if not filepath:
+            return
+        ox, oy = self._crop_data.get("offset", (0.5, 0.5))
+        # Drag w lewo/górę → mniejszy offset (obraz przesuwa się w prawo/dół)
+        ox = max(0.0, min(1.0, ox + dx_ratio))
+        oy = max(0.0, min(1.0, oy + dy_ratio))
+        self._crop_data["offset"] = (ox, oy)
+        # Emituj zmianę do bleed_tab
+        self.crop_offset_changed.emit(filepath, (ox, oy))
+        # Odśwież podgląd
+        self.show_crop_preview(self._crop_data)

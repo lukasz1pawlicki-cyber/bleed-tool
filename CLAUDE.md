@@ -217,11 +217,45 @@ Segments → flatten_to_polyline(30 pts/curve) → offset_polyline(normals) → 
 Alpha render → boundary points → fit_circle (least squares) → is_circular (5% tol) → 4 Bézier
 ```
 
-### 3. Expanded canvas bleed (export.py, raster path)
+### 3. Pipeline raster RGBA (contour.py + export.py) — NIE ZMIENIAJ
+
+#### 3a. Detekcja konturu — Moore boundary tracing
 ```
-Render RGBA → expanded canvas (+bleed_px margin) → nearest-neighbor dilation → RGB
+RGBA → Gaussian blur → threshold alpha>50 → Moore neighborhood trace → DP → Chaikin → Bézier
 ```
-Dla grafik z przezroczystością (okrągłe naklejki) — bleed śledzi kształt, nie prostokąt.
+**KRYTYCZNE**: Jedyna poprawna metoda detekcji konturu z PNG z poświatą/glow.
+- `_moore_boundary_trace()` — chodzi po krawędzi piksel po pikselu (8-connected clockwise)
+- Prawidłowo śledzi wklęsłości (między nogami, nad głową) — row-scan ich NIE WIDZI
+- Threshold alpha > 50 = widoczna treść + biała obwódka (NIE cały glow)
+- Gaussian blur przed skalowaniem wygładza krawędzie
+- Douglas-Peucker (epsilon ~1% rozmiaru) → uproszczony polygon
+- Chaikin's corner cutting (2 iteracje) → wygładza narożniki polygonu
+- Min-dist filter (2× min_dist_pt ≈ 36pt) → redukuje nadmiar punktów po Chaikinie
+- Catmull-Rom → cubic Bézier → gładka linia cięcia (26-38 segmentów)
+- Nie używaj: morfologii (kurczy kształt), row-scan left/right (traci wklęsłości),
+  threshold < 50 (łapie niewidoczny glow), threshold > 128 (obcina dolne krawędzie),
+  usuwania Chaikina (wrócą ostre narożniki/cusps z Catmull-Rom)
+
+#### 3b. Crop do cut bbox — wymiary stickera
+```
+cut_segments bbox (ON-CURVE points only) → sticker dimensions → PDF = sticker + 2×bleed
+```
+**KRYTYCZNE**: Wymiary stickera = DOKŁADNIE bounding box linii cięcia (p0, p3).
+- Bbox liczymy TYLKO z on-curve points (p0, p3), NIE z control points (cp1, cp2)
+  — control points leżą poza krzywą i zawyżają bbox
+- raster_crop_box = cut bbox w pikselach (bez marginesu — eksport sam rozszerza canvas)
+- Segmenty przesunięte do origin (0,0) po cropie
+- Bleed line = krawędź PDF (zweryfikowane matematycznie: bleed_bbox = page_size)
+- Nie używaj: alpha>0 do crop (glow sięga krawędzi obrazu → brak cropa),
+  marginesu wokół cut bbox (tworzy białe pole), control points do bbox
+
+#### 3c. Export raster — bleed via dilation
+```
+RGBA → composite na białe tło → expanded canvas → nearest-neighbor dilation → mask
+```
+Composite na białe tło PRZED dilation — glow blenduje się z białym (jak na winylu).
+Dilation rozszerza kolory krawędzi (biała obwódka) na bleed zone.
+Maska z bleed_segments ogranicza do gładkiego kształtu.
 
 ### 4. Boundary clip injection (export.py)
 ```

@@ -1,17 +1,26 @@
 """
 Sticker Toolkit — contour.py
 =============================
-Detekcja konturu zewnętrznego z wektorowego PDF.
+Detekcja konturu cięcia z pliku wejściowego.
 
-Pipeline:
-  1. validate_input()  → walidacja PDF (single-page, wektorowy)
-  2. find_outermost_drawing() → znalezienie zewnętrznej ścieżki
-  3. extract_path_segments() → ekstrakcja segmentów (linie + krzywe Bézier)
-  4. detect_contour()  → główna funkcja: PDF → Sticker z wypełnionymi polami konturu
+Obsługiwane formaty i ścieżki przetwarzania:
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ Format                  │ Ścieżka                                     │
+  │─────────────────────────│─────────────────────────────────────────────│
+  │ PNG/JPG/TIFF/BMP/WEBP   │ _detect_raster() → alpha/bg contour         │
+  │   - RGBA (przezroczystość) │  → _detect_raster_alpha_contour()        │
+  │   - RGB (bez alpha)        │  → _detect_raster_bg_contour()           │
+  │ SVG                     │ svg_to_pdf() → PDF pipeline z svg_contour   │
+  │ EPS                     │ eps_to_pdf() → PDF pipeline                 │
+  │ PDF wektor              │ find_outermost_drawing() → extract_path()   │
+  │ PDF raster-only         │ _render_alpha_contour() lub prostokąt       │
+  └─────────────────────────────────────────────────────────────────────────┘
 
-Przyjmuje: ścieżka do PDF
-Zwraca: Sticker z wypełnionymi polami: source_path, width_mm, height_mm,
-        cut_segments, pdf_doc, page_width_pt, page_height_pt, outermost_drawing_idx
+Główna funkcja: detect_contour(path) → list[Sticker]
+
+UWAGA: Każdy typ wejścia ma ODRĘBNĄ ścieżkę przetwarzania.
+Nie mieszaj ustawień między typami — zmiany w jednej ścieżce
+NIE powinny wpływać na inne.
 """
 
 from __future__ import annotations
@@ -282,13 +291,22 @@ def _crop_to_trimbox(doc: fitz.Document) -> set[int]:
 def _detect_raster(image_path: str) -> Sticker:
     """Tworzy Sticker z pliku rastrowego (PNG/JPG/TIFF/BMP/WEBP).
 
-    Wymiary mm obliczane wg priorytetu:
-      1. Z nazwy pliku (np. '50x50' → 50mm × 50mm) — jak SVG
-      2. Z metadanych DPI obrazu (pixels / DPI * 25.4)
+    Ścieżka przetwarzania zależy od trybu obrazu:
+      - RGBA/LA/PA (z alpha) → _detect_raster_alpha_contour()
+        Wynik: polygon lub okrąg (Bézier), przycinanie do content bbox
+      - RGB/L (bez alpha) → _detect_raster_bg_contour()
+        Wynik: polygon z flood-fill tła lub prostokąt
+
+    Wymiary mm (priorytet):
+      1. Z nazwy pliku (np. '50x50' → 50×50mm)
+      2. Z metadanych DPI obrazu
       3. Fallback: 300 DPI
 
-    Kontur cięcia = prostokąt (bounding box).
-    Kolor krawędzi = próbkowanie pikseli z krawędzi obrazu.
+    Output Sticker ma:
+      - raster_path = ścieżka do oryginalnego pliku
+      - raster_crop_box = (x, y, x2, y2) px jeśli przycięty do content
+      - cut_segments przesunięte do origin (0,0) relative do crop box
+      - width_mm/height_mm = wymiary content area (nie pełnego artboardu)
     """
     from PIL import Image
     from modules.svg_convert import parse_size_from_filename
@@ -338,6 +356,7 @@ def _detect_raster(image_path: str) -> Sticker:
     has_alpha = img.mode == 'RGBA' or (img.mode == 'PA') or (img.mode == 'LA')
     cut_segments = None
     edge_rgb = None
+    raster_crop_box = None  # (x, y, x2, y2) w px — crop do content area
 
     if has_alpha:
         cut_segments, edge_rgb = _detect_raster_alpha_contour(
@@ -363,6 +382,67 @@ def _detect_raster(image_path: str) -> Sticker:
         # Kolor krawędzi — próbkowanie z krawędzi obrazu
         edge_rgb = _sample_raster_edge_color(img)
 
+    # --- Przytnij do bounding box linii cięcia ---
+    # Wymiary stickera = DOKŁADNIE bbox cut_segments.
+    # Eksport dodaje bleed wokół tego. Crop box rastra rozszerzony o zapas
+    # na dilation (bleed zone potrzebuje pikseli źródłowych).
+    if has_alpha and cut_segments is not None:
+        # Bbox z ON-CURVE points (p0, p3) — control points (cp1, cp2)
+        # leżą poza krzywą i zawyżają bbox.
+        oncurve_pts = []
+        for seg in cut_segments:
+            if seg[0] == 'l':
+                oncurve_pts.extend([seg[1], seg[2]])
+            elif seg[0] == 'c':
+                oncurve_pts.extend([seg[1], seg[4]])  # p0, p3 only
+        if oncurve_pts:
+            oncurve_arr = np.array(oncurve_pts)
+            seg_min_x_pt = float(oncurve_arr[:, 0].min())
+            seg_min_y_pt = float(oncurve_arr[:, 1].min())
+            seg_max_x_pt = float(oncurve_arr[:, 0].max())
+            seg_max_y_pt = float(oncurve_arr[:, 1].max())
+
+            cut_w_pt = seg_max_x_pt - seg_min_x_pt
+            cut_h_pt = seg_max_y_pt - seg_min_y_pt
+
+            # Przytnij jeśli cut bbox jest mniejszy niż strona (> 2pt różnicy)
+            if (w_pt - cut_w_pt) > 2 or (h_pt - cut_h_pt) > 2:
+                px_to_pt_x = w_pt / px_w
+                px_to_pt_y = h_pt / px_h
+
+                # Crop box w px — DOKŁADNIE cut bbox (eksport sam rozszerza canvas)
+                crop_x = max(0, int(round(seg_min_x_pt / px_to_pt_x)))
+                crop_y = max(0, int(round(seg_min_y_pt / px_to_pt_y)))
+                crop_x2 = min(px_w, int(round(seg_max_x_pt / px_to_pt_x)))
+                crop_y2 = min(px_h, int(round(seg_max_y_pt / px_to_pt_y)))
+                raster_crop_box = (crop_x, crop_y, crop_x2, crop_y2)
+
+                # Przesuń segmenty do origin (0,0) — offset = cut bbox origin
+                offset = np.array([seg_min_x_pt, seg_min_y_pt])
+                shifted_segments = []
+                for seg in cut_segments:
+                    if seg[0] == 'l':
+                        shifted_segments.append((
+                            'l', seg[1] - offset, seg[2] - offset,
+                        ))
+                    elif seg[0] == 'c':
+                        shifted_segments.append((
+                            'c',
+                            seg[1] - offset, seg[2] - offset,
+                            seg[3] - offset, seg[4] - offset,
+                        ))
+                cut_segments = shifted_segments
+
+                # Wymiary stickera = DOKŁADNIE bbox linii cięcia
+                w_pt = cut_w_pt
+                h_pt = cut_h_pt
+                w_mm = w_pt * PT_TO_MM
+                h_mm = h_pt * PT_TO_MM
+                log.info(
+                    f"Raster alpha: crop do content bbox "
+                    f"{w_mm:.1f}x{h_mm:.1f}mm (crop_px={raster_crop_box})"
+                )
+
     img.close()
 
     sticker = Sticker(
@@ -373,6 +453,7 @@ def _detect_raster(image_path: str) -> Sticker:
         cut_segments=cut_segments,
         pdf_doc=None,          # raster — nie ma pdf_doc
         raster_path=image_path,
+        raster_crop_box=raster_crop_box,
         page_width_pt=w_pt,
         page_height_pt=h_pt,
         outermost_drawing_idx=None,
@@ -386,19 +467,92 @@ def _detect_raster(image_path: str) -> Sticker:
     return sticker
 
 
+def _moore_boundary_trace(mask: np.ndarray) -> np.ndarray | None:
+    """Śledzi kontur binarnej maski algorytmem Moore neighborhood tracing.
+
+    Chodzi po krawędzi kształtu piksel po pikselu (8-connected clockwise).
+    Zwraca uporządkowane punkty graniczne jako np.ndarray (N, 2) [x, y]
+    lub None jeśli brak kształtu.
+    """
+    h, w = mask.shape
+    # Padujemy maską 1px aby uniknąć sprawdzania granic
+    padded = np.pad(mask, 1, mode='constant', constant_values=0)
+
+    # Znajdź pierwszy piksel foreground (skanuj top→bottom, left→right)
+    start = None
+    for y in range(1, h + 1):
+        for x in range(1, w + 1):
+            if padded[y, x]:
+                start = (x, y)
+                break
+        if start:
+            break
+    if start is None:
+        return None
+
+    # 8 kierunków (clockwise): E, SE, S, SW, W, NW, N, NE
+    #                          0   1   2   3   4   5   6   7
+    dx = [1, 1, 0, -1, -1, -1, 0, 1]
+    dy = [0, 1, 1,  1,  0, -1, -1, -1]
+
+    boundary = [start]
+    cx, cy = start
+    # Startowy kierunek: przyszliśmy z lewej (W), więc zaczynamy od NW (dir=5)
+    # bo skanowaliśmy od lewej i znaleźliśmy piksel — tło jest po lewej
+    direction = 6  # zaczynamy szukać od N (bo przyszliśmy z góry — skan top→bottom)
+
+    max_iter = h * w * 2  # safety limit
+    for _ in range(max_iter):
+        # Szukaj następnego piksela foreground — clockwise od direction
+        # Zaczynamy od (direction + 5) % 8 — cofnij się 3 (= sprawdź od strony tła)
+        search_start = (direction + 6) % 8  # start from opposite + 1 back
+
+        found = False
+        for i in range(8):
+            d = (search_start + i) % 8
+            nx = cx + dx[d]
+            ny = cy + dy[d]
+            if padded[ny, nx]:
+                cx, cy = nx, ny
+                direction = d
+                break
+        else:
+            # Izolowany piksel
+            break
+
+        if (cx, cy) == start:
+            break
+        boundary.append((cx, cy))
+
+    if len(boundary) < 3:
+        return None
+
+    # Konwertuj z padded coords (1-based) do original coords (0-based)
+    pts = np.array(boundary, dtype=float)
+    pts[:, 0] -= 1
+    pts[:, 1] -= 1
+    return pts
+
+
 def _detect_raster_alpha_contour(
     img, w_pt: float, h_pt: float
 ) -> tuple[list | None, tuple[float, float, float] | None]:
     """Wykrywa kontur z kanału alpha obrazu rastrowego.
 
-    Jeśli obraz ma nietrywialną przezroczystość (nie jest w pełni opaque),
-    analizuje kształt treści:
-      - okrąg → 4 krzywe Bézier
-      - inny kształt → polygon z linii (Douglas-Peucker)
+    Algorytm:
+      1. Threshold alpha > 50 → binarna maska (widoczna treść naklejki)
+      2. Moore boundary tracing — chodzi po krawędzi piksel po pikselu
+      3. Skalowanie do roboczej rozdzielczości (po śledzeniu)
+      4. Douglas-Peucker simplification → Catmull-Rom → cubic Bézier
+
+    Prawidłowo śledzi kształt z wklęsłościami (między nogami, nad głową itp.)
+    w przeciwieństwie do row-scan (leftmost/rightmost), który je traci.
 
     Zwraca (cut_segments, edge_rgb) lub (None, None) gdy alpha jest trywialna.
     Segmenty w koordynatach pt, origin (0,0).
     """
+    from PIL import ImageFilter, Image as PILImage
+
     rgba = img.convert('RGBA')
     arr = np.array(rgba)
     alpha = arr[:, :, 3]
@@ -409,70 +563,72 @@ def _detect_raster_alpha_contour(
     transparent_count = np.sum(alpha < 128)
     total = h * w
     if transparent_count < total * 0.01:
-        # Mniej niż 1% przezroczystych — traktuj jako prostokąt
         log.info("Raster alpha: obraz prawie w pełni opaque, prostokątny kontur")
         return None, None
 
-    # Skaluj do rozdzielczości roboczej (500px maks)
-    target_px = 500
-    scale_factor = target_px / max(h, w)
-    if scale_factor < 1.0:
-        from PIL import Image as PILImage
-        new_w = max(1, int(w * scale_factor))
-        new_h = max(1, int(h * scale_factor))
-        rgba_small = rgba.resize((new_w, new_h), PILImage.NEAREST)
-        arr_s = np.array(rgba_small)
-        alpha_s = arr_s[:, :, 3]
-        rgb_s = arr_s[:, :, :3]
-        hs, ws = alpha_s.shape
-    else:
-        scale_factor = 1.0
-        alpha_s = alpha
-        rgb_s = rgb
-        hs, ws = h, w
-
-    threshold = 128
-
-    # Zbierz punkty graniczne i kolory krawędzi
-    boundary_pts = []
+    # Kolor krawędzi z pikseli o wysokim alpha (>100)
     edge_colors = []
+    step = max(1, h // 200)
+    for y in range(0, h, step):
+        orig_cols = np.where(alpha[y] > 100)[0]
+        if len(orig_cols) > 0:
+            edge_colors.append(rgb[y, int(orig_cols[0])].astype(float))
+            edge_colors.append(rgb[y, int(orig_cols[-1])].astype(float))
 
-    for y in range(hs):
-        opaque_cols = np.where(alpha_s[y] > threshold)[0]
-        if len(opaque_cols) > 0:
-            lx = int(opaque_cols[0])
-            rx = int(opaque_cols[-1])
-            boundary_pts.append([float(lx), float(y)])
-            if rx != lx:
-                boundary_pts.append([float(rx), float(y)])
-            edge_colors.append(rgb_s[y, lx].astype(float))
-            edge_colors.append(rgb_s[y, rx].astype(float))
-
-    if len(boundary_pts) < 6:
-        return None, None
-
-    boundary_arr = np.array(boundary_pts)
-
-    # Kolor krawędzi z pikseli granicznych
     if edge_colors:
         avg = np.mean(edge_colors, axis=0) / 255.0
         edge_rgb = (float(avg[0]), float(avg[1]), float(avg[2]))
     else:
         edge_rgb = (1.0, 1.0, 1.0)
 
+    # --- Przygotowanie maski ---
+    # Skaluj do roboczej rozdzielczości (maks 800px) — Moore tracing
+    # na pełnych 1080px byłoby za wolne i za dużo punktów
+    target_px = 800
+    scale_factor = target_px / max(h, w)
+    if scale_factor < 1.0:
+        new_w = max(1, int(w * scale_factor))
+        new_h = max(1, int(h * scale_factor))
+        # Gaussian blur PRZED skalowaniem — wygładza krawędzie
+        alpha_pil = PILImage.fromarray(alpha)
+        blur_sigma = max(1.5, min(h, w) * 0.003)
+        alpha_blurred = alpha_pil.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
+        alpha_small = np.array(alpha_blurred.resize((new_w, new_h), PILImage.BILINEAR))
+        hs, ws = new_h, new_w
+    else:
+        scale_factor = 1.0
+        alpha_small = alpha
+        hs, ws = h, w
+
+    # Threshold: alpha > 50 (widoczna treść + biała obwódka)
+    mask = (alpha_small > 50).astype(np.uint8)
+
     # Przelicznik px (skalowany) → pt
     px_to_pt_x = w_pt / ws
     px_to_pt_y = h_pt / hs
+
+    # Boundary tracing — próba dopasowania okręgu
+    boundary_pts = []
+    for y in range(hs):
+        opaque_cols = np.where(mask[y] > 0)[0]
+        if len(opaque_cols) > 0:
+            boundary_pts.append([float(opaque_cols[0]), float(y)])
+            if opaque_cols[-1] != opaque_cols[0]:
+                boundary_pts.append([float(opaque_cols[-1]), float(y)])
+
+    if len(boundary_pts) < 6:
+        return None, None
+
+    boundary_arr = np.array(boundary_pts)
 
     # Próba dopasowania okręgu
     circle = _fit_circle(boundary_arr)
     if circle is not None:
         cx_px, cy_px, r_px = circle
         if _is_circular(boundary_arr, cx_px, cy_px, r_px, tolerance=0.05):
-            # Okrąg! Generuj Bézier w pt
             cx_pt = cx_px * px_to_pt_x
             cy_pt = cy_px * px_to_pt_y
-            r_pt = r_px * (px_to_pt_x + px_to_pt_y) / 2  # średni skalowanie
+            r_pt = r_px * (px_to_pt_x + px_to_pt_y) / 2
             segments = _circle_to_bezier_segments(cx_pt, cy_pt, r_pt)
             log.info(
                 f"Raster alpha kontur: okrąg Bézier, r={r_pt * PT_TO_MM:.1f}mm, "
@@ -480,29 +636,28 @@ def _detect_raster_alpha_contour(
             )
             return segments, edge_rgb
 
-    # Fallback: polygon z linii (Douglas-Peucker)
-    left_pts = []
-    right_pts = []
-    for y in range(hs):
-        opaque_cols = np.where(alpha_s[y] > threshold)[0]
-        if len(opaque_cols) > 0:
-            left_pts.append([float(opaque_cols[0]), float(y)])
-            right_pts.append([float(opaque_cols[-1]), float(y)])
+    # --- Moore boundary tracing ---
+    contour_px = _moore_boundary_trace(mask)
+    if contour_px is None or len(contour_px) < 6:
+        log.warning("Moore trace: brak konturu, fallback na prostokąt")
+        return None, None
 
-    polygon_px = np.array(left_pts + right_pts[::-1])
-    polygon_px = _douglas_peucker(polygon_px, epsilon=1.0)
+    log.debug(f"Moore trace: {len(contour_px)} raw boundary points")
 
-    segments = []
-    n = len(polygon_px)
-    for i in range(n):
-        p0 = polygon_px[i]
-        p1 = polygon_px[(i + 1) % n]
-        segments.append(('l',
-                         np.array([p0[0] * px_to_pt_x, p0[1] * px_to_pt_y]),
-                         np.array([p1[0] * px_to_pt_x, p1[1] * px_to_pt_y])))
+    # Douglas-Peucker — epsilon proporcjonalny do rozdzielczości
+    dp_epsilon = max(4.0, min(hs, ws) * 0.01)
+    contour_simplified = _douglas_peucker(contour_px, epsilon=dp_epsilon)
+
+    # Konwertuj px → pt
+    pts_pt = np.column_stack([
+        contour_simplified[:, 0] * px_to_pt_x,
+        contour_simplified[:, 1] * px_to_pt_y,
+    ])
+    segments = _polygon_to_smooth_bezier(pts_pt)
 
     log.info(
-        f"Raster alpha kontur: polygon {len(segments)} segmentów, "
+        f"Raster alpha kontur: Moore trace → {len(segments)} Bézier segmentów, "
+        f"dp_eps={dp_epsilon:.1f}px, raw={len(contour_px)}pts, "
         f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
     )
     return segments, edge_rgb
@@ -639,17 +794,15 @@ def _detect_raster_bg_contour(
     polygon_px = np.array(left_pts + right_pts[::-1])
     polygon_px = _douglas_peucker(polygon_px, epsilon=1.0)
 
-    segments = []
-    n = len(polygon_px)
-    for i in range(n):
-        p0 = polygon_px[i]
-        p1 = polygon_px[(i + 1) % n]
-        segments.append(('l',
-                         np.array([p0[0] * px_to_pt_x, p0[1] * px_to_pt_y]),
-                         np.array([p1[0] * px_to_pt_x, p1[1] * px_to_pt_y])))
+    # Konwertuj polygon → gładkie krzywe Bézier
+    pts_pt = np.column_stack([
+        polygon_px[:, 0] * px_to_pt_x,
+        polygon_px[:, 1] * px_to_pt_y,
+    ])
+    segments = _polygon_to_smooth_bezier(pts_pt)
 
     log.info(
-        f"Raster BG kontur: polygon {len(segments)} segmentów, "
+        f"Raster BG kontur: smooth Bézier {len(segments)} segmentów, "
         f"bg=({bg_avg[0]:.0f},{bg_avg[1]:.0f},{bg_avg[2]:.0f}), "
         f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
     )
@@ -871,17 +1024,15 @@ def _render_alpha_contour(doc: fitz.Document, page_index: int,
     polygon_px = np.array(left_pts + right_pts[::-1])
     polygon_px = _douglas_peucker(polygon_px, epsilon=1.0)
 
-    segments = []
-    n = len(polygon_px)
-    for i in range(n):
-        p0 = polygon_px[i]
-        p1 = polygon_px[(i + 1) % n]
-        segments.append(('l',
-                         np.array([p0[0] / scale, p0[1] / scale]),
-                         np.array([p1[0] / scale, p1[1] / scale])))
+    # Konwertuj polygon → gładkie krzywe Bézier
+    pts_pt = np.column_stack([
+        polygon_px[:, 0] / scale,
+        polygon_px[:, 1] / scale,
+    ])
+    segments = _polygon_to_smooth_bezier(pts_pt)
 
     log.info(
-        f"Kontur: polygon {len(segments)} segmentów, "
+        f"Kontur: smooth Bézier {len(segments)} segmentów, "
         f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
     )
     return segments, edge_rgb
@@ -922,6 +1073,86 @@ def _dp_recursive(pts: np.ndarray, epsilon: float) -> np.ndarray:
         return np.vstack([left[:-1], right])
     else:
         return pts[[0, -1]]
+
+
+def _polygon_to_smooth_bezier(pts: np.ndarray, min_dist_pt: float = 18.0) -> list:
+    """Konwertuje zamknięty polygon na gładkie krzywe Bézier (Catmull-Rom → cubic).
+
+    1. Filtruje punkty zbyt blisko siebie (< min_dist_pt)
+    2. Generuje N segmentów ('c', p0, cp1, cp2, p1) — zamknięta krzywa C1-ciągła
+
+    Catmull-Rom → cubic Bézier:
+      cp1 = P[i]   + (P[i+1] - P[i-1]) / 6
+      cp2 = P[i+1] - (P[i+2] - P[i])   / 6
+
+    Args:
+        pts: punkty polygonu w pt (N x 2)
+        min_dist_pt: minimalna odległość między punktami (pt) — ~3.5mm
+    """
+    # Filtruj punkty zbyt blisko siebie — eliminuje ostre mikro-załamania
+    if len(pts) > 4:
+        filtered = [pts[0]]
+        for i in range(1, len(pts)):
+            dist = np.linalg.norm(pts[i] - filtered[-1])
+            if dist >= min_dist_pt:
+                filtered.append(pts[i])
+        # Sprawdź odległość ostatni → pierwszy
+        if len(filtered) > 2 and np.linalg.norm(filtered[-1] - filtered[0]) < min_dist_pt:
+            filtered.pop()
+        pts = np.array(filtered)
+
+    # Chaikin's corner cutting — wygładza narożniki polygonu.
+    # 2 iteracje: każdy punkt zastąpiony parą 75%/25% z sąsiadem.
+    # Potem min_dist filter redukuje nadmiar punktów.
+    if len(pts) > 4:
+        for _ in range(2):
+            n_ch = len(pts)
+            new_pts = []
+            for i in range(n_ch):
+                p0 = pts[i]
+                p1 = pts[(i + 1) % n_ch]
+                new_pts.append(0.75 * p0 + 0.25 * p1)
+                new_pts.append(0.25 * p0 + 0.75 * p1)
+            pts = np.array(new_pts)
+        # Re-filter: większy min_dist po Chaikinie (2x) → ~20-25 segmentów
+        chaikin_min_dist = min_dist_pt * 2
+        filtered = [pts[0]]
+        for i in range(1, len(pts)):
+            if np.linalg.norm(pts[i] - filtered[-1]) >= chaikin_min_dist:
+                filtered.append(pts[i])
+        if len(filtered) > 2 and np.linalg.norm(filtered[-1] - filtered[0]) < chaikin_min_dist:
+            filtered.pop()
+        pts = np.array(filtered)
+
+    n = len(pts)
+    if n < 3:
+        segments = []
+        for i in range(n):
+            p0 = pts[i]
+            p1 = pts[(i + 1) % n]
+            segments.append(('l', np.array(p0), np.array(p1)))
+        return segments
+
+    segments = []
+    for i in range(n):
+        p_prev = pts[(i - 1) % n]
+        p_curr = pts[i]
+        p_next = pts[(i + 1) % n]
+        p_next2 = pts[(i + 2) % n]
+
+        # Catmull-Rom tangent → Bézier control points
+        cp1 = p_curr + (p_next - p_prev) / 6.0
+        cp2 = p_next - (p_next2 - p_curr) / 6.0
+
+        segments.append((
+            'c',
+            np.array(p_curr),
+            np.array(cp1),
+            np.array(cp2),
+            np.array(p_next),
+        ))
+
+    return segments
 
 
 def _sample_pdf_page_edge_color(
@@ -1061,21 +1292,92 @@ def _page_is_cmyk(doc: fitz.Document, page: fitz.Page) -> bool:
 
 
 # =============================================================================
+# DETEKCJA CutContour Z PLIKU BLEED OUTPUT
+# =============================================================================
+
+def _extract_cutcontour_segments(doc: fitz.Document, page_idx: int) -> list | None:
+    """Wyciąga segmenty CutContour z content stream strony PDF.
+
+    Pliki wygenerowane przez bleed pipeline mają CutContour jako osobny
+    content stream z komendami: m (moveto), l (lineto), c (curveto), S (stroke).
+
+    Returns:
+        list of segments [('c', p0, cp1, cp2, p3), ('l', start, end), ...]
+        lub None jeśli brak CutContour.
+    """
+    page = doc[page_idx]
+    contents = page.get_contents()
+
+    for xref in contents:
+        data = doc.xref_stream(xref)
+        if data is None or b'CutContour' not in data:
+            continue
+
+        text = data.decode('latin-1', errors='replace')
+        segments = []
+        current_x, current_y = 0.0, 0.0
+
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            op = parts[-1]
+
+            if op == 'm' and len(parts) >= 3:
+                # moveto: x y m
+                current_x = float(parts[0])
+                current_y = float(parts[1])
+            elif op == 'l' and len(parts) >= 3:
+                # lineto: x y l
+                x, y = float(parts[0]), float(parts[1])
+                segments.append((
+                    'l',
+                    np.array([current_x, current_y]),
+                    np.array([x, y]),
+                ))
+                current_x, current_y = x, y
+            elif op == 'c' and len(parts) >= 7:
+                # curveto: x1 y1 x2 y2 x3 y3 c
+                x1, y1 = float(parts[0]), float(parts[1])
+                x2, y2 = float(parts[2]), float(parts[3])
+                x3, y3 = float(parts[4]), float(parts[5])
+                segments.append((
+                    'c',
+                    np.array([current_x, current_y]),
+                    np.array([x1, y1]),
+                    np.array([x2, y2]),
+                    np.array([x3, y3]),
+                ))
+                current_x, current_y = x3, y3
+
+        if segments:
+            log.info(f"CutContour wykryty: {len(segments)} segmentów z content stream")
+            return segments
+
+    return None
+
+
+# =============================================================================
 # GŁÓWNA FUNKCJA: detect_contour
 # =============================================================================
 
 def detect_contour(pdf_path: str) -> list[Sticker]:
-    """Wykrywa kontury ze wszystkich stron PDF/SVG.
+    """Główna funkcja: wykrywa kontur cięcia z dowolnego pliku wejściowego.
 
-    Zwraca listę Sticker — jeden per prawidłowa strona.
-    Strony z obrazami rastrowymi lub bez drawings są pomijane.
-
-    Dla SVG:
-      - Wymiary (mm) pobierane z nazwy pliku (np. '50x50')
-      - Konwersja SVG→PDF przez cairosvg (wektory)
-      - Kontur cięcia wyciągany z clipPath SVG (nie z PDF)
+    Routing per typ pliku:
+      1. Raster (PNG/JPG/TIFF/BMP/WEBP) → _detect_raster()
+      2. EPS → Ghostscript → PDF pipeline
+      3. SVG → CairoSVG → PDF pipeline z clipPath contour
+      4. PDF wektor → find_outermost_drawing() + extract_path_segments()
+      5. PDF raster-only → _render_alpha_contour() lub prostokąt
 
     UWAGA: pdf_doc pozostaje otwarty! Zamknięcie po stronie konsumenta.
+
+    Returns:
+        list[Sticker] — jeden per prawidłowa strona
     """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"Plik nie istnieje: {pdf_path}")
@@ -1086,17 +1388,20 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     svg_w_mm = None
     svg_h_mm = None
 
+    # === ŚCIEŻKA 1: Pliki rastrowe (PNG/JPG/TIFF/BMP/WEBP) ===
+    # Oddzielna ścieżka — nigdy nie przechodzi przez pipeline PDF.
     if pdf_path.lower().endswith(_RASTER_EXT):
-        # Plik rastrowy — osobna ścieżka przetwarzania
         sticker = _detect_raster(pdf_path)
         return [sticker]
 
+    # === ŚCIEŻKA 2: EPS → konwersja do PDF ===
     if pdf_path.lower().endswith(('.eps', '.epsf')):
         from modules.ghostscript_bridge import eps_to_pdf
         log.info(f"Plik EPS — konwersja do PDF przez Ghostscript")
         _tmp_pdf = eps_to_pdf(pdf_path)
         pdf_path = _tmp_pdf
 
+    # === ŚCIEŻKA 3: SVG → konwersja do PDF + clipPath contour ===
     elif pdf_path.lower().endswith('.svg'):
         from modules.svg_convert import (
             svg_to_pdf, parse_size_from_filename, extract_svg_contour,
@@ -1125,6 +1430,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     elif not pdf_path.lower().endswith('.pdf'):
         raise ValueError(f"Nieobslugiwany format pliku. Wymagany PDF, EPS, SVG lub obraz rastrowy: {pdf_path}")
 
+    # === ŚCIEŻKA 4+5: PDF (wektor lub raster-only) ===
     doc = fitz.open(pdf_path)
 
     # Jeśli TrimBox ≠ MediaBox → plik ze spadami, przycinamy do TrimBox
@@ -1133,6 +1439,61 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     stickers: list[Sticker] = []
 
     for page_idx in range(len(doc)):
+        # === Najpierw: sprawdź czy PDF zawiera CutContour (bleed output) ===
+        cutcontour_segs = _extract_cutcontour_segments(doc, page_idx)
+        if cutcontour_segs is not None:
+            page = doc[page_idx]
+
+            # Wymiary stickera = bbox CutContour (on-curve)
+            oncurve = []
+            for seg in cutcontour_segs:
+                if seg[0] == 'l':
+                    oncurve.extend([seg[1], seg[2]])
+                elif seg[0] == 'c':
+                    oncurve.extend([seg[1], seg[4]])
+            oncurve_arr = np.array(oncurve)
+            cut_min = oncurve_arr.min(axis=0)
+            cut_max = oncurve_arr.max(axis=0)
+            cut_w = cut_max[0] - cut_min[0]
+            cut_h = cut_max[1] - cut_min[1]
+
+            # Przesuń segmenty do origin (0,0) — w bleed output CutContour
+            # jest w koordynatach strony (offset = bleed)
+            offset = cut_min
+            shifted = []
+            for seg in cutcontour_segs:
+                if seg[0] == 'l':
+                    shifted.append(('l', seg[1] - offset, seg[2] - offset))
+                elif seg[0] == 'c':
+                    shifted.append(('c',
+                        seg[1] - offset, seg[2] - offset,
+                        seg[3] - offset, seg[4] - offset))
+            cutcontour_segs = shifted
+
+            w_mm = cut_w * PT_TO_MM
+            h_mm = cut_h * PT_TO_MM
+
+            sticker = Sticker(
+                source_path=original_path,
+                page_index=page_idx,
+                width_mm=w_mm,
+                height_mm=h_mm,
+                cut_segments=cutcontour_segs,
+                pdf_doc=doc,
+                page_width_pt=cut_w,
+                page_height_pt=cut_h,
+                outermost_drawing_idx=None,
+                edge_color_rgb=_sample_pdf_page_edge_color(doc, page_idx),
+                is_bleed_output=True,
+                is_cmyk=_page_is_cmyk(doc, page),
+            )
+            stickers.append(sticker)
+            log.info(
+                f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
+                f"CutContour z bleed output, {len(cutcontour_segs)} segmentów"
+            )
+            continue
+
         try:
             page, drawings = validate_page(
                 doc, page_idx, skip_raster_check=bool(_tmp_pdf)
