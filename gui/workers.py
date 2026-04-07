@@ -183,8 +183,9 @@ class NestWorker(QThread):
                 cw_pt = (pw_mm - 2 * b) * MM_TO_PT
                 ch_pt = (ph_mm - 2 * b) * MM_TO_PT
 
-                # Ekstrakcja CutContour z content streamów PDF
+                # Ekstrakcja CutContour/FlexCut z content streamów PDF
                 cut_segs = None
+                detected_cutline_mode = "kiss-cut"
                 import re as _re
                 contents_info = doc.xref_get_key(page.xref, "Contents")
                 xref_list = []
@@ -199,6 +200,7 @@ class NestWorker(QThread):
                     try:
                         sd = doc.xref_stream(xref)
                         if sd and (b"CutContour" in sd or b"FlexCut" in sd):
+                            detected_cutline_mode = "flexcut" if b"FlexCut" in sd else "kiss-cut"
                             cut_segs = []
                             last_x, last_y = None, None
                             for line in sd.decode('latin-1', errors='replace').split('\n'):
@@ -271,6 +273,7 @@ class NestWorker(QThread):
                     page_width_pt=cw_pt,
                     page_height_pt=ch_pt,
                     is_bleed_output=is_bleed_output,
+                    cutline_mode=detected_cutline_mode,
                 )
                 sticker_copies_list.append((s, copies))
                 tag = "bleed" if is_bleed_output else "surowy"

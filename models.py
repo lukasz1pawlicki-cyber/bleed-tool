@@ -48,6 +48,9 @@ class Sticker:
     # Eksport: nie rozszerzaj MediaBox, usuń CutContour ze źródłowego PDF
     is_bleed_output: bool = False
 
+    # Typ linii cięcia: "kiss-cut" (CutContour) lub "flexcut" (FlexCut)
+    cutline_mode: str = "kiss-cut"
+
     # Colorspace źródłowego PDF (True = DeviceCMYK, False = DeviceRGB/inne)
     is_cmyk: bool = False
 

@@ -1532,11 +1532,14 @@ def export_single_sticker(
 # =============================================================================
 
 def _strip_cutcontour_streams(doc: fitz.Document, page: fitz.Page) -> None:
-    """Usuwa strumienie zawierające CutContour ze strony.
+    """Usuwa strumienie zawierające linie cięcia (CutContour lub FlexCut) ze strony.
 
-    Dla plików bleed_ output: CutContour jest ostatnim content streamem.
-    Wykrywamy go po obecności 'CutContour' w bajtach strumienia.
+    Dla plików bleed_ output: linia cięcia jest ostatnim content streamem.
+    Wykrywamy go po obecności 'CutContour' lub 'FlexCut' w bajtach strumienia.
     """
+    def _is_cutline_stream(stream_bytes: bytes) -> bool:
+        return b"CutContour" in stream_bytes or b"FlexCut" in stream_bytes
+
     contents_info = doc.xref_get_key(page.xref, "Contents")
     if contents_info[0] == "array":
         xrefs = [int(x) for x in re_module.findall(r'(\d+)\s+\d+\s+R', contents_info[1])]
@@ -1544,10 +1547,10 @@ def _strip_cutcontour_streams(doc: fitz.Document, page: fitz.Page) -> None:
         for xref in xrefs:
             try:
                 sd = doc.xref_stream(xref)
-                if sd is None or b"CutContour" not in sd:
+                if sd is None or not _is_cutline_stream(sd):
                     filtered.append(xref)
                 else:
-                    log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (CutContour)")
+                    log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (cutline)")
             except Exception:
                 filtered.append(xref)
         if len(filtered) < len(xrefs):
@@ -1563,9 +1566,9 @@ def _strip_cutcontour_streams(doc: fitz.Document, page: fitz.Page) -> None:
             xref = int(m.group(1))
             try:
                 sd = doc.xref_stream(xref)
-                if sd and b"CutContour" in sd:
+                if sd and _is_cutline_stream(sd):
                     doc.xref_set_key(page.xref, "Contents", "null")
-                    log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (CutContour)")
+                    log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (cutline)")
             except Exception:
                 pass
 
@@ -2729,9 +2732,13 @@ def export_sheet_cut(
         gap_mm=sheet.gap_mm,
     )
 
-    # CutContour
-    cut_cfg = ocg["CutContour"]
+    # CutContour / FlexCut — per sticker cutline_mode
     for placement, segments in deduped:
+        sticker_mode = getattr(placement.sticker, 'cutline_mode', 'kiss-cut')
+        if sticker_mode == "flexcut":
+            cut_cfg = ocg["FlexCut"]
+        else:
+            cut_cfg = ocg["CutContour"]
         cut_stream = _build_sheet_cutcontour_stream(
             placement, sheet_h_pt, bleed_mm,
             segments_override=segments,
