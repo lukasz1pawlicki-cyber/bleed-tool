@@ -287,21 +287,25 @@ def nest_job(
     # -------------------------------------------------------------------
     import math as _math
     _pre_rotate_90 = False
-    unique_sizes = set((round(s.width_mm + bleed2, 2), round(s.height_mm + bleed2, 2)) for s in valid)
+    # Zaokrąglenie do 1mm — kompensuje drobne różnice pt→mm (170.01 vs 169.97)
+    unique_sizes = set((round(s.width_mm + bleed2, 0), round(s.height_mm + bleed2, 0)) for s in valid)
     if len(unique_sizes) == 1:
         # Jeden rozmiar — sprawdź czy obrót 90° daje lepsze wypełnienie
         fw, fh = next(iter(unique_sizes))
         total_count = len(valid)
         def _grid_count(w, h):
+            """Ile naklejek (w×h) zmieści się na arkuszu w siatce."""
             g = gap_mm
-            nx = int(_math.floor((area_w + g) / (w + g) + FLOAT_TOLERANCE_MM)) if w > 0 else 0
-            ny = int(_math.floor(((area_h or 99999) + g) / (h + g) + FLOAT_TOLERANCE_MM)) if h > 0 else 0
+            # Bez tolerancji — czysta estymacja pojemności siatki.
+            # (FLOAT_TOLERANCE_MM służy do fit-check przy placement, nie do estymacji)
+            nx = int(_math.floor((area_w + g) / (w + g))) if w > 0 else 0
+            ny = int(_math.floor(((area_h or 99999) + g) / (h + g))) if h > 0 else 0
             return nx * ny
         n_normal = _grid_count(fw, fh)
         n_rotated = _grid_count(fh, fw) if abs(fw - fh) > 0.1 else n_normal
         _pre_rotate_90 = False
-        if n_rotated > n_normal and n_rotated >= total_count and n_normal < total_count:
-            # Obrót 90° zmieści wszystko na 1 arkuszu
+        if n_rotated > n_normal:
+            # Obrót 90° daje więcej naklejek na arkuszu → obracamy
             # Swap width_mm/height_mm (nesting), ale NIE page_width_pt/page_height_pt (export)
             # Placement dostanie rotation_deg=90 → export użyje show_pdf_page(rotate=90)
             log.info(f"Pre-rotation 90°: {n_normal} → {n_rotated} na arkuszu "
@@ -708,8 +712,8 @@ def nest_job(
 
             still_unplaced: list[tuple[int, int, Sticker]] = []
             for g_idx, s_idx, sticker in unplaced:
-                # Probuj backfill z rotacja (allow_rotation=False)
-                if _backfill_into_shelves(sticker, allow_rotation=False):
+                # Probuj backfill z rotacja 90° (dopelnienie pustych miejsc)
+                if _backfill_into_shelves(sticker, allow_rotation=True):
                     placed_flags[g_idx][s_idx] = True
                 else:
                     still_unplaced.append((g_idx, s_idx, sticker))
