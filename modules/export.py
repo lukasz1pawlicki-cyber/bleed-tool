@@ -2403,16 +2403,15 @@ def export_sheet_print(
             # na wierzchu, więc podkład widać tylko w gap-ach.
             if getattr(sticker, 'is_bleed_output', False):
                 _gap_half = (getattr(sheet, 'gap_mm', 3.0) / 2.0 + 0.5) * MM_TO_PT
-                er = fitz.Rect(
-                    target_rect.x0 - _gap_half,
-                    target_rect.y0 - _gap_half,
-                    target_rect.x1 + _gap_half,
-                    target_rect.y1 + _gap_half,
-                )
+                # Współrzędne PDF (y-up): px, py to lewy-dolny róg naklejki
+                fill_x = px - _gap_half
+                fill_y = py - _gap_half
+                fill_w = target_rect.width + 2 * _gap_half
+                fill_h = target_rect.height + 2 * _gap_half
                 r, g, b = sticker.edge_color_rgb or (1, 1, 1)
                 fill_stream = (
                     f"q {r:.4f} {g:.4f} {b:.4f} rg "
-                    f"{er.x0:.4f} {er.y0:.4f} {er.width:.4f} {er.height:.4f} re f Q"
+                    f"{fill_x:.4f} {fill_y:.4f} {fill_w:.4f} {fill_h:.4f} re f Q"
                 ).encode('ascii')
                 inject_content_stream(doc_out, out_page, fill_stream)
 
