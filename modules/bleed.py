@@ -22,7 +22,7 @@ from functools import lru_cache
 import numpy as np
 
 from models import Sticker
-from config import DEFAULT_BLEED_MM, MM_TO_PT
+from config import DEFAULT_BLEED_MM, MM_TO_PT, PT_TO_MM
 
 log = logging.getLogger(__name__)
 
@@ -461,4 +461,103 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
         )
     sticker.edge_color_cmyk = edge_cmyk
 
+    # 4. Snap wymiarów do okrągłych wartości (eliminuje białe gap-y na arkuszu)
+    _snap_sticker_dimensions(sticker, bleed_mm)
+
     return sticker
+
+
+# =============================================================================
+# SNAP WYMIARÓW — dociąganie do pełnych rozmiarów
+# =============================================================================
+
+_SNAP_STEP_MM = 0.5       # Siatka zaokrąglenia: 0.5mm
+_SNAP_TOLERANCE_MM = 0.05  # Max odchylenie żeby dociągnąć
+
+
+def _snap_value_mm(value_mm: float) -> float:
+    """Dociąga wymiar do najbliższej wielokrotności _SNAP_STEP_MM.
+
+    Jeśli różnica <= _SNAP_TOLERANCE_MM, zwraca zaokrągloną wartość.
+    W przeciwnym razie zwraca oryginalną.
+
+    Przykłady (step=0.5, tol=0.05):
+      169.97 → 170.0  (diff=0.03 ≤ 0.05)
+      40.01  → 40.0   (diff=0.01 ≤ 0.05)
+      39.96  → 40.0   (diff=0.04 ≤ 0.05)
+      35.30  → 35.30  (diff=0.20 > 0.05, bez zmiany)
+    """
+    rounded = round(value_mm / _SNAP_STEP_MM) * _SNAP_STEP_MM
+    if abs(value_mm - rounded) <= _SNAP_TOLERANCE_MM:
+        return rounded
+    return value_mm
+
+
+def _scale_segments(segments: list, sx: float, sy: float) -> list:
+    """Skaluje współrzędne segmentów (pt) przez (sx, sy)."""
+    if sx == 1.0 and sy == 1.0:
+        return segments
+    out = []
+    for seg in segments:
+        kind = seg[0]
+        if kind == 'l':
+            _, p0, p1 = seg
+            out.append(('l',
+                        (p0[0] * sx, p0[1] * sy),
+                        (p1[0] * sx, p1[1] * sy)))
+        elif kind == 'c':
+            _, p0, cp1, cp2, p3 = seg
+            out.append(('c',
+                        (p0[0] * sx, p0[1] * sy),
+                        (cp1[0] * sx, cp1[1] * sy),
+                        (cp2[0] * sx, cp2[1] * sy),
+                        (p3[0] * sx, p3[1] * sy)))
+        else:
+            out.append(seg)
+    return out
+
+
+def _snap_sticker_dimensions(sticker: Sticker, bleed_mm: float) -> None:
+    """Dociąga wymiary naklejki do okrągłych wartości (w miejscu).
+
+    Skaluje minimalnie (< 0.05mm) wymiary i segmenty konturu,
+    żeby naklejki na arkuszu miały identyczne rozmiary — bez
+    białych gap-ów z powodu niedokładności pt↔mm.
+
+    Operuje na PEŁNYM rozmiarze (grafika + bleed):
+      total_mm = width_mm + 2×bleed_mm → snap → nowa width_mm
+    """
+    bleed2 = 2 * bleed_mm
+    total_w = sticker.width_mm + bleed2
+    total_h = sticker.height_mm + bleed2
+
+    snapped_w = _snap_value_mm(total_w)
+    snapped_h = _snap_value_mm(total_h)
+
+    if snapped_w == total_w and snapped_h == total_h:
+        return  # Nic do zmiany
+
+    # Współczynniki skalowania
+    sx = snapped_w / total_w if total_w > 0 else 1.0
+    sy = snapped_h / total_h if total_h > 0 else 1.0
+
+    old_w = sticker.width_mm
+    old_h = sticker.height_mm
+    new_w = snapped_w - bleed2
+    new_h = snapped_h - bleed2
+
+    # Aktualizacja wymiarów
+    sticker.width_mm = new_w
+    sticker.height_mm = new_h
+    sticker.page_width_pt = new_w * MM_TO_PT
+    sticker.page_height_pt = new_h * MM_TO_PT
+
+    # Skaluj segmenty konturu
+    sticker.cut_segments = _scale_segments(sticker.cut_segments, sx, sy)
+    if sticker.bleed_segments:
+        sticker.bleed_segments = _scale_segments(sticker.bleed_segments, sx, sy)
+
+    log.info(
+        f"Snap wymiarów: {old_w:.4f}×{old_h:.4f}mm → {new_w:.4f}×{new_h:.4f}mm "
+        f"(scale {sx:.6f}×{sy:.6f})"
+    )
