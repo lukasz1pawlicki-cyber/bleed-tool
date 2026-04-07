@@ -142,6 +142,44 @@ class NestWorker(QThread):
         self._grouping_mode = grouping_mode
         self._white = white
 
+    @staticmethod
+    def _detect_shared_cut_layout(sheets) -> bool:
+        """Sprawdza czy wszystkie arkusze mają identyczny layout cięcia.
+
+        Identyczny = ta sama liczba placementów, te same pozycje, rotacje,
+        wymiary naklejek i linie paneli. Typowy przypadek: grouping_mode="group"
+        z naklejkami tego samego rozmiaru — różna grafika, ten sam kontur.
+
+        Returns:
+            True jeśli >= 2 arkuszy i wszystkie mają ten sam layout cięcia.
+        """
+        if len(sheets) < 2:
+            return False
+
+        def _cut_fingerprint(sheet):
+            parts = []
+            for p in sheet.placements:
+                s = p.sticker
+                parts.append((
+                    round(p.x_mm, 2), round(p.y_mm, 2),
+                    round(p.rotation_deg, 0),
+                    round(s.width_mm, 2), round(s.height_mm, 2),
+                    len(s.cut_segments),
+                ))
+            parts.sort()
+            panels = tuple(
+                (pl.axis, round(pl.position_mm, 2), round(pl.bridge_length_mm, 2))
+                for pl in sheet.panel_lines
+            )
+            marks = tuple(
+                (m.mark_type, round(m.x_mm, 2), round(m.y_mm, 2))
+                for m in sheet.marks
+            )
+            return (tuple(parts), panels, marks)
+
+        ref = _cut_fingerprint(sheets[0])
+        return all(_cut_fingerprint(s) == ref for s in sheets[1:])
+
     def run(self):
         try:
             self._run_inner()
@@ -331,26 +369,55 @@ class NestWorker(QThread):
         sheet_pdf_paths = []
         out_dir = self._output_dir
 
+        # Przygotuj arkusze (panelize + marks)
         for i, sheet in enumerate(job.sheets):
-            self.progress.emit(total + i, total + ns)
             sheet = panelize_sheet(sheet, flexcut=False)
             sheet = generate_marks(sheet, plotter=self._plotter)
             job.sheets[i] = sheet
 
+        # Wykryj identyczne layouty cięcia — generuj 1 cut PDF zamiast N
+        shared_cut = self._detect_shared_cut_layout(job.sheets)
+
+        for i, sheet in enumerate(job.sheets):
+            self.progress.emit(total + i, total + ns)
+
             pp = os.path.join(out_dir, f"sheet_{i + 1}_print.pdf")
-            cp = os.path.join(out_dir, f"sheet_{i + 1}_cut.pdf")
             wp = os.path.join(out_dir, f"sheet_{i + 1}_white.pdf") if self._white else None
-            export_sheet(sheet, pp, cp, bleed_mm=0, plotter=self._plotter,
-                         white=self._white, white_output_path=wp)
+
+            if shared_cut and i == 0:
+                # Pierwszy arkusz — generuj wspólny cut PDF
+                cp = os.path.join(out_dir, "cut.pdf")
+                export_sheet(sheet, pp, cp, bleed_mm=0, plotter=self._plotter,
+                             white=self._white, white_output_path=wp)
+            elif shared_cut:
+                # Kolejne arkusze — cut już wygenerowany
+                cp = os.path.join(out_dir, "cut.pdf")
+                from modules.export import export_sheet_print, export_sheet_white
+                export_sheet_print(sheet, pp, bleed_mm=0)
+                if self._white and wp:
+                    export_sheet_white(sheet, wp, bleed_mm=0)
+            else:
+                # Różne layouty — osobny cut per arkusz
+                cp = os.path.join(out_dir, f"sheet_{i + 1}_cut.pdf")
+                export_sheet(sheet, pp, cp, bleed_mm=0, plotter=self._plotter,
+                             white=self._white, white_output_path=wp)
+
             sheet_pdf_paths.append((pp, cp))
 
             pk = os.path.getsize(pp) / 1024
-            ck = os.path.getsize(cp) / 1024
             fl = f", {len(sheet.panel_lines)} FlexCut" if sheet.panel_lines else ""
-            self.log_message.emit(
-                f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, "
-                f"print={pk:.1f}KB, cut={ck:.1f}KB"
-            )
+            if shared_cut and i > 0:
+                self.log_message.emit(
+                    f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, "
+                    f"print={pk:.1f}KB (cut = wspólny)"
+                )
+            else:
+                ck = os.path.getsize(cp) / 1024
+                self.log_message.emit(
+                    f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, "
+                    f"print={pk:.1f}KB, cut={ck:.1f}KB"
+                    + (" (wspólny dla wszystkich)" if shared_cut else "")
+                )
 
         elapsed = time.time() - t0
         total_placed = sum(len(s.placements) for s in job.sheets)
