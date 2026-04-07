@@ -1,5 +1,21 @@
-output/
+# Python
 __pycache__/
-.DS_Store
 *.pyc
+*.pyo
+
+# Output / temp
+output/
+input/
 dist/
+test_results.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
