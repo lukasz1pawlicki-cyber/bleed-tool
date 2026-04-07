@@ -198,7 +198,7 @@ class NestWorker(QThread):
                 for xref in xref_list:
                     try:
                         sd = doc.xref_stream(xref)
-                        if sd and b"CutContour" in sd:
+                        if sd and (b"CutContour" in sd or b"FlexCut" in sd):
                             cut_segs = []
                             last_x, last_y = None, None
                             for line in sd.decode('latin-1', errors='replace').split('\n'):
@@ -236,7 +236,7 @@ class NestWorker(QThread):
                             if not cut_segs:
                                 cut_segs = None
                             else:
-                                self.log_message.emit(f"    CutContour: {len(cut_segs)} segmentów z PDF")
+                                self.log_message.emit(f"    Kontur cięcia: {len(cut_segs)} segmentów z PDF")
                             break
                     except Exception:
                         pass
