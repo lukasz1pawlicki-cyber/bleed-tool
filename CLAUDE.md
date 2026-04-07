@@ -190,11 +190,11 @@ OUTPUT: {nazwa}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
 ```
 CutContour: spot color → Separation → DeviceCMYK alternate
   • stroke: 0.25 pt (cienka linia)
-  • 100% tint → CMYK (0, 1, 0, 0) — magenta alternate (widoczna na ekranie)
+  • 100% tint → CMYK (1, 0, 1, 0) — zielony alternate (widoczny na ekranie)
   • Cutter (Summa S3) czyta spot name "CutContour" i ignoruje kolor
 
 FlexCut: spot color → Separation
-  • CMYK alternate: (1, 0, 1, 0) — cyan+yellow
+  • CMYK alternate: (0, 1, 1, 0) — czerwony (magenta+yellow)
   • Dla linii paneli z mostkami (bridge_length_mm > 0)
 ```
 
