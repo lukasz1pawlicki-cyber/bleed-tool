@@ -252,13 +252,20 @@ class NestWorker(QThread):
 
                 bleed_segs = []
 
+                # Próbkuj kolor krawędzi z bleed output PDF (do anti-gap fill)
+                from modules.contour import _sample_pdf_page_edge_color
+                try:
+                    edge_rgb = _sample_pdf_page_edge_color(doc, 0)
+                except Exception:
+                    edge_rgb = (1.0, 1.0, 1.0)
+
                 s = Sticker(
                     source_path=pdf, page_index=0,
                     width_mm=pw_mm - 2 * b,
                     height_mm=ph_mm - 2 * b,
                     cut_segments=cut_segs,
                     bleed_segments=bleed_segs,
-                    edge_color_rgb=(1.0, 1.0, 1.0),
+                    edge_color_rgb=edge_rgb,
                     edge_color_cmyk=(0.0, 0.0, 0.0, 0.0),
                     pdf_doc=doc,
                     page_width_pt=cw_pt,

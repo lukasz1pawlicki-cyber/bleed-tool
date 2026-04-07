@@ -1594,11 +1594,12 @@ def _prepare_source_for_embedding(sticker: Sticker, bleed_mm: float) -> fitz.Doc
 
     if getattr(sticker, 'is_bleed_output', False):
         # Plik bleed_ output — bleed już wbudowany w grafikę
-        # Tylko usuń CutContour (nie pokazuj w print PDF) + wyczyść nadmiarowe boxy
+        # Usuń CutContour (nie pokazuj w print PDF) + wyczyść nadmiarowe boxy
         xref = page_copy.xref
         for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
             doc_single.xref_set_key(xref, box, "null")
         _strip_cutcontour_streams(doc_single, page_copy)
+
         return doc_single
 
     # Rozszerz clipping paths TYLKO dla raster-only PDF z clip path (np. okrągła naklejka)
@@ -2395,6 +2396,26 @@ def export_sheet_print(
                     px, sheet_h_pt - py - sticker_h,
                     px + sticker_w, sheet_h_pt - py,
                 )
+
+            # Anti-gap: dla bleed output PDFs rysuj podkład w kolorze krawędzi
+            # rozszerzony o gap/2 w każdym kierunku — pokrywa białe przerwy
+            # między sąsiednimi naklejkami. Grafika z show_pdf_page rysuje się
+            # na wierzchu, więc podkład widać tylko w gap-ach.
+            if getattr(sticker, 'is_bleed_output', False):
+                _gap_half = (getattr(sheet, 'gap_mm', 3.0) / 2.0 + 0.5) * MM_TO_PT
+                er = fitz.Rect(
+                    target_rect.x0 - _gap_half,
+                    target_rect.y0 - _gap_half,
+                    target_rect.x1 + _gap_half,
+                    target_rect.y1 + _gap_half,
+                )
+                r, g, b = sticker.edge_color_rgb or (1, 1, 1)
+                fill_stream = (
+                    f"q {r:.4f} {g:.4f} {b:.4f} rg "
+                    f"{er.x0:.4f} {er.y0:.4f} {er.width:.4f} {er.height:.4f} re f Q"
+                ).encode('ascii')
+                inject_content_stream(doc_out, out_page, fill_stream)
+
             out_page.show_pdf_page(target_rect, prepared_doc, 0, rotate=rot)
 
     # === Outer bleed (spad wokół grupy naklejek) ===
