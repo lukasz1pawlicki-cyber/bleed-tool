@@ -76,13 +76,14 @@ class BleedWorker(QThread):
                     self.log_message.emit(f"  Crop: {self._crop_shape}")
 
                 stickers = detect_contour(actual_path)
-                for sticker in stickers:
+                for si, sticker in enumerate(stickers):
                     # Skalowanie do docelowej wysokosci (pomijane gdy crop)
                     if self._target_height_mm and not self._crop_enabled:
                         sticker = scale_sticker(sticker, self._target_height_mm)
                     sticker = generate_bleed(sticker, bleed_mm=self._bleed_mm)
                     stem = os.path.splitext(name)[0]
-                    out = os.path.join(self._output_dir, f"bleed_{stem}.pdf")
+                    suffix = f"_p{si + 1}" if len(stickers) > 1 else ""
+                    out = os.path.join(self._output_dir, f"bleed_{stem}{suffix}.pdf")
                     export_single_sticker(
                         sticker, out, bleed_mm=self._bleed_mm,
                         black_100k=self._black_100k, cutcontour=cutcontour,
@@ -94,8 +95,9 @@ class BleedWorker(QThread):
                         f"  {name}: {sticker.width_mm:.1f}x{sticker.height_mm:.1f}mm -> {sz:.0f}KB"
                     )
                     ok += 1
-                    if sticker.pdf_doc is not None:
-                        sticker.pdf_doc.close()
+                # Zamknij pdf_doc po wszystkich stronach (współdzielony)
+                if stickers and stickers[0].pdf_doc is not None:
+                    stickers[0].pdf_doc.close()
             except Exception as e:
                 self.log_message.emit(f"  [ERR] {name}: {e}")
                 err += 1
