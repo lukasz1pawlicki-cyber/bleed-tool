@@ -547,6 +547,116 @@ def expand_clip_paths(
         log.info(f"Rozszerzono clipping paths o {bleed_pts:.2f}pt")
 
 
+def expand_page_fills(
+    doc: fitz.Document, page: fitz.Page, bleed_pts: float,
+    page_w_pt: float, page_h_pt: float,
+) -> None:
+    """Rozszerza prostokątne fill-e tła o bleed_pts w content stream strony.
+
+    Szuka `re f` lub `re f*` gdzie prostokąt odpowiada wymiarom strony
+    (uwzględniając aktywną macierz skalowania). Gdy znajdzie — rozszerza
+    o bleed_pts w tej samej przestrzeni koordynatów.
+
+    Rozwiązuje problem Canva-style PDF gdzie tło (white + color fill)
+    pokrywa dokładnie stronę, ale nie rozciąga się na bleed zone.
+    """
+    page_xref = page.xref
+    contents_info = doc.xref_get_key(page_xref, "Contents")
+    xref_str = contents_info[1]
+    xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xref_str)
+    if not xrefs:
+        return
+
+    modified = False
+    for xr_str in xrefs:
+        xr = int(xr_str)
+        stream = doc.xref_stream(xr)
+        if not stream:
+            continue
+        text = stream.decode('latin-1', errors='replace')
+        new_text = _expand_fills_in_stream(text, bleed_pts, page_w_pt, page_h_pt)
+        if new_text != text:
+            doc.update_stream(xr, new_text.encode('latin-1'))
+            modified = True
+
+    if modified:
+        log.info(f"Rozszerzono fill-e tła o {bleed_pts:.2f}pt")
+
+
+def _expand_fills_in_stream(
+    text: str, bleed_pts: float, page_w_pt: float, page_h_pt: float,
+) -> str:
+    """Rozszerza `re f` tła w content stream.
+
+    Śledzi macierz skalowania (cm). Gdy napotka `x y w h re` + `f`,
+    sprawdza czy w*scale ≈ page_w i h*scale ≈ page_h.
+    Jeśli tak — rozszerza o bleed_pts/scale.
+    """
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    lines = text.split('\n')
+    result: list[str] = []
+
+    # Prosty stos skal (śledzenie nested cm)
+    scale_stack: list[tuple[float, float]] = [(1.0, 1.0)]
+    current_sx, current_sy = 1.0, 1.0
+
+    for i, raw_line in enumerate(lines):
+        line = raw_line.strip()
+
+        # Track cm operations (simple scale only: sx 0 0 sy tx ty cm)
+        if line.endswith(' cm'):
+            parts = line.split()
+            if len(parts) == 7:
+                try:
+                    a, b, c, d = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
+                    if abs(b) < 0.001 and abs(c) < 0.001 and abs(a) > 0.001 and abs(d) > 0.001:
+                        current_sx *= abs(a)
+                        current_sy *= abs(d)
+                except ValueError:
+                    pass
+
+        # Track q/Q for scale stack
+        if line == 'q':
+            scale_stack.append((current_sx, current_sy))
+        elif line == 'Q':
+            if scale_stack:
+                current_sx, current_sy = scale_stack.pop()
+
+        # Check for re f pattern: previous line is `re`, this line is `f` or `f*`
+        if line in ('f', 'f*') and result:
+            prev = result[-1].strip()
+            if prev.endswith(' re'):
+                parts = prev.split()
+                if len(parts) == 5:  # x y w h re
+                    try:
+                        x, y, w, h = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
+                        # Effective size in page pts
+                        eff_w = abs(w * current_sx)
+                        eff_h = abs(h * current_sy)
+                        # Match page dimensions (±2pt tolerance)
+                        if (abs(eff_w - page_w_pt) < 2.0 and abs(eff_h - page_h_pt) < 2.0
+                                and abs(x) < 1.0 and abs(y) < 1.0):
+                            # Expand fill by bleed in this coordinate space
+                            dx = bleed_pts / current_sx
+                            dy = bleed_pts / current_sy
+                            new_x = x - dx
+                            new_y = y - dy
+                            new_w = w + 2 * dx
+                            new_h = h + 2 * dy
+                            result[-1] = f"{new_x:.6f} {new_y:.6f} {new_w:.6f} {new_h:.6f} re"
+                            log.debug(
+                                f"Fill rozszerzony: {x} {y} {w} {h} → "
+                                f"{new_x:.2f} {new_y:.2f} {new_w:.2f} {new_h:.2f} "
+                                f"(scale={current_sx:.3f}x{current_sy:.3f})"
+                            )
+                    except ValueError:
+                        pass
+
+        result.append(raw_line)
+
+    return '\n'.join(result)
+
+
 def _expand_clips_in_stream(
     text: str, bleed_pts: float, rect_only: bool = False,
     first_polygon_expanded: bool = False,
@@ -1484,6 +1594,11 @@ def export_single_sticker(
             else:
                 expand_clip_paths(doc_src, src_page, bleed_pts, rect_only=True)
 
+            # Rozszerz fill-e tła (re f) które pokrywają dokładnie stronę
+            # (Canva: white + color fill nie wychodzą poza page)
+            expand_page_fills(doc_src, src_page, bleed_pts,
+                              src_cropbox.width, src_cropbox.height)
+
             # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
             src_xref = src_page.xref
             for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
@@ -1499,18 +1614,6 @@ def export_single_sticker(
             target_rect = fitz.Rect(0, 0, out_w, out_h)
             out_page.show_pdf_page(target_rect, doc_src, sticker.page_index)
             log.info("Warstwa 2: grafika wektorowa — OK")
-
-    # --- WARSTWA 2.5: Ramka bleed (maskuje artefakty na granicy trim) ---
-    if sticker.edge_color_rgb is not None and not sticker.is_bleed_output:
-        frame_stream = build_bleed_frame_stream(
-            rgb=sticker.edge_color_rgb,
-            cmyk=sticker.edge_color_cmyk,
-            bleed_pts=bleed_pts,
-            out_w=out_w,
-            out_h=out_h,
-        )
-        inject_content_stream(doc_out, out_page, frame_stream)
-        log.info("Warstwa 2.5: ramka bleed (maskuje granicę trim) — OK")
 
     # --- WARSTWA 3: Linia cięcia (Kiss-Cut / FlexCut / Brak) ---
     if cutcontour:
