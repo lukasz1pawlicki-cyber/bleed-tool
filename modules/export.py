@@ -138,6 +138,39 @@ def build_cmyk_fill_stream(
     return stream.encode('ascii')
 
 
+def build_bleed_frame_stream(
+    rgb: tuple[float, float, float],
+    cmyk: tuple[float, float, float, float] | None,
+    bleed_pts: float,
+    out_w: float,
+    out_h: float,
+) -> bytes:
+    """Ramka spadu: pokrywa TYLKO strefę bleed (poza trim, wewnątrz page).
+
+    Even-odd fill: outer rect (pełna strona) minus inner rect (trim area).
+    Nakładana PO grafice — maskuje artefakty na granicy (białe tło z Canva).
+    """
+    # Outer rect: full page
+    # Inner rect: trim area (inset by bleed_pts)
+    ix, iy = bleed_pts, bleed_pts
+    iw, ih = out_w - 2 * bleed_pts, out_h - 2 * bleed_pts
+    if cmyk is not None:
+        c, m, y, k = cmyk
+        color_op = f"{c:.6f} {m:.6f} {y:.6f} {k:.6f} k"
+    else:
+        r, g, b = rgb
+        color_op = f"{r:.6f} {g:.6f} {b:.6f} rg"
+    stream = (
+        f"q\n"
+        f"{color_op}\n"
+        f"0 0 {out_w:.4f} {out_h:.4f} re\n"
+        f"{ix:.4f} {iy:.4f} {iw:.4f} {ih:.4f} re\n"
+        f"f*\n"
+        f"Q"
+    )
+    return stream.encode('ascii')
+
+
 def build_cutcontour_stream(
     segments: list,
     bleed_pts: float,
@@ -1466,6 +1499,18 @@ def export_single_sticker(
             target_rect = fitz.Rect(0, 0, out_w, out_h)
             out_page.show_pdf_page(target_rect, doc_src, sticker.page_index)
             log.info("Warstwa 2: grafika wektorowa — OK")
+
+    # --- WARSTWA 2.5: Ramka bleed (maskuje artefakty na granicy trim) ---
+    if sticker.edge_color_rgb is not None and not sticker.is_bleed_output:
+        frame_stream = build_bleed_frame_stream(
+            rgb=sticker.edge_color_rgb,
+            cmyk=sticker.edge_color_cmyk,
+            bleed_pts=bleed_pts,
+            out_w=out_w,
+            out_h=out_h,
+        )
+        inject_content_stream(doc_out, out_page, frame_stream)
+        log.info("Warstwa 2.5: ramka bleed (maskuje granicę trim) — OK")
 
     # --- WARSTWA 3: Linia cięcia (Kiss-Cut / FlexCut / Brak) ---
     if cutcontour:

@@ -243,44 +243,65 @@ def flatten_segments_to_polyline(
 # =============================================================================
 
 def offset_polyline(polyline: np.ndarray, distance: float) -> np.ndarray:
-    """Offset polilinii na zewnątrz o distance (w pt). Normal-based per-vertex."""
+    """Offset polilinii na zewnątrz o distance (w pt). Miter-style per-vertex.
+
+    Dla każdego wierzchołka oblicza normalne dwóch sąsiednich krawędzi,
+    a następnie bisector (miter) z poprawną długością: distance / sin(half_angle).
+    Gwarantuje dokładny offset na prostych krawędziach i w narożnikach.
+    """
     n = len(polyline)
-    normals = np.zeros_like(polyline, dtype=np.float64)
 
+    # Normalne krawędzi (outward)
+    edge_normals = np.zeros((n, 2), dtype=np.float64)
     for i in range(n):
-        prev_pt = polyline[(i - 1) % n]
-        next_pt = polyline[(i + 1) % n]
-        tangent = next_pt - prev_pt
-        normal = np.array([-tangent[1], tangent[0]])
-        length = np.linalg.norm(normal)
+        p0 = polyline[i]
+        p1 = polyline[(i + 1) % n]
+        edge = p1 - p0
+        length = np.linalg.norm(edge)
         if length > 1e-8:
-            normal /= length
-        normals[i] = normal
+            edge_normals[i] = np.array([-edge[1], edge[0]]) / length
 
-    # Upewnij się że offset jest na zewnątrz (od centroidu)
-    # Shoelace formula: wyznacz kierunek nawinięcia (CW/CCW) polygonu
-    # signed_area > 0 → CCW, signed_area < 0 → CW
+    # Kierunek nawinięcia — normalne muszą wskazywać na zewnątrz
     x = polyline[:, 0]
     y = polyline[:, 1]
     x_next = np.roll(x, -1)
     y_next = np.roll(y, -1)
     signed_area = np.sum(x * y_next - x_next * y) / 2.0
 
-    # Dla CCW (signed_area > 0): normalne [-dy, dx] wskazują na zewnątrz
-    # Dla CW (signed_area < 0): normalne [-dy, dx] wskazują do wewnątrz → trzeba odwrócić
-    # Weryfikacja: dot product kilku normalnych z wektorem od centroidu
     centroid = polyline.mean(axis=0)
     test_count = min(10, n)
     test_indices = np.linspace(0, n - 1, test_count, dtype=int)
     dot_sum = 0.0
     for idx in test_indices:
         test_vec = polyline[idx] - centroid
-        dot_sum += np.dot(test_vec, normals[idx])
-
+        dot_sum += np.dot(test_vec, edge_normals[idx])
     if dot_sum < 0:
-        normals = -normals
+        edge_normals = -edge_normals
 
-    return polyline + normals * distance
+    # Miter offset per-vertex: bisector z poprawną długością
+    offsets = np.zeros_like(polyline, dtype=np.float64)
+    for i in range(n):
+        n_prev = edge_normals[(i - 1) % n]  # normalna krawędzi wchodzącej
+        n_curr = edge_normals[i]              # normalna krawędzi wychodzącej
+
+        # Bisector = średnia normalnych
+        bisector = n_prev + n_curr
+        bis_len = np.linalg.norm(bisector)
+
+        if bis_len < 1e-8:
+            # Krawędzie równoległe (straight segment) — użyj normalnej
+            offsets[i] = n_curr * distance
+        else:
+            bisector /= bis_len
+            # sin(half_angle) = dot(edge_normal, bisector)
+            sin_half = np.dot(n_prev, bisector)
+            if abs(sin_half) < 0.1:
+                # Bardzo ostry kąt — cap miter żeby nie eksplodował
+                offsets[i] = bisector * distance
+            else:
+                offsets[i] = bisector * (distance / sin_half)
+
+    return polyline + offsets
 
 
 # =============================================================================
