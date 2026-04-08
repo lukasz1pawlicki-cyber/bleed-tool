@@ -264,27 +264,49 @@ def _crop_to_trimbox(doc: fitz.Document) -> set[int]:
     Ustawiamy CropBox = TrimBox, co powoduje, że PyMuPDF
     traktuje TrimBox jako widoczny obszar strony.
 
+    UWAGA: Porównujemy surowe wartości PDF (xref), nie fitz-owe,
+    bo fitz normalizuje y-coords (y-down) inaczej dla mediabox vs trimbox,
+    co powoduje fałszywe różnice gdy boxy są identyczne w PDF.
+
     Returns:
         set indeksów stron, które zostały przycięte (mają spady)
     """
     cropped_pages: set[int] = set()
     for page in doc:
-        trimbox = page.trimbox
-        mediabox = page.mediabox
+        xref = page.xref
+        raw_media = doc.xref_get_key(xref, "MediaBox")
+        raw_trim = doc.xref_get_key(xref, "TrimBox")
 
-        # Sprawdź czy TrimBox różni się od MediaBox (= plik ze spadami)
-        if (abs(trimbox.x0 - mediabox.x0) > 0.5 or
-                abs(trimbox.y0 - mediabox.y0) > 0.5 or
-                abs(trimbox.x1 - mediabox.x1) > 0.5 or
-                abs(trimbox.y1 - mediabox.y1) > 0.5):
-            log.info(
-                f"Strona {page.number + 1}: TrimBox "
-                f"{trimbox.width:.1f}x{trimbox.height:.1f}pt "
-                f"({trimbox.width * PT_TO_MM:.1f}x{trimbox.height * PT_TO_MM:.1f}mm) "
-                f"— przycinanie ze spadów"
-            )
-            page.set_cropbox(trimbox)
-            cropped_pages.add(page.number)
+        # Brak TrimBox lub TrimBox == MediaBox → nie ma spadów
+        if raw_trim[0] == "null" or raw_media[1] == raw_trim[1]:
+            continue
+
+        # Parsuj surowe wartości do porównania numerycznego
+        def _parse_box(raw: str) -> list[float]:
+            return [float(x) for x in raw.strip("[] ").split()]
+
+        try:
+            media_vals = _parse_box(raw_media[1])
+            trim_vals = _parse_box(raw_trim[1])
+        except (ValueError, IndexError):
+            continue
+
+        if len(media_vals) != 4 or len(trim_vals) != 4:
+            continue
+
+        # Sprawdź czy wartości się różnią (= prawdziwe spady)
+        if all(abs(m - t) <= 0.5 for m, t in zip(media_vals, trim_vals)):
+            continue
+
+        trimbox = page.trimbox
+        log.info(
+            f"Strona {page.number + 1}: TrimBox "
+            f"{trimbox.width:.1f}x{trimbox.height:.1f}pt "
+            f"({trimbox.width * PT_TO_MM:.1f}x{trimbox.height * PT_TO_MM:.1f}mm) "
+            f"— przycinanie ze spadów"
+        )
+        page.set_cropbox(trimbox)
+        cropped_pages.add(page.number)
     return cropped_pages
 
 

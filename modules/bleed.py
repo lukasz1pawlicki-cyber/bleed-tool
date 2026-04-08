@@ -430,6 +430,33 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
         outermost_drawing = drawings[sticker.outermost_drawing_idx]
 
         edge_rgb = extract_edge_color(outermost_drawing)
+
+        # Jeśli outermost drawing jest biały (np. białe tło z Canva) →
+        # sprawdź następny drawing (wizualne tło), lub sampluj z renderingu
+        if all(c > 0.95 for c in edge_rgb):
+            # Szukaj pierwszego nie-białego drawingu (wizualne tło pod spodem)
+            found_color = False
+            for di in range(sticker.outermost_drawing_idx + 1, len(drawings)):
+                d_fill = drawings[di].get('fill')
+                if d_fill is not None and not all(c > 0.95 for c in d_fill[:3]):
+                    edge_rgb = tuple(d_fill[:3])
+                    log.info(
+                        f"Outermost drawing biały → drawing[{di}] fill: "
+                        f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                    )
+                    found_color = True
+                    break
+            # Fallback: sampluj z renderowanej strony
+            if not found_color:
+                from modules.contour import _sample_page_edge_color
+                rendered_rgb = _sample_page_edge_color(page)
+                if not all(c > 0.95 for c in rendered_rgb):
+                    edge_rgb = rendered_rgb
+                    log.info(
+                        f"Outermost drawing biały — kolor z renderingu: "
+                        f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                    )
+
         sticker.edge_color_rgb = edge_rgb
         log.info(f"Kolor krawędzi RGB: ({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})")
     else:
