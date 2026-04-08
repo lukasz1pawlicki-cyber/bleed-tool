@@ -1601,9 +1601,12 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                 # Szukaj outermost drawing dla koloru krawędzi
                 idx, _ = find_outermost_drawing(drawings, page.rect)
                 outermost_idx = idx
+                # Kolor krawędzi z renderingu strony
+                edge_rgb = _sample_page_edge_color(page)
                 log.info(
                     f"Strona {page_idx + 1}: kontur z TrimBox "
-                    f"({w_mm:.1f}x{h_mm:.1f}mm)"
+                    f"({w_mm:.1f}x{h_mm:.1f}mm), "
+                    f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
                 )
             else:
                 # Standardowa ścieżka: szukaj konturu w PDF
@@ -1704,7 +1707,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                 is_artwork_on_artboard=_artwork_on_artboard,
             )
             # Ustaw kolor krawędzi gdy wykryty z renderowanej strony
-            if extends_beyond:
+            if extends_beyond or page_idx in cropped_pages:
                 sticker.edge_color_rgb = edge_rgb
             stickers.append(sticker)
 
