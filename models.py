@@ -51,6 +51,10 @@ class Sticker:
     # Typ linii cięcia: "kiss-cut" (CutContour) lub "flexcut" (FlexCut)
     cutline_mode: str = "kiss-cut"
 
+    # Artwork-on-artboard: grafika mniejsza od strony, set_cropbox() zastosowany.
+    # Export: nie modyfikuj MediaBox, użyj show_pdf_page z CropBox.
+    is_artwork_on_artboard: bool = False
+
     # Colorspace źródłowego PDF (True = DeviceCMYK, False = DeviceRGB/inne)
     is_cmyk: bool = False
 

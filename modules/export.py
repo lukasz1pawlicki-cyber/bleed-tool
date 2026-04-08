@@ -1421,40 +1421,51 @@ def export_single_sticker(
         doc_src = sticker.pdf_doc
         src_page = doc_src[sticker.page_index]
 
-        # Zapamiętaj CropBox (surowe współrzędne) PRZED usunięciem
-        src_cropbox = src_page.cropbox
-
-        # Czarny 100% K: zamiana kolorów przed osadzeniem
-        if black_100k:
-            convert_black_to_100k(doc_src, src_page)
-
-        # Ogranicz rendering do CropBox + bleed (maskuje markery cięcia)
-        inject_page_boundary_clip(doc_src, src_page, bleed_pts)
-
-        # Rozszerz clipping paths:
-        # - Raster-only z clip path: rozszerz WSZYSTKIE clipy (w tym krzywe)
-        # - Zwykłe wektorowe PDF: rozszerz TYLKO prostokątne clipy (artboard clips)
-        #   żeby nie psuć wewnętrznych clip paths (np. elementy loga Cyclonic)
-        if _use_vector_for_raster_pdf:
-            expand_clip_paths(doc_src, src_page, bleed_pts)
+        if getattr(sticker, 'is_artwork_on_artboard', False):
+            # Artwork-on-artboard: CropBox ustawiony w detect_contour.
+            # show_pdf_page mapuje CropBox na target rect — nie modyfikuj MediaBox
+            # (MediaBox >> CropBox, a set_mediabox nie konwertuje y-coords).
+            if black_100k:
+                convert_black_to_100k(doc_src, src_page)
+            graphic_rect = fitz.Rect(bleed_pts, bleed_pts,
+                                     out_w - bleed_pts, out_h - bleed_pts)
+            out_page.show_pdf_page(graphic_rect, doc_src, sticker.page_index)
+            log.info("Warstwa 2: grafika wektorowa (artwork-on-artboard) — OK")
         else:
-            expand_clip_paths(doc_src, src_page, bleed_pts, rect_only=True)
+            # Zapamiętaj CropBox (surowe współrzędne) PRZED usunięciem
+            src_cropbox = src_page.cropbox
 
-        # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
-        src_xref = src_page.xref
-        for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
-            doc_src.xref_set_key(src_xref, box, "null")
+            # Czarny 100% K: zamiana kolorów przed osadzeniem
+            if black_100k:
+                convert_black_to_100k(doc_src, src_page)
 
-        # Expanded MediaBox wokół CropBox (nie wokół 0,0)
-        expanded_rect = fitz.Rect(
-            src_cropbox.x0 - bleed_pts, src_cropbox.y0 - bleed_pts,
-            src_cropbox.x1 + bleed_pts, src_cropbox.y1 + bleed_pts,
-        )
-        src_page.set_mediabox(expanded_rect)
+            # Ogranicz rendering do CropBox + bleed (maskuje markery cięcia)
+            inject_page_boundary_clip(doc_src, src_page, bleed_pts)
 
-        target_rect = fitz.Rect(0, 0, out_w, out_h)
-        out_page.show_pdf_page(target_rect, doc_src, sticker.page_index)
-        log.info("Warstwa 2: grafika wektorowa — OK")
+            # Rozszerz clipping paths:
+            # - Raster-only z clip path: rozszerz WSZYSTKIE clipy (w tym krzywe)
+            # - Zwykłe wektorowe PDF: rozszerz TYLKO prostokątne clipy (artboard clips)
+            #   żeby nie psuć wewnętrznych clip paths (np. elementy loga Cyclonic)
+            if _use_vector_for_raster_pdf:
+                expand_clip_paths(doc_src, src_page, bleed_pts)
+            else:
+                expand_clip_paths(doc_src, src_page, bleed_pts, rect_only=True)
+
+            # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
+            src_xref = src_page.xref
+            for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
+                doc_src.xref_set_key(src_xref, box, "null")
+
+            # Expanded MediaBox wokół CropBox (nie wokół 0,0)
+            expanded_rect = fitz.Rect(
+                src_cropbox.x0 - bleed_pts, src_cropbox.y0 - bleed_pts,
+                src_cropbox.x1 + bleed_pts, src_cropbox.y1 + bleed_pts,
+            )
+            src_page.set_mediabox(expanded_rect)
+
+            target_rect = fitz.Rect(0, 0, out_w, out_h)
+            out_page.show_pdf_page(target_rect, doc_src, sticker.page_index)
+            log.info("Warstwa 2: grafika wektorowa — OK")
 
     # --- WARSTWA 3: Linia cięcia (Kiss-Cut / FlexCut / Brak) ---
     if cutcontour:

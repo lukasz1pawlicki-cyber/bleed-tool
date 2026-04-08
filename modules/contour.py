@@ -1582,6 +1582,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
             page_h_pt = page.rect.height
 
             extends_beyond = False
+            _artwork_on_artboard = False
             if svg_contour:
                 # Użyj konturu z SVG clipPath + wymiary z nazwy pliku
                 cut_segments = svg_contour
@@ -1630,14 +1631,60 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                         f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
                     )
                 else:
-                    # Adaptacyjny gap_threshold — skalowany do rozmiaru rysunku
-                    # Dla małych rysunków (< 50pt) mniejszy próg; dla dużych standardowy
-                    _draw_diag = max(outermost_drawing['rect'].width,
-                                     outermost_drawing['rect'].height)
-                    _gap_thr = max(0.5, min(2.0, _draw_diag * 0.01))
-                    cut_segments = extract_path_segments(
-                        outermost_drawing['items'], gap_threshold=_gap_thr
-                    )
+                    # Sprawdź artwork-on-artboard: czy grafika (drawings + images)
+                    # jest znacznie mniejsza od strony
+                    images_bbox = _get_images_bbox(page)
+                    # Union bbox drawings + images
+                    all_rects = [d['rect'] for d in drawings]
+                    if images_bbox is not None:
+                        all_rects.append(images_bbox)
+                    content_x0 = min(r.x0 for r in all_rects)
+                    content_y0 = min(r.y0 for r in all_rects)
+                    content_x1 = max(r.x1 for r in all_rects)
+                    content_y1 = max(r.y1 for r in all_rects)
+                    content_rect = fitz.Rect(content_x0, content_y0,
+                                             content_x1, content_y1)
+
+                    if _is_artwork_on_artboard(page, content_rect):
+                        # Grafika wektorowa mniejsza od strony — przytnij
+                        artwork_rect = fitz.Rect(
+                            content_rect.x0 - 1, content_rect.y0 - 1,
+                            content_rect.x1 + 1, content_rect.y1 + 1,
+                        )
+                        artwork_rect &= page.rect
+
+                        log.info(
+                            f"Strona {page_idx + 1}: artwork-on-artboard (wektor), "
+                            f"grafika {artwork_rect.width * PT_TO_MM:.1f}x"
+                            f"{artwork_rect.height * PT_TO_MM:.1f}mm na stronie "
+                            f"{page.rect.width * PT_TO_MM:.1f}x"
+                            f"{page.rect.height * PT_TO_MM:.1f}mm"
+                        )
+
+                        # Kontur = prostokąt artwork (compound paths mogą mieć
+                        # złożone subpaths które źle się dzielą)
+                        aw = artwork_rect.width
+                        ah = artwork_rect.height
+                        cut_segments = [
+                            ('l', np.array([0.0, 0.0]), np.array([aw, 0.0])),
+                            ('l', np.array([aw, 0.0]), np.array([aw, ah])),
+                            ('l', np.array([aw, ah]), np.array([0.0, ah])),
+                            ('l', np.array([0.0, ah]), np.array([0.0, 0.0])),
+                        ]
+
+                        # Przytnij stronę do artwork
+                        page.set_cropbox(artwork_rect)
+                        page_w_pt = artwork_rect.width
+                        page_h_pt = artwork_rect.height
+                        _artwork_on_artboard = True
+                    else:
+                        # Grafika wypełnia stronę — standardowy flow
+                        _draw_diag = max(outermost_drawing['rect'].width,
+                                         outermost_drawing['rect'].height)
+                        _gap_thr = max(0.5, min(2.0, _draw_diag * 0.01))
+                        cut_segments = extract_path_segments(
+                            outermost_drawing['items'], gap_threshold=_gap_thr
+                        )
 
                 w_mm = page_w_pt * PT_TO_MM
                 h_mm = page_h_pt * PT_TO_MM
@@ -1654,6 +1701,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
                 page_height_pt=page_h_pt,
                 outermost_drawing_idx=outermost_idx,
                 is_cmyk=_page_is_cmyk(doc, page),
+                is_artwork_on_artboard=_artwork_on_artboard,
             )
             # Ustaw kolor krawędzi gdy wykryty z renderowanej strony
             if extends_beyond:
