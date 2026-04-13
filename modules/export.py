@@ -589,8 +589,14 @@ def _expand_fills_in_stream(
     """Rozszerza `re f` tła w content stream.
 
     Śledzi macierz skalowania (cm). Gdy napotka `x y w h re` + `f`,
-    sprawdza czy w*scale ≈ page_w i h*scale ≈ page_h.
-    Jeśli tak — rozszerza o bleed_pts/scale.
+    sprawdza czy prostokąt dotyka krawędzi strony i ma pełną szerokość
+    lub pełną wysokość. Rozszerza o bleed_pts TYLKO w kierunkach gdzie
+    fill dotyka krawędzi strony.
+
+    Obsługuje:
+    - Pełnostronicowe fill-e (tło) — rozszerza we wszystkich kierunkach
+    - Paski na krawędzi (np. żółty pasek na dole) — rozszerza na krawędziach
+      które dotykają brzegu strony
     """
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     lines = text.split('\n')
@@ -630,24 +636,51 @@ def _expand_fills_in_stream(
                 if len(parts) == 5:  # x y w h re
                     try:
                         x, y, w, h = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
-                        # Effective size in page pts
+                        # Effective position/size in page pts
                         eff_w = abs(w * current_sx)
                         eff_h = abs(h * current_sy)
-                        # Match page dimensions (±2pt tolerance)
-                        if (abs(eff_w - page_w_pt) < 2.0 and abs(eff_h - page_h_pt) < 2.0
-                                and abs(x) < 1.0 and abs(y) < 1.0):
-                            # Expand fill by bleed in this coordinate space
+                        eff_x = x * current_sx
+                        eff_y = y * current_sy
+                        eff_x1 = eff_x + w * current_sx  # right edge
+                        eff_y1 = eff_y + h * current_sy   # top edge
+
+                        tol = 2.0  # tolerance in pt
+
+                        # Które krawędzie dotyka fill?
+                        touches_left = abs(eff_x) < tol
+                        touches_bottom = abs(eff_y) < tol
+                        touches_right = abs(eff_x1 - page_w_pt) < tol
+                        touches_top = abs(eff_y1 - page_h_pt) < tol
+
+                        # Fill musi mieć pełną szerokość LUB pełną wysokość
+                        # i dotykać przynajmniej jednej krawędzi
+                        full_width = abs(eff_w - page_w_pt) < tol and touches_left
+                        full_height = abs(eff_h - page_h_pt) < tol and touches_bottom
+
+                        if full_width or full_height:
                             dx = bleed_pts / current_sx
                             dy = bleed_pts / current_sy
-                            new_x = x - dx
-                            new_y = y - dy
-                            new_w = w + 2 * dx
-                            new_h = h + 2 * dy
+
+                            new_x = x - dx if touches_left else x
+                            new_y = y - dy if touches_bottom else y
+                            new_w = w
+                            if touches_left:
+                                new_w += dx
+                            if touches_right:
+                                new_w += dx
+                            new_h = h
+                            if touches_bottom:
+                                new_h += dy
+                            if touches_top:
+                                new_h += dy
+
                             result[-1] = f"{new_x:.6f} {new_y:.6f} {new_w:.6f} {new_h:.6f} re"
                             log.debug(
                                 f"Fill rozszerzony: {x} {y} {w} {h} → "
                                 f"{new_x:.2f} {new_y:.2f} {new_w:.2f} {new_h:.2f} "
-                                f"(scale={current_sx:.3f}x{current_sy:.3f})"
+                                f"(scale={current_sx:.3f}x{current_sy:.3f}, "
+                                f"edges: L={touches_left} B={touches_bottom} "
+                                f"R={touches_right} T={touches_top})"
                             )
                     except ValueError:
                         pass
@@ -655,6 +688,184 @@ def _expand_fills_in_stream(
         result.append(raw_line)
 
     return '\n'.join(result)
+
+
+def expand_edge_paths(
+    doc: fitz.Document, page: fitz.Page, bleed_pts: float,
+    page_w_pt: float, page_h_pt: float,
+) -> None:
+    """Rozszerza wektorowe ścieżki dotykające krawędzi strony o bleed_pts.
+
+    Dla każdego punktu ścieżki (m/l/c) leżącego na krawędzi strony
+    (x ≈ 0, x ≈ page_w, y ≈ 0, y ≈ page_h) przesuwa go na zewnątrz
+    o bleed_pts. Śledzi macierz transformacji (cm) żeby poprawnie
+    mapować lokalne współrzędne na współrzędne strony.
+
+    Obsługuje nieregularne kształty (strzałki, grafiki) dotykające brzegu.
+    """
+    page_xref = page.xref
+    contents_info = doc.xref_get_key(page_xref, "Contents")
+    xref_str = contents_info[1]
+    xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xref_str)
+    if not xrefs:
+        return
+
+    modified = False
+    for xr_str in xrefs:
+        xr = int(xr_str)
+        stream = doc.xref_stream(xr)
+        if not stream:
+            continue
+        text = stream.decode('latin-1', errors='replace')
+        new_text = _expand_edge_paths_in_stream(
+            text, bleed_pts, page_w_pt, page_h_pt
+        )
+        if new_text != text:
+            doc.update_stream(xr, new_text.encode('latin-1'))
+            modified = True
+
+    if modified:
+        log.info(f"Rozszerzono ścieżki krawędziowe o {bleed_pts:.2f}pt")
+
+
+def _expand_edge_paths_in_stream(
+    text: str, bleed_pts: float, page_w_pt: float, page_h_pt: float,
+) -> str:
+    """Rozszerza współrzędne ścieżek na krawędziach strony w content stream.
+
+    Śledzi macierz transformacji (cm) i stos q/Q. Dla operatorów m, l, c
+    przesuwa współrzędne leżące na krawędzi strony o bleed_pts na zewnątrz.
+
+    Obsługuje multi-operator lines (np. 'q 1 0 0 1 tx ty cm').
+    """
+    tol = 1.0  # tolerancja w pt
+
+    # Stan transformacji: (sx, sy, tx, ty) — uproszczony (bez obrotu/skew)
+    state_stack: list[tuple[float, float, float, float]] = [(1.0, 1.0, 0.0, 0.0)]
+
+    def cur():
+        return state_stack[-1]
+
+    def to_page(lx: float, ly: float) -> tuple[float, float]:
+        sx, sy, tx, ty = cur()
+        return (lx * sx + tx, ly * sy + ty)
+
+    def from_page_x(px: float) -> float:
+        sx, _, tx, _ = cur()
+        return (px - tx) / sx if abs(sx) > 1e-8 else px
+
+    def from_page_y(py: float) -> float:
+        _, sy, _, ty = cur()
+        return (py - ty) / sy if abs(sy) > 1e-8 else py
+
+    def extend_coord(lx: float, ly: float) -> tuple[float, float]:
+        """Przesuwa punkt na zewnątrz jeśli leży na krawędzi strony."""
+        px, py = to_page(lx, ly)
+        new_lx, new_ly = lx, ly
+        if abs(px) < tol:
+            new_lx = from_page_x(-bleed_pts)
+        elif abs(px - page_w_pt) < tol:
+            new_lx = from_page_x(page_w_pt + bleed_pts)
+        if abs(py) < tol:
+            new_ly = from_page_y(-bleed_pts)
+        elif abs(py - page_h_pt) < tol:
+            new_ly = from_page_y(page_h_pt + bleed_pts)
+        return (new_lx, new_ly)
+
+    def fmt(v: float) -> str:
+        """Formatuje liczbę — bez trailing zeros, max 6 miejsc."""
+        s = f"{v:.6f}"
+        if '.' in s:
+            s = s.rstrip('0').rstrip('.')
+        return s
+
+    # Tokenizuj content stream
+    # Zamiast dzielić po liniach, pracuj na tokenach (PDF operatory + operandy)
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    lines = text.split('\n')
+    result: list[str] = []
+    modified = False
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        new_line = raw_line
+
+        # Obsługa 'q' — może być samodzielnie lub na początku linii
+        # np. 'q' lub 'q 1 0 0 1 0 265 cm'
+        stripped = line
+        if stripped.startswith('q ') or stripped == 'q':
+            state_stack.append(cur())
+            stripped = stripped[1:].lstrip() if stripped.startswith('q ') else ''
+
+        if stripped == 'Q' or line == 'Q':
+            if len(state_stack) > 1:
+                state_stack.pop()
+
+        # Track cm transformations — szukaj '... cm' z 6 liczbami przed
+        if stripped.endswith(' cm') or line.endswith(' cm'):
+            target = stripped if stripped.endswith(' cm') else line
+            parts = target.split()
+            # Szukaj: a b c d e f cm — 7 elementów LUB więcej (q a b c d e f cm)
+            if len(parts) >= 7 and parts[-1] == 'cm':
+                try:
+                    # Weź ostatnie 7 tokenów: 6 liczb + 'cm'
+                    nums = parts[-7:-1]
+                    a, b, c, d = float(nums[0]), float(nums[1]), float(nums[2]), float(nums[3])
+                    e, f_ = float(nums[4]), float(nums[5])
+                    if abs(b) < 0.001 and abs(c) < 0.001:
+                        sx0, sy0, tx0, ty0 = cur()
+                        state_stack[-1] = (
+                            sx0 * a, sy0 * d,
+                            sx0 * e + tx0, sy0 * f_ + ty0,
+                        )
+                except ValueError:
+                    pass
+
+        # Path operators: m (moveto), l (lineto)
+        elif line.endswith(' m') or line.endswith(' l'):
+            parts = line.split()
+            if len(parts) == 3:
+                try:
+                    x, y = float(parts[0]), float(parts[1])
+                    nx, ny = extend_coord(x, y)
+                    if nx != x or ny != y:
+                        op = parts[2]
+                        indent = raw_line[:len(raw_line) - len(raw_line.lstrip())]
+                        new_line = f"{indent}{fmt(nx)} {fmt(ny)} {op}"
+                        modified = True
+                except ValueError:
+                    pass
+
+        # Path operator: c (curveto) — 6 coords + operator
+        elif line.endswith(' c'):
+            parts = line.split()
+            if len(parts) == 7:
+                try:
+                    coords = [float(p) for p in parts[:6]]
+                    changed = False
+                    new_coords = []
+                    for i in range(0, 6, 2):
+                        nx, ny = extend_coord(coords[i], coords[i + 1])
+                        new_coords.extend([nx, ny])
+                        if nx != coords[i] or ny != coords[i + 1]:
+                            changed = True
+                    if changed:
+                        indent = raw_line[:len(raw_line) - len(raw_line.lstrip())]
+                        c_str = ' '.join(fmt(v) for v in new_coords)
+                        new_line = f"{indent}{c_str} c"
+                        modified = True
+                except ValueError:
+                    pass
+
+        # Track Q (restore) — może być na osobnej linii
+        if line == 'Q':
+            pass  # already handled above
+
+        result.append(new_line)
+
+    if modified:
+        return '\n'.join(result)
+    return text
 
 
 def _expand_clips_in_stream(
@@ -1597,6 +1808,11 @@ def export_single_sticker(
             # Rozszerz fill-e tła (re f) które pokrywają dokładnie stronę
             # (Canva: white + color fill nie wychodzą poza page)
             expand_page_fills(doc_src, src_page, bleed_pts,
+                              src_cropbox.width, src_cropbox.height)
+
+            # Rozszerz wektorowe ścieżki dotykające krawędzi strony
+            # (strzałki, grafiki — dowolne kształty, nie tylko prostokąty)
+            expand_edge_paths(doc_src, src_page, bleed_pts,
                               src_cropbox.width, src_cropbox.height)
 
             # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
