@@ -30,9 +30,13 @@ import os
 import re as _re
 import numpy as np
 import fitz  # PyMuPDF
+from PIL import Image as PILImage, ImageFilter
 
 from models import Sticker
+import config
 from config import PT_TO_MM, MM_TO_PT
+from modules.file_loader import FileType, detect_type, to_pdf, svg_dimensions_from_name
+from modules.svg_convert import extract_svg_contour, parse_size_from_filename
 
 log = logging.getLogger(__name__)
 
@@ -330,10 +334,7 @@ def _detect_raster(image_path: str) -> Sticker:
       - cut_segments przesunięte do origin (0,0) relative do crop box
       - width_mm/height_mm = wymiary content area (nie pełnego artboardu)
     """
-    from PIL import Image
-    from modules.svg_convert import parse_size_from_filename
-
-    img = Image.open(image_path)
+    img = PILImage.open(image_path)
     px_w, px_h = img.size
 
     # 1. Wymiary z nazwy pliku (priorytet — jak w SVG)
@@ -489,6 +490,85 @@ def _detect_raster(image_path: str) -> Sticker:
     return sticker
 
 
+def _opencv_boundary_trace(mask: np.ndarray) -> np.ndarray | None:
+    """Śledzi kontur binarnej maski przez cv2.findContours (RETR_EXTERNAL).
+
+    Alternatywa dla _moore_boundary_trace — zaimplementowana w C, szybsza.
+    Wymaga zainstalowanego opencv-python. Jeśli brak biblioteki,
+    dispatcher (_boundary_trace) robi fallback na Moore.
+
+    Args:
+        mask: binarna maska (np.uint8, 0/1) — foreground = 1
+
+    Returns:
+        np.ndarray (N, 2) [x, y] — uporządkowane punkty graniczne (clockwise)
+        lub None jeśli brak konturu / import cv2 się nie udał.
+    """
+    try:
+        import cv2
+    except ImportError:
+        log.warning("opencv-python nie jest zainstalowany — fallback na Moore trace")
+        return None
+
+    # cv2 wymaga uint8 i wartości 0/255 (albo 0/1 zadziała, ale dokumentacja preferuje 255)
+    bin_mask = (mask > 0).astype(np.uint8) * 255
+
+    # RETR_EXTERNAL = tylko kontury zewnętrzne (ignoruje dziury)
+    # CHAIN_APPROX_NONE = wszystkie punkty (bez uproszczenia — DP robimy sami)
+    contours, _ = cv2.findContours(
+        bin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
+
+    if not contours:
+        return None
+
+    # Wybierz największy kontur (największe pole) — najbardziej prawdopodobny
+    # kształt naklejki
+    largest = max(contours, key=cv2.contourArea)
+    if len(largest) < 3:
+        return None
+
+    # OpenCV zwraca shape (N, 1, 2) — spłaszczamy do (N, 2)
+    pts = largest.reshape(-1, 2).astype(float)
+    return pts
+
+
+def _boundary_trace(mask: np.ndarray, engine: str | None = None) -> np.ndarray | None:
+    """Dispatcher: wybiera silnik detekcji konturu (moore/opencv).
+
+    Args:
+        mask: binarna maska
+        engine: "moore" | "opencv" | "auto" | None (None = z config.CONTOUR_ENGINE)
+
+    Returns:
+        np.ndarray (N, 2) uporządkowanych punktów granicznych lub None.
+    """
+    if engine is None:
+        engine = config.CONTOUR_ENGINE
+
+    engine = engine.lower()
+    if engine == "opencv":
+        result = _opencv_boundary_trace(mask)
+        if result is not None:
+            return result
+        log.warning("OpenCV engine nie zwrócił konturu — fallback na Moore")
+        return _moore_boundary_trace(mask)
+
+    if engine == "auto":
+        # Spróbuj opencv, fallback na moore
+        try:
+            import cv2  # noqa: F401
+            result = _opencv_boundary_trace(mask)
+            if result is not None:
+                return result
+        except ImportError:
+            pass
+        return _moore_boundary_trace(mask)
+
+    # Default: moore
+    return _moore_boundary_trace(mask)
+
+
 def _moore_boundary_trace(mask: np.ndarray) -> np.ndarray | None:
     """Śledzi kontur binarnej maski algorytmem Moore neighborhood tracing.
 
@@ -573,8 +653,6 @@ def _detect_raster_alpha_contour(
     Zwraca (cut_segments, edge_rgb) lub (None, None) gdy alpha jest trywialna.
     Segmenty w koordynatach pt, origin (0,0).
     """
-    from PIL import ImageFilter, Image as PILImage
-
     rgba = img.convert('RGBA')
     arr = np.array(rgba)
     alpha = arr[:, :, 3]
@@ -658,13 +736,13 @@ def _detect_raster_alpha_contour(
             )
             return segments, edge_rgb
 
-    # --- Moore boundary tracing ---
-    contour_px = _moore_boundary_trace(mask)
+    # --- Boundary tracing (Moore / OpenCV — wg config.CONTOUR_ENGINE) ---
+    contour_px = _boundary_trace(mask)
     if contour_px is None or len(contour_px) < 6:
-        log.warning("Moore trace: brak konturu, fallback na prostokąt")
+        log.warning("Boundary trace: brak konturu, fallback na prostokąt")
         return None, None
 
-    log.debug(f"Moore trace: {len(contour_px)} raw boundary points")
+    log.debug(f"Boundary trace [{config.CONTOUR_ENGINE}]: {len(contour_px)} raw boundary points")
 
     # Douglas-Peucker — epsilon proporcjonalny do rozdzielczości
     dp_epsilon = max(4.0, min(hs, ws) * 0.01)
@@ -729,7 +807,6 @@ def _detect_raster_bg_contour(
     target_px = 500
     scale_factor = target_px / max(h, w)
     if scale_factor < 1.0:
-        from PIL import Image as PILImage
         new_w = max(1, int(w * scale_factor))
         new_h = max(1, int(h * scale_factor))
         rgb_small = rgb.resize((new_w, new_h), PILImage.NEAREST)
@@ -836,7 +913,6 @@ def _sample_raster_edge_color(img) -> tuple[float, float, float]:
 
     Zwraca (r, g, b) w zakresie 0-1.
     """
-    from PIL import Image
     # Konwertuj do RGB (ignoruj alpha)
     rgb = img.convert("RGB")
     px_w, px_h = rgb.size
@@ -1185,14 +1261,12 @@ def _sample_pdf_page_edge_color(
     Renderuje stronę na niskiej rozdzielczości i próbkuje piksele z krawędzi.
     Zwraca (r, g, b) w zakresie 0-1.
     """
-    from PIL import Image
-
     page = doc[page_index]
     # Niska rozdzielczość — wystarczy do próbkowania koloru krawędzi
     zoom = 72.0 / 72.0  # 72 DPI
     mat = fitz.Matrix(zoom, zoom)
     pix = page.get_pixmap(matrix=mat, alpha=False)
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    img = PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
     edge_rgb = _sample_raster_edge_color(img)
     img.close()
     return edge_rgb
@@ -1386,6 +1460,335 @@ def _extract_cutcontour_segments(doc: fitz.Document, page_idx: int) -> list | No
 # GŁÓWNA FUNKCJA: detect_contour
 # =============================================================================
 
+def _prepare_pdf_path(pdf_path: str) -> tuple[str, str | None, list | None, float | None, float | None]:
+    """Konwersja EPS/SVG → tmp PDF + opcjonalny kontur z SVG clipPath.
+
+    Używa file_loader.to_pdf() do konwersji formatu i file_loader.svg_dimensions_from_name
+    do wymiarów SVG. Ekstrakcja SVG clipPath pozostaje tutaj (specyficzna dla contour).
+
+    Returns:
+        (pdf_path, tmp_pdf, svg_contour, svg_w_mm, svg_h_mm)
+    """
+    # Dla SVG zachowaj oryginalną ścieżkę do ekstrakcji clipPath i wymiarów
+    svg_contour = None
+    svg_w_mm = None
+    svg_h_mm = None
+    original_svg_path = pdf_path if detect_type(pdf_path) == FileType.SVG else None
+
+    # Konwersja formatu (PDF → PDF, EPS/SVG → tmp PDF)
+    pdf_path, tmp_pdf = to_pdf(pdf_path)
+
+    # SVG: dodatkowo wymiary z nazwy + kontur z clipPath
+    if original_svg_path is not None:
+        size = svg_dimensions_from_name(original_svg_path)
+        if size is not None:
+            svg_w_mm, svg_h_mm = size
+            svg_contour = extract_svg_contour(original_svg_path, svg_w_mm, svg_h_mm)
+            if svg_contour:
+                log.info(f"SVG contour: {len(svg_contour)} segmentów z clipPath")
+
+    return pdf_path, tmp_pdf, svg_contour, svg_w_mm, svg_h_mm
+
+
+def _build_sticker_from_cutcontour(
+    doc: fitz.Document,
+    page_idx: int,
+    cutcontour_segs: list,
+    original_path: str,
+) -> Sticker:
+    """Buduje Sticker z PDF bleed-output (re-ingest).
+
+    PDF zawiera już spot color CutContour — używamy go jako konturu cięcia.
+    Segmenty są w koordynatach strony z offsetem bleed, przesuwamy do (0,0).
+    """
+    page = doc[page_idx]
+
+    # Wymiary stickera = bbox CutContour (on-curve only)
+    oncurve = []
+    for seg in cutcontour_segs:
+        if seg[0] == 'l':
+            oncurve.extend([seg[1], seg[2]])
+        elif seg[0] == 'c':
+            oncurve.extend([seg[1], seg[4]])
+    oncurve_arr = np.array(oncurve)
+    cut_min = oncurve_arr.min(axis=0)
+    cut_max = oncurve_arr.max(axis=0)
+    cut_w = cut_max[0] - cut_min[0]
+    cut_h = cut_max[1] - cut_min[1]
+
+    # Przesuń segmenty do origin (0,0)
+    offset = cut_min
+    shifted = []
+    for seg in cutcontour_segs:
+        if seg[0] == 'l':
+            shifted.append(('l', seg[1] - offset, seg[2] - offset))
+        elif seg[0] == 'c':
+            shifted.append(('c',
+                seg[1] - offset, seg[2] - offset,
+                seg[3] - offset, seg[4] - offset))
+
+    w_mm = cut_w * PT_TO_MM
+    h_mm = cut_h * PT_TO_MM
+
+    sticker = Sticker(
+        source_path=original_path,
+        page_index=page_idx,
+        width_mm=w_mm,
+        height_mm=h_mm,
+        cut_segments=shifted,
+        pdf_doc=doc,
+        page_width_pt=cut_w,
+        page_height_pt=cut_h,
+        outermost_drawing_idx=None,
+        edge_color_rgb=_sample_pdf_page_edge_color(doc, page_idx),
+        is_bleed_output=True,
+        is_cmyk=_page_is_cmyk(doc, page),
+    )
+    log.info(
+        f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
+        f"CutContour z bleed output, {len(shifted)} segmentów"
+    )
+    return sticker
+
+
+def _build_sticker_from_raster_only_pdf(
+    doc: fitz.Document,
+    page_idx: int,
+    original_path: str,
+) -> Sticker | None:
+    """Buduje Sticker ze strony PDF zawierającej tylko obrazy rastrowe.
+
+    Wywoływane gdy validate_page() rzucił ValueError (brak wektorów).
+    Jeśli strona ma obrazy — wykrywa kontur z renderingu z alpha lub używa
+    prostokąta strony. Zwraca None gdy strona nie ma ani wektorów, ani obrazów.
+    """
+    page = doc[page_idx]
+    images = page.get_images()
+    if not images:
+        log.warning(f"Strona {page_idx + 1} pominieta: brak wektorów i obrazów")
+        return None
+
+    log.info(
+        f"Strona {page_idx + 1}: brak wektorów, ale {len(images)} obraz(ów) "
+        f"rastrowych — traktowanie jako raster-only PDF"
+    )
+
+    # Sprawdź czy grafika jest mniejsza od strony (artwork na artboardzie)
+    images_bbox = _get_images_bbox(page)
+    artwork_on_artboard = (
+        images_bbox is not None
+        and _is_artwork_on_artboard(page, images_bbox)
+    )
+
+    if artwork_on_artboard:
+        # Grafika mniejsza od strony — przytnij do obszaru grafiki
+        artwork_rect = fitz.Rect(
+            images_bbox.x0 - 1, images_bbox.y0 - 1,
+            images_bbox.x1 + 1, images_bbox.y1 + 1,
+        )
+        artwork_rect &= page.rect  # nie wychodź poza stronę
+
+        log.info(
+            f"Strona {page_idx + 1}: grafika "
+            f"{artwork_rect.width * PT_TO_MM:.1f}x"
+            f"{artwork_rect.height * PT_TO_MM:.1f}mm na stronie "
+            f"{page.rect.width * PT_TO_MM:.1f}x"
+            f"{page.rect.height * PT_TO_MM:.1f}mm"
+        )
+
+        # Wykryj kontur z renderingu z alpha
+        cut_segments, edge_rgb = _render_alpha_contour(
+            doc, page_idx, artwork_rect
+        )
+
+        # Przytnij stronę do obszaru grafiki (dla eksportu)
+        page.set_cropbox(artwork_rect)
+
+        page_w_pt = artwork_rect.width
+        page_h_pt = artwork_rect.height
+    else:
+        # Grafika wypełnia stronę — prostokąt z page.rect
+        page_w_pt = page.rect.width
+        page_h_pt = page.rect.height
+        cut_segments = _make_page_rect_contour(
+            fitz.Rect(0, 0, page_w_pt, page_h_pt)
+        )
+        edge_rgb = _sample_pdf_page_edge_color(doc, page_idx)
+
+    w_mm = page_w_pt * PT_TO_MM
+    h_mm = page_h_pt * PT_TO_MM
+
+    sticker = Sticker(
+        source_path=original_path,
+        page_index=page_idx,
+        width_mm=w_mm,
+        height_mm=h_mm,
+        cut_segments=cut_segments,
+        pdf_doc=doc,
+        page_width_pt=page_w_pt,
+        page_height_pt=page_h_pt,
+        outermost_drawing_idx=None,
+        edge_color_rgb=edge_rgb,
+        is_cmyk=_page_is_cmyk(doc, page),
+    )
+    log.info(
+        f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
+        f"raster-only PDF, {len(cut_segments)} segmentów konturu, "
+        f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
+    )
+    return sticker
+
+
+def _build_sticker_from_vector(
+    doc: fitz.Document,
+    page_idx: int,
+    page: fitz.Page,
+    drawings: list,
+    cropped_pages: set,
+    svg_contour: list | None,
+    svg_w_mm: float | None,
+    svg_h_mm: float | None,
+    original_path: str,
+) -> Sticker | None:
+    """Standardowa ścieżka wektorowa — outermost drawing / TrimBox / SVG / artwork-on-artboard.
+
+    Zwraca None gdy wystąpił ValueError w ekstrakcji (strona pominięta).
+    """
+    try:
+        page_w_pt = page.rect.width
+        page_h_pt = page.rect.height
+
+        extends_beyond = False
+        artwork_on_artboard_flag = False
+        edge_rgb = None
+
+        if svg_contour:
+            # Użyj konturu z SVG clipPath + wymiary z nazwy pliku
+            cut_segments = svg_contour
+            w_mm = svg_w_mm
+            h_mm = svg_h_mm
+            idx, _ = find_outermost_drawing(drawings, page.rect)
+            outermost_idx = idx
+
+        elif page_idx in cropped_pages:
+            # Plik ze spadami — kontur = prostokąt TrimBox (page.rect)
+            cut_segments = _make_page_rect_contour(page.rect)
+            w_mm = page_w_pt * PT_TO_MM
+            h_mm = page_h_pt * PT_TO_MM
+            idx, _ = find_outermost_drawing(drawings, page.rect)
+            outermost_idx = idx
+            edge_rgb = _sample_page_edge_color(page)
+            log.info(
+                f"Strona {page_idx + 1}: kontur z TrimBox "
+                f"({w_mm:.1f}x{h_mm:.1f}mm), "
+                f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+            )
+
+        else:
+            # Standardowa ścieżka: szukaj konturu w PDF
+            idx, outermost_drawing = find_outermost_drawing(drawings, page.rect)
+            outermost_idx = idx
+
+            # Sprawdź czy outermost drawing wykracza poza stronę
+            od_rect = outermost_drawing['rect']
+            extends_beyond = (
+                od_rect.x0 < page.rect.x0 - 1 or
+                od_rect.y0 < page.rect.y0 - 1 or
+                od_rect.x1 > page.rect.x1 + 1 or
+                od_rect.y1 > page.rect.y1 + 1
+            )
+
+            if extends_beyond:
+                # Elementy wychodzą poza stronę → strona = kontur cięcia
+                cut_segments = _make_page_rect_contour(page.rect)
+                edge_rgb = _sample_page_edge_color(page)
+                log.info(
+                    f"Strona {page_idx + 1}: outermost drawing wykracza "
+                    f"poza stronę → kontur = prostokąt strony, "
+                    f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                )
+            else:
+                # Sprawdź artwork-on-artboard (drawings + images < page)
+                images_bbox = _get_images_bbox(page)
+                all_rects = [d['rect'] for d in drawings]
+                if images_bbox is not None:
+                    all_rects.append(images_bbox)
+                content_rect = fitz.Rect(
+                    min(r.x0 for r in all_rects),
+                    min(r.y0 for r in all_rects),
+                    max(r.x1 for r in all_rects),
+                    max(r.y1 for r in all_rects),
+                )
+
+                if _is_artwork_on_artboard(page, content_rect):
+                    artwork_rect = fitz.Rect(
+                        content_rect.x0 - 1, content_rect.y0 - 1,
+                        content_rect.x1 + 1, content_rect.y1 + 1,
+                    )
+                    artwork_rect &= page.rect
+
+                    log.info(
+                        f"Strona {page_idx + 1}: artwork-on-artboard (wektor), "
+                        f"grafika {artwork_rect.width * PT_TO_MM:.1f}x"
+                        f"{artwork_rect.height * PT_TO_MM:.1f}mm na stronie "
+                        f"{page.rect.width * PT_TO_MM:.1f}x"
+                        f"{page.rect.height * PT_TO_MM:.1f}mm"
+                    )
+
+                    # Kontur = prostokąt artwork
+                    aw = artwork_rect.width
+                    ah = artwork_rect.height
+                    cut_segments = [
+                        ('l', np.array([0.0, 0.0]), np.array([aw, 0.0])),
+                        ('l', np.array([aw, 0.0]), np.array([aw, ah])),
+                        ('l', np.array([aw, ah]), np.array([0.0, ah])),
+                        ('l', np.array([0.0, ah]), np.array([0.0, 0.0])),
+                    ]
+
+                    page.set_cropbox(artwork_rect)
+                    page_w_pt = artwork_rect.width
+                    page_h_pt = artwork_rect.height
+                    artwork_on_artboard_flag = True
+                else:
+                    # Grafika wypełnia stronę — standardowy flow
+                    draw_diag = max(outermost_drawing['rect'].width,
+                                    outermost_drawing['rect'].height)
+                    gap_thr = max(0.5, min(2.0, draw_diag * 0.01))
+                    cut_segments = extract_path_segments(
+                        outermost_drawing['items'], gap_threshold=gap_thr
+                    )
+
+            w_mm = page_w_pt * PT_TO_MM
+            h_mm = page_h_pt * PT_TO_MM
+
+        sticker = Sticker(
+            source_path=original_path,
+            page_index=page_idx,
+            width_mm=w_mm,
+            height_mm=h_mm,
+            cut_segments=cut_segments,
+            pdf_doc=doc,
+            page_width_pt=page_w_pt,
+            page_height_pt=page_h_pt,
+            outermost_drawing_idx=outermost_idx,
+            is_cmyk=_page_is_cmyk(doc, page),
+            is_artwork_on_artboard=artwork_on_artboard_flag,
+        )
+        # Ustaw kolor krawędzi gdy wykryty z renderowanej strony
+        if edge_rgb is not None and (extends_beyond or page_idx in cropped_pages):
+            sticker.edge_color_rgb = edge_rgb
+
+        log.info(
+            f"Sticker p{page_idx + 1}: {sticker.width_mm:.1f}x{sticker.height_mm:.1f}mm, "
+            f"{len(cut_segments)} segmentow konturu"
+        )
+        return sticker
+
+    except ValueError as e:
+        log.warning(f"Strona {page_idx + 1} pominieta: {e}")
+        return None
+
+
 def detect_contour(pdf_path: str) -> list[Sticker]:
     """Główna funkcja: wykrywa kontur cięcia z dowolnego pliku wejściowego.
 
@@ -1404,341 +1807,55 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"Plik nie istnieje: {pdf_path}")
 
-    _tmp_pdf = None
     original_path = pdf_path
-    svg_contour = None  # kontur wyciągnięty z SVG clipPath
-    svg_w_mm = None
-    svg_h_mm = None
 
     # === ŚCIEŻKA 1: Pliki rastrowe (PNG/JPG/TIFF/BMP/WEBP) ===
-    # Oddzielna ścieżka — nigdy nie przechodzi przez pipeline PDF.
-    if pdf_path.lower().endswith(_RASTER_EXT):
-        sticker = _detect_raster(pdf_path)
-        return [sticker]
+    if detect_type(pdf_path) == FileType.RASTER:
+        return [_detect_raster(pdf_path)]
 
-    # === ŚCIEŻKA 2: EPS → konwersja do PDF ===
-    if pdf_path.lower().endswith(('.eps', '.epsf')):
-        from modules.ghostscript_bridge import eps_to_pdf
-        log.info(f"Plik EPS — konwersja do PDF przez Ghostscript")
-        _tmp_pdf = eps_to_pdf(pdf_path)
-        pdf_path = _tmp_pdf
-
-    # === ŚCIEŻKA 3: SVG → konwersja do PDF + clipPath contour ===
-    elif pdf_path.lower().endswith('.svg'):
-        from modules.svg_convert import (
-            svg_to_pdf, parse_size_from_filename, extract_svg_contour,
-        )
-
-        # 1. Wymiary z nazwy pliku
-        size = parse_size_from_filename(pdf_path)
-        if size is None:
-            raise ValueError(
-                f"Brak wymiarów w nazwie pliku SVG (wymagany format np. '50x50'): "
-                f"{pdf_path}"
-            )
-        svg_w_mm, svg_h_mm = size
-
-        # 2. Konwersja SVG → PDF
-        _tmp_pdf = svg_to_pdf(pdf_path,
-                              target_w_mm=svg_w_mm,
-                              target_h_mm=svg_h_mm)
-        pdf_path = _tmp_pdf
-
-        # 3. Wyciągnij kontur z SVG clipPath
-        svg_contour = extract_svg_contour(original_path, svg_w_mm, svg_h_mm)
-        if svg_contour:
-            log.info(f"SVG contour: {len(svg_contour)} segmentów z clipPath")
-
-    elif not pdf_path.lower().endswith('.pdf'):
-        raise ValueError(f"Nieobslugiwany format pliku. Wymagany PDF, EPS, SVG lub obraz rastrowy: {pdf_path}")
+    # === ŚCIEŻKI 2-3: EPS/SVG → tmp PDF ===
+    pdf_path, tmp_pdf, svg_contour, svg_w_mm, svg_h_mm = _prepare_pdf_path(pdf_path)
 
     # === ŚCIEŻKA 4+5: PDF (wektor lub raster-only) ===
     doc = fitz.open(pdf_path)
 
-    # Jeśli TrimBox ≠ MediaBox → plik ze spadami, przycinamy do TrimBox
+    # TrimBox ≠ MediaBox → plik ze spadami, przycinamy do TrimBox
     cropped_pages = _crop_to_trimbox(doc)
 
     stickers: list[Sticker] = []
 
     for page_idx in range(len(doc)):
-        # === Najpierw: sprawdź czy PDF zawiera CutContour (bleed output) ===
+        # 1. PDF zawiera CutContour (bleed output) → re-ingest
         cutcontour_segs = _extract_cutcontour_segments(doc, page_idx)
         if cutcontour_segs is not None:
-            page = doc[page_idx]
-
-            # Wymiary stickera = bbox CutContour (on-curve)
-            oncurve = []
-            for seg in cutcontour_segs:
-                if seg[0] == 'l':
-                    oncurve.extend([seg[1], seg[2]])
-                elif seg[0] == 'c':
-                    oncurve.extend([seg[1], seg[4]])
-            oncurve_arr = np.array(oncurve)
-            cut_min = oncurve_arr.min(axis=0)
-            cut_max = oncurve_arr.max(axis=0)
-            cut_w = cut_max[0] - cut_min[0]
-            cut_h = cut_max[1] - cut_min[1]
-
-            # Przesuń segmenty do origin (0,0) — w bleed output CutContour
-            # jest w koordynatach strony (offset = bleed)
-            offset = cut_min
-            shifted = []
-            for seg in cutcontour_segs:
-                if seg[0] == 'l':
-                    shifted.append(('l', seg[1] - offset, seg[2] - offset))
-                elif seg[0] == 'c':
-                    shifted.append(('c',
-                        seg[1] - offset, seg[2] - offset,
-                        seg[3] - offset, seg[4] - offset))
-            cutcontour_segs = shifted
-
-            w_mm = cut_w * PT_TO_MM
-            h_mm = cut_h * PT_TO_MM
-
-            sticker = Sticker(
-                source_path=original_path,
-                page_index=page_idx,
-                width_mm=w_mm,
-                height_mm=h_mm,
-                cut_segments=cutcontour_segs,
-                pdf_doc=doc,
-                page_width_pt=cut_w,
-                page_height_pt=cut_h,
-                outermost_drawing_idx=None,
-                edge_color_rgb=_sample_pdf_page_edge_color(doc, page_idx),
-                is_bleed_output=True,
-                is_cmyk=_page_is_cmyk(doc, page),
-            )
-            stickers.append(sticker)
-            log.info(
-                f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
-                f"CutContour z bleed output, {len(cutcontour_segs)} segmentów"
+            stickers.append(
+                _build_sticker_from_cutcontour(
+                    doc, page_idx, cutcontour_segs, original_path
+                )
             )
             continue
 
+        # 2. Standardowa walidacja strony
         try:
             page, drawings = validate_page(
-                doc, page_idx, skip_raster_check=bool(_tmp_pdf)
+                doc, page_idx, skip_raster_check=bool(tmp_pdf)
             )
         except ValueError:
-            # Strona bez drawings — sprawdź czy ma obrazy rastrowe
-            page = doc[page_idx]
-            images = page.get_images()
-            if images:
-                log.info(
-                    f"Strona {page_idx + 1}: brak wektorów, ale {len(images)} obraz(ów) "
-                    f"rastrowych — traktowanie jako raster-only PDF"
-                )
-
-                # Sprawdź czy grafika jest mniejsza od strony (artwork na artboardzie)
-                images_bbox = _get_images_bbox(page)
-                artwork_on_artboard = (
-                    images_bbox is not None
-                    and _is_artwork_on_artboard(page, images_bbox)
-                )
-
-                if artwork_on_artboard:
-                    # Grafika mniejsza od strony — przytnij do obszaru grafiki
-                    artwork_rect = fitz.Rect(
-                        images_bbox.x0 - 1, images_bbox.y0 - 1,
-                        images_bbox.x1 + 1, images_bbox.y1 + 1,
-                    )
-                    artwork_rect &= page.rect  # nie wychodź poza stronę
-
-                    log.info(
-                        f"Strona {page_idx + 1}: grafika "
-                        f"{artwork_rect.width * PT_TO_MM:.1f}x"
-                        f"{artwork_rect.height * PT_TO_MM:.1f}mm na stronie "
-                        f"{page.rect.width * PT_TO_MM:.1f}x"
-                        f"{page.rect.height * PT_TO_MM:.1f}mm"
-                    )
-
-                    # Wykryj kontur z renderingu z alpha
-                    cut_segments, edge_rgb = _render_alpha_contour(
-                        doc, page_idx, artwork_rect
-                    )
-
-                    # Przytnij stronę do obszaru grafiki (dla eksportu)
-                    page.set_cropbox(artwork_rect)
-
-                    page_w_pt = artwork_rect.width
-                    page_h_pt = artwork_rect.height
-                else:
-                    # Grafika wypełnia stronę — prostokąt z page.rect
-                    page_w_pt = page.rect.width
-                    page_h_pt = page.rect.height
-                    cut_segments = _make_page_rect_contour(
-                        fitz.Rect(0, 0, page_w_pt, page_h_pt)
-                    )
-                    edge_rgb = _sample_pdf_page_edge_color(doc, page_idx)
-
-                w_mm = page_w_pt * PT_TO_MM
-                h_mm = page_h_pt * PT_TO_MM
-
-                sticker = Sticker(
-                    source_path=original_path,
-                    page_index=page_idx,
-                    width_mm=w_mm,
-                    height_mm=h_mm,
-                    cut_segments=cut_segments,
-                    pdf_doc=doc,
-                    page_width_pt=page_w_pt,
-                    page_height_pt=page_h_pt,
-                    outermost_drawing_idx=None,
-                    edge_color_rgb=edge_rgb,
-                    is_cmyk=_page_is_cmyk(doc, page),
-                )
+            # Brak wektorów — sprawdź raster-only PDF
+            sticker = _build_sticker_from_raster_only_pdf(
+                doc, page_idx, original_path
+            )
+            if sticker is not None:
                 stickers.append(sticker)
-                log.info(
-                    f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
-                    f"raster-only PDF, {len(cut_segments)} segmentów konturu, "
-                    f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
-                )
-                continue
-            else:
-                log.warning(f"Strona {page_idx + 1} pominieta: brak wektorów i obrazów")
-                continue
+            continue
 
-        try:
-            page_w_pt = page.rect.width
-            page_h_pt = page.rect.height
-
-            extends_beyond = False
-            _artwork_on_artboard = False
-            if svg_contour:
-                # Użyj konturu z SVG clipPath + wymiary z nazwy pliku
-                cut_segments = svg_contour
-                w_mm = svg_w_mm
-                h_mm = svg_h_mm
-                # Znajdź outermost drawing dla ekstrakcji koloru krawędzi (bleed)
-                idx, _ = find_outermost_drawing(drawings, page.rect)
-                outermost_idx = idx
-            elif page_idx in cropped_pages:
-                # Plik ze spadami — kontur = prostokąt TrimBox (page.rect)
-                # Drawings mają koordynaty relative do CropBox, ale ich rects
-                # mogą wykraczać poza page.rect (bo były w MediaBox)
-                cut_segments = _make_page_rect_contour(page.rect)
-                w_mm = page_w_pt * PT_TO_MM
-                h_mm = page_h_pt * PT_TO_MM
-                # Szukaj outermost drawing dla koloru krawędzi
-                idx, _ = find_outermost_drawing(drawings, page.rect)
-                outermost_idx = idx
-                # Kolor krawędzi z renderingu strony
-                edge_rgb = _sample_page_edge_color(page)
-                log.info(
-                    f"Strona {page_idx + 1}: kontur z TrimBox "
-                    f"({w_mm:.1f}x{h_mm:.1f}mm), "
-                    f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
-                )
-            else:
-                # Standardowa ścieżka: szukaj konturu w PDF
-                idx, outermost_drawing = find_outermost_drawing(
-                    drawings, page.rect
-                )
-
-                # Sprawdź czy outermost drawing wykracza poza stronę
-                # (np. elementy dekoracyjne na wizytówce) — wtedy kontur = strona
-                od_rect = outermost_drawing['rect']
-                extends_beyond = (
-                    od_rect.x0 < page.rect.x0 - 1 or
-                    od_rect.y0 < page.rect.y0 - 1 or
-                    od_rect.x1 > page.rect.x1 + 1 or
-                    od_rect.y1 > page.rect.y1 + 1
-                )
-                if extends_beyond:
-                    # Elementy wychodzą poza stronę → strona = kontur cięcia
-                    cut_segments = _make_page_rect_contour(page.rect)
-                    # Kolor krawędzi: renderuj stronę i sampluj krawędzie
-                    edge_rgb = _sample_page_edge_color(page)
-                    log.info(
-                        f"Strona {page_idx + 1}: outermost drawing wykracza "
-                        f"poza stronę → kontur = prostokąt strony, "
-                        f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
-                    )
-                else:
-                    # Sprawdź artwork-on-artboard: czy grafika (drawings + images)
-                    # jest znacznie mniejsza od strony
-                    images_bbox = _get_images_bbox(page)
-                    # Union bbox drawings + images
-                    all_rects = [d['rect'] for d in drawings]
-                    if images_bbox is not None:
-                        all_rects.append(images_bbox)
-                    content_x0 = min(r.x0 for r in all_rects)
-                    content_y0 = min(r.y0 for r in all_rects)
-                    content_x1 = max(r.x1 for r in all_rects)
-                    content_y1 = max(r.y1 for r in all_rects)
-                    content_rect = fitz.Rect(content_x0, content_y0,
-                                             content_x1, content_y1)
-
-                    if _is_artwork_on_artboard(page, content_rect):
-                        # Grafika wektorowa mniejsza od strony — przytnij
-                        artwork_rect = fitz.Rect(
-                            content_rect.x0 - 1, content_rect.y0 - 1,
-                            content_rect.x1 + 1, content_rect.y1 + 1,
-                        )
-                        artwork_rect &= page.rect
-
-                        log.info(
-                            f"Strona {page_idx + 1}: artwork-on-artboard (wektor), "
-                            f"grafika {artwork_rect.width * PT_TO_MM:.1f}x"
-                            f"{artwork_rect.height * PT_TO_MM:.1f}mm na stronie "
-                            f"{page.rect.width * PT_TO_MM:.1f}x"
-                            f"{page.rect.height * PT_TO_MM:.1f}mm"
-                        )
-
-                        # Kontur = prostokąt artwork (compound paths mogą mieć
-                        # złożone subpaths które źle się dzielą)
-                        aw = artwork_rect.width
-                        ah = artwork_rect.height
-                        cut_segments = [
-                            ('l', np.array([0.0, 0.0]), np.array([aw, 0.0])),
-                            ('l', np.array([aw, 0.0]), np.array([aw, ah])),
-                            ('l', np.array([aw, ah]), np.array([0.0, ah])),
-                            ('l', np.array([0.0, ah]), np.array([0.0, 0.0])),
-                        ]
-
-                        # Przytnij stronę do artwork
-                        page.set_cropbox(artwork_rect)
-                        page_w_pt = artwork_rect.width
-                        page_h_pt = artwork_rect.height
-                        _artwork_on_artboard = True
-                    else:
-                        # Grafika wypełnia stronę — standardowy flow
-                        _draw_diag = max(outermost_drawing['rect'].width,
-                                         outermost_drawing['rect'].height)
-                        _gap_thr = max(0.5, min(2.0, _draw_diag * 0.01))
-                        cut_segments = extract_path_segments(
-                            outermost_drawing['items'], gap_threshold=_gap_thr
-                        )
-
-                w_mm = page_w_pt * PT_TO_MM
-                h_mm = page_h_pt * PT_TO_MM
-                outermost_idx = idx
-
-            sticker = Sticker(
-                source_path=original_path,
-                page_index=page_idx,
-                width_mm=w_mm,
-                height_mm=h_mm,
-                cut_segments=cut_segments,
-                pdf_doc=doc,
-                page_width_pt=page_w_pt,
-                page_height_pt=page_h_pt,
-                outermost_drawing_idx=outermost_idx,
-                is_cmyk=_page_is_cmyk(doc, page),
-                is_artwork_on_artboard=_artwork_on_artboard,
-            )
-            # Ustaw kolor krawędzi gdy wykryty z renderowanej strony
-            if extends_beyond or page_idx in cropped_pages:
-                sticker.edge_color_rgb = edge_rgb
+        # 3. Standardowa ścieżka wektorowa
+        sticker = _build_sticker_from_vector(
+            doc, page_idx, page, drawings, cropped_pages,
+            svg_contour, svg_w_mm, svg_h_mm, original_path,
+        )
+        if sticker is not None:
             stickers.append(sticker)
-
-            log.info(
-                f"Sticker p{page_idx + 1}: {sticker.width_mm:.1f}x{sticker.height_mm:.1f}mm, "
-                f"{len(cut_segments)} segmentow konturu"
-            )
-        except ValueError as e:
-            log.warning(f"Strona {page_idx + 1} pominieta: {e}")
 
     if not stickers:
         doc.close()

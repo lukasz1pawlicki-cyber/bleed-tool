@@ -127,6 +127,7 @@ class PreviewPanel(QWidget):
         self._current_idx: int = 0
         self._cache: dict = {}
         self._crop_data: dict = {}  # aktywny crop preview
+        self._split_view: bool = False  # True = podgląd przed/po side-by-side
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -153,6 +154,18 @@ class PreviewPanel(QWidget):
         self._next_btn.setFixedSize(28, 26)
         self._next_btn.clicked.connect(self._next)
         toolbar.addWidget(self._next_btn)
+
+        # Split view toggle — podgląd przed/po side-by-side (tylko bleed mode)
+        self._split_btn = QPushButton("Przed/Po")
+        self._split_btn.setCheckable(True)
+        self._split_btn.setFixedHeight(26)
+        self._split_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._split_btn.setToolTip(
+            "Podgląd side-by-side: oryginał (lewo) vs wynik z bleedem (prawo)"
+        )
+        self._split_btn.clicked.connect(self._on_toggle_split)
+        self._split_btn.setVisible(False)  # widoczny tylko gdy _results
+        toolbar.addWidget(self._split_btn)
 
         toolbar.addStretch()
 
@@ -205,8 +218,20 @@ class PreviewPanel(QWidget):
 
     # --- Public API ---
 
-    def show_bleed_results(self, paths: list[str]):
-        """Pokaż podgląd plików bleed."""
+    def show_bleed_results(self, paths: list[str],
+                           input_paths: list[str] | None = None,
+                           input_infos: list[tuple[str, int]] | None = None):
+        """Pokaż podgląd plików bleed.
+
+        Args:
+            paths: output PDF paths (wyniki)
+            input_paths: (legacy) oryginalne pliki wejściowe — padding None
+                gdy mniej niż paths (mylące przy wielostronicowych)
+            input_infos: [(src_path, page_idx), ...] — parallel do paths.
+                Preferowane: każdy output ma dokładnie jeden odpowiadający
+                source input + page_idx (dla wielostronicowych PDF).
+                Ma pierwszeństwo przed input_paths.
+        """
         self._job = None
         self._sheet_pdfs = []
         self._results = []
@@ -214,7 +239,26 @@ class PreviewPanel(QWidget):
         self._cache.clear()
 
         import fitz
-        for p in paths:
+
+        # Normalizuj do listy (src_path, page_idx) | (None, 0)
+        normalized: list[tuple[str | None, int]] = []
+        if input_infos is not None:
+            # Nowy API — parallel do paths
+            for i in range(len(paths)):
+                if i < len(input_infos) and input_infos[i] is not None:
+                    src, pidx = input_infos[i]
+                    normalized.append((src, int(pidx)))
+                else:
+                    normalized.append((None, 0))
+        elif input_paths is not None:
+            # Legacy API — pojedyncza strona (page_idx=0)
+            padded = list(input_paths) + [None] * max(0, len(paths) - len(input_paths))
+            for inp in padded[:len(paths)]:
+                normalized.append((inp, 0))
+        else:
+            normalized = [(None, 0)] * len(paths)
+
+        for p, (inp, page_idx) in zip(paths, normalized):
             try:
                 doc = fitz.open(p)
                 page = doc[0]
@@ -223,13 +267,27 @@ class PreviewPanel(QWidget):
                 doc.close()
                 self._results.append({
                     "path": p,
+                    "input_path": inp,
+                    "input_page_idx": page_idx,
                     "label": os.path.basename(p),
                     "size_mm": (w_mm, h_mm),
                 })
             except Exception:
                 pass
 
+        # Split-view dostępny tylko gdy mamy input paths
+        has_inputs = any(r.get("input_path") for r in self._results)
+        self._split_btn.setVisible(has_inputs)
+        if not has_inputs:
+            self._split_btn.setChecked(False)
+            self._split_view = False
+
         self._update_nav()
+        self._render_current()
+
+    def _on_toggle_split(self, checked: bool):
+        """Przełącznik trybu split-view (przed/po)."""
+        self._split_view = checked
         self._render_current()
 
     def show_nest_job(self, job, sheet_pdfs, bleed_mm):
@@ -240,6 +298,10 @@ class PreviewPanel(QWidget):
         self._bleed_mm = bleed_mm
         self._current_idx = 0
         self._cache.clear()
+        # Split-view ma sens tylko w trybie bleed (przed/po oryginału)
+        self._split_btn.setVisible(False)
+        self._split_btn.setChecked(False)
+        self._split_view = False
         self._update_nav()
         self._render_current()
 
@@ -249,6 +311,9 @@ class PreviewPanel(QWidget):
         self._sheet_pdfs = []
         self._cache.clear()
         self._scene.clear()
+        self._split_btn.setVisible(False)
+        self._split_btn.setChecked(False)
+        self._split_view = False
         self._update_nav()
 
     # --- Navigation ---
@@ -318,10 +383,153 @@ class PreviewPanel(QWidget):
         self._view.fit_content()
 
     def _render_bleed(self, idx: int):
-        path = self._results[idx]["path"]
+        result = self._results[idx]
+        path = result["path"]
+        input_path = result.get("input_path")
+        input_page_idx = result.get("input_page_idx", 0)
+
+        # Split view: pokaż input (lewo) + output (prawo)
+        if self._split_view and input_path:
+            self._render_split(input_path, path, input_page_idx)
+            return
+
         qpix = self._render_pdf_page(path, dpi=150)
         if qpix:
             self._scene.addPixmap(qpix)
+
+    def _render_split(self, input_path: str, output_path: str,
+                      input_page_idx: int = 0):
+        """Renderuje podgląd side-by-side: oryginał vs wynik z bleedem."""
+        # Output (PDF z bleedem)
+        out_pix = self._render_pdf_page(output_path, dpi=150)
+        # Input — obsługuje PDF/SVG/EPS/raster (page_idx dla wielostronicowych)
+        in_pix = self._render_input_file(input_path, page_idx=input_page_idx)
+
+        if not out_pix and not in_pix:
+            return
+
+        # Wspólny rozmiar — skaluj obrazki do tej samej wysokości (max)
+        # dla lepszego porównania
+        if in_pix and out_pix:
+            max_h = max(in_pix.height(), out_pix.height())
+            if in_pix.height() != max_h:
+                in_pix = in_pix.scaledToHeight(max_h, Qt.TransformationMode.SmoothTransformation)
+            if out_pix.height() != max_h:
+                out_pix = out_pix.scaledToHeight(max_h, Qt.TransformationMode.SmoothTransformation)
+
+        gap_px = 20  # odstęp między panelami
+        x_offset = 0
+
+        # Input (lewo) + etykieta
+        if in_pix:
+            item_in = self._scene.addPixmap(in_pix)
+            item_in.setPos(0, 30)  # +30 na etykietę
+            label_in = self._scene.addText("PRZED (oryginał)")
+            label_in.setDefaultTextColor(QColor("#333"))
+            label_in.setPos(0, 0)
+            x_offset = in_pix.width() + gap_px
+
+        # Output (prawo) + etykieta
+        if out_pix:
+            item_out = self._scene.addPixmap(out_pix)
+            item_out.setPos(x_offset, 30)
+            label_out = self._scene.addText("PO (z bleedem)")
+            label_out.setDefaultTextColor(QColor("#333"))
+            label_out.setPos(x_offset, 0)
+
+    def _render_input_file(self, path: str, max_size: int = 600,
+                           page_idx: int = 0) -> QPixmap | None:
+        """Renderuje plik wejściowy (PDF/SVG/EPS/raster) jako QPixmap.
+
+        Samodzielna implementacja (bez importu crop.py), żeby nie wymagać
+        libcairo (cairosvg crashuje import crop.py gdy brak systemowej cairo).
+
+        page_idx: dla wielostronicowych PDF — którą stronę renderować.
+        """
+        mtime = os.path.getmtime(path) if os.path.isfile(path) else 0
+        cache_key = ("input", path, page_idx, mtime)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        try:
+            pil = self._load_input_as_pil(path, max_size, page_idx=page_idx)
+            if pil is None:
+                return None
+            rgb_data = pil.convert("RGB").tobytes()
+            w, h = pil.size
+            qimg = QImage(rgb_data, w, h, w * 3, QImage.Format.Format_RGB888)
+            qpix = QPixmap.fromImage(qimg.copy())
+
+            if len(self._cache) > 10:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[cache_key] = qpix
+            return qpix
+        except Exception as e:
+            log.warning(f"Render input failed: {path}: {e}")
+            return None
+
+    def _load_input_as_pil(self, path: str, max_size: int, page_idx: int = 0):
+        """Ładuje plik wejściowy jako PIL.Image (RGB).
+
+        Obsługuje PDF/AI (fitz), raster (PIL.Image.open), SVG (cairosvg — fallback),
+        EPS (ghostscript_bridge.eps_to_pdf → fitz).
+
+        page_idx: dla PDF — którą stronę (dla rastrów/SVG ignorowane).
+        """
+        from PIL import Image
+        ext = os.path.splitext(path)[1].lower()
+
+        RASTER = ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')
+        if ext in RASTER:
+            img = Image.open(path).convert("RGB")
+            w, h = img.size
+            if max(w, h) > max_size:
+                scale = max_size / max(w, h)
+                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            return img
+
+        if ext == ".svg":
+            try:
+                import cairosvg
+                import io as _io
+                png_data = cairosvg.svg2png(url=path, output_width=max_size)
+                return Image.open(_io.BytesIO(png_data)).convert("RGB")
+            except Exception as e:
+                log.warning(f"SVG preview render failed ({e}) — placeholder")
+                return Image.new("RGB", (max_size, max_size), (230, 230, 230))
+
+        if ext in (".eps", ".epsf"):
+            try:
+                from modules.ghostscript_bridge import eps_to_pdf
+                tmp_pdf = eps_to_pdf(path)
+                img = self._render_pdf_as_pil(tmp_pdf, max_size, page_idx=page_idx)
+                try:
+                    os.unlink(tmp_pdf)
+                except OSError:
+                    pass
+                return img
+            except Exception as e:
+                log.warning(f"EPS preview render failed ({e}) — placeholder")
+                return Image.new("RGB", (max_size, max_size), (230, 230, 230))
+
+        # Default: PDF / AI / unknown — próba fitz
+        return self._render_pdf_as_pil(path, max_size, page_idx=page_idx)
+
+    def _render_pdf_as_pil(self, path: str, max_size: int, page_idx: int = 0):
+        """Renderuje wybraną stronę PDF przez fitz i zwraca PIL.Image."""
+        import fitz
+        from PIL import Image
+        doc = fitz.open(path)
+        try:
+            # Bezpieczny clamp — brak strony → fallback na 0
+            pidx = page_idx if 0 <= page_idx < len(doc) else 0
+            page = doc[pidx]
+            zoom = max_size / max(page.rect.width, page.rect.height)
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        finally:
+            doc.close()
 
     def _render_sheet(self, idx: int):
         pp, cp = self._sheet_pdfs[idx]

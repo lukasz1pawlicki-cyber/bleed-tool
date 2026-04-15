@@ -7,7 +7,7 @@ Zakładka Bleed: drop zone, parametry, generowanie bleed + CutContour.
 import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QCheckBox, QRadioButton, QButtonGroup,
+    QLineEdit, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
     QProgressBar, QFileDialog, QSizePolicy,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
@@ -19,7 +19,9 @@ from gui.file_section import FileSection
 class BleedTab(QWidget):
     """Zakładka Bleed — pełny formularz z generowaniem."""
 
-    preview_ready = pyqtSignal(list)  # output_paths po zakończeniu
+    # preview_ready: (input_infos, output_paths)
+    # input_infos = [(src_path, page_idx), ...] parallel do output_paths
+    preview_ready = pyqtSignal(list, list)
     crop_preview_requested = pyqtSignal(dict)  # {file, shape, offset, radius_pct} lub {} gdy off
 
     def __init__(self, log_fn=None, parent=None):
@@ -110,6 +112,31 @@ class BleedTab(QWidget):
         # Checkbox: Biały poddruk
         self._white_cb = QCheckBox("Biały poddruk (White)")
         card_layout.addWidget(self._white_cb)
+
+        # Row: Silnik konturu (raster) — Moore / OpenCV
+        eng_row = QHBoxLayout()
+        eng_row.setSpacing(8)
+        eng_lbl = QLabel("Silnik konturu")
+        eng_lbl.setProperty("class", "field-label")
+        eng_row.addWidget(eng_lbl)
+        self._engine_combo = QComboBox()
+        self._engine_combo.addItem("Moore (Python)", "moore")
+        self._engine_combo.addItem("OpenCV (szybki)", "opencv")
+        self._engine_combo.addItem("Auto", "auto")
+        # Wartość domyślna z config
+        try:
+            import config as _cfg
+            default_eng = (_cfg.CONTOUR_ENGINE or "moore").lower()
+            for i in range(self._engine_combo.count()):
+                if self._engine_combo.itemData(i) == default_eng:
+                    self._engine_combo.setCurrentIndex(i)
+                    break
+        except Exception:
+            pass
+        self._engine_combo.setFixedWidth(180)
+        eng_row.addWidget(self._engine_combo)
+        eng_row.addStretch()
+        card_layout.addLayout(eng_row)
 
         # --- Crop ---
         crop_row = QHBoxLayout()
@@ -353,6 +380,7 @@ class BleedTab(QWidget):
             crop_shape=self.crop_shape,
             crop_offsets=dict(self._crop_offsets),
             radius_pct=self._radius_pct,
+            contour_engine=self._engine_combo.currentData(),
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)
@@ -374,7 +402,7 @@ class BleedTab(QWidget):
             self._progress.setValue(int(100 * current / total))
         self._status_label.setText(f"Plik {current}/{total}...")
 
-    def _on_done(self, output_paths: list):
+    def _on_done(self, output_paths: list, input_infos: list):
         self._processing = False
         self._run_btn.setEnabled(True)
         self._run_btn.setText("Generuj bleed")
@@ -382,7 +410,9 @@ class BleedTab(QWidget):
         n = len(output_paths)
         self._status_label.setText(f"Gotowe — {n} plik(ów)")
         if output_paths:
-            self.preview_ready.emit(output_paths)
+            # Przekaż input_infos (dla split-view preview przed/po)
+            # input_infos = [(src_path, page_idx), ...] — parallel do output_paths
+            self.preview_ready.emit(input_infos, output_paths)
 
     def _on_error(self, msg: str):
         self._processing = False

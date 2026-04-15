@@ -6,10 +6,33 @@ Dataclasses dla pipeline bleed.
 
 from __future__ import annotations
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+
+def build_output_name(
+    input_path: str,
+    trim_w_mm: float,
+    trim_h_mm: float,
+    bleed_mm: float,
+    page_index: int | None = None,
+) -> str:
+    """Zwraca nazwe pliku wyjsciowego wg konwencji:
+        {stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
+
+    Dla wielostronicowych dodaje sufiks _p{N}:
+        {stem}_p{N}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
+    """
+    stem = os.path.splitext(os.path.basename(input_path))[0]
+    w = round(trim_w_mm)
+    h = round(trim_h_mm)
+    b = round(bleed_mm)
+    if page_index is not None:
+        return f"{stem}_p{page_index + 1}_PRINT_{w}x{h}mm_bleed{b}mm.pdf"
+    return f"{stem}_PRINT_{w}x{h}mm_bleed{b}mm.pdf"
 
 
 @dataclass

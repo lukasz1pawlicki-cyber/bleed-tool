@@ -60,13 +60,16 @@ Dodatkowo:
 - `Sheet` — arkusz z naklejkami, panelami, znacznikami
 - `Mark`, `PanelLine` — znaczniki rejestracji, linie FlexCut
 
-### GUI: `bleed_app.py` (CustomTkinter)
-- Drag & drop (tkinterdnd2) + kliknięcie do wyboru
-- Podgląd PDF, ustawienia, log
-- Multi-threaded processing
+### GUI: `bleed_app.py` (PyQt6 + QSS)
+- Drag & drop (native QWidget) + kliknięcie do wyboru
+- Podgląd PDF (renderowanie fitz), ustawienia, log
+- QThread workers: `BleedWorker`, `NestWorker` (moduł `gui/workers.py`)
+- Theming: `gui/theme.py` (QSS)
 
 ### CLI: `bleed_cli.py`
-- `python bleed_cli.py input.pdf --output-dir ./out --bleed 2`
+- `python bleed_cli.py input.pdf -o ./out --bleed 2`
+- Batch: `python bleed_cli.py --batch ./folder -o ./out [--recursive]`
+- Output naming: `{stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf` (build_output_name w models.py)
 
 ---
 
@@ -77,20 +80,20 @@ Dodatkowo:
 PyMuPDF>=1.24.0      # import fitz — PDF: render, rysowanie, ekstrakcja
 numpy>=1.20.0        # operacje geometryczne, piksele
 Pillow>=8.0.0        # raster I/O, ICC color transform
-customtkinter>=5.0.0 # GUI
-tkinterdnd2>=0.3.0   # drag & drop
+PyQt6>=6.5.0         # GUI (drag&drop, QThread workers)
 cairosvg>=2.5.0      # SVG → PDF
 ```
 
-### Rekomendowany stack docelowy:
+### Stack:
 
 | Narzędzie | Rola | Status |
 |---|---|---|
-| **pikepdf** | Analiza struktury PDF, modyfikacja Box-ów (BleedBox, TrimBox, MediaBox) | DO DODANIA |
-| **PyMuPDF** | Rysowanie linii cięcia, rasteryzacja, ekstrakcja obrazów | JEST |
-| **Ghostscript** | Konwersja EPS→PDF, RGB→CMYK, finalna rasteryzacja do druku | DO DODANIA |
-| **Pillow + NumPy** | Obróbka rastrów | JEST |
-| **OpenCV** | Detekcja krawędzi, analiza treści (alternatywa dla alpha contour) | DO DODANIA |
+| **PyMuPDF** | PDF: render, rysowanie, ekstrakcja, xref manipulation | JEST |
+| **PyQt6** | GUI, drag&drop, QThread workers | JEST |
+| **Ghostscript** | Konwersja EPS→PDF (modules/ghostscript_bridge.py) | JEST (zewn. binarny) |
+| **Pillow + NumPy** | Obróbka rastrów, ICC FOGRA39 transform | JEST |
+| **pikepdf** | (opcjonalnie) — alternatywa dla xref manipulation w pdf_metadata | NIE UŻYWANE |
+| **OpenCV** | Detekcja krawędzi (alternatywa dla Moore boundary tracing) | NIE UŻYWANE |
 
 ### Praca na rastrach wewnątrz PDF:
 ```
@@ -104,10 +107,10 @@ PyMuPDF page.get_pixmap(dpi=300) → Pillow obróbka → NumPy operacje pikselow
 
 | Format | Typ | Biblioteka | Status |
 |---|---|---|---|
-| `.pdf` | Wektor | PyMuPDF (+ pikepdf docelowo) | DZIAŁA |
+| `.pdf` | Wektor | PyMuPDF | DZIAŁA |
 | `.ai` | Wektor (Adobe Illustrator) | PyMuPDF (jeśli zapisany jako PDF) | DZIAŁA |
 | `.svg` | Wektor | CairoSVG → PDF → PyMuPDF | DZIAŁA |
-| `.eps` | Wektor | Ghostscript → PDF | DO DODANIA |
+| `.eps`, `.epsf` | Wektor | Ghostscript → PDF (modules/ghostscript_bridge.py) | DZIAŁA |
 | `.png`, `.jpg`, `.tiff`, `.webp`, `.bmp` | Raster | Pillow → PyMuPDF | DZIAŁA |
 
 ---
@@ -115,30 +118,37 @@ PyMuPDF page.get_pixmap(dpi=300) → Pillow obróbka → NumPy operacje pikselow
 ## Architektura — struktura docelowa
 
 ```
-sticker_prep/
+bleed-tool/
 ├── CLAUDE.md                      ← ten plik
-├── bleed_app.py                   ← GUI (CustomTkinter) — DZIAŁA
-├── bleed_cli.py                   ← CLI — DZIAŁA
-├── config.py                      ← stałe (DEFAULT_BLEED_MM, SPOT_COLORS, MM_TO_PT)
-├── models.py                      ← dataclasses (Sticker, Placement, Sheet, Mark, PanelLine)
+├── INSTALACJA.txt                 ← instrukcja instalacji (PL)
+├── bleed_app.py                   ← GUI entry point (PyQt6) — DZIAŁA
+├── bleed_cli.py                   ← CLI (single + --batch) — DZIAŁA
+├── config.py                      ← stałe (DEFAULT_BLEED_MM, SPOT_COLORS, MM_TO_PT, SNAP, OPOS)
+├── models.py                      ← dataclasses (Sticker, Placement, Sheet, Mark, PanelLine) + build_output_name
+├── gui/
+│   ├── main_window.py             ← QMainWindow — bleed + nesting tabs
+│   ├── workers.py                 ← QThread: BleedWorker, NestWorker
+│   ├── theme.py                   ← QSS theming
+│   └── widgets/                   ← drop_zone, preview, settings panels
 ├── modules/
-│   ├── contour.py                 ← detekcja konturu (wektor, raster, circle) — DZIAŁA
-│   ├── bleed.py                   ← offset konturu + kolor krawędzi — DZIAŁA
-│   ├── export.py                  ← eksport PDF (sticker + sheet) — DZIAŁA
-│   ├── svg_convert.py             ← SVG → PDF — DZIAŁA
-│   ├── file_loader.py             ← DO DODANIA: abstrakcja wczytywania plików
-│   ├── pdf_metadata.py            ← DO DODANIA: pikepdf — ustawienie Box-ów w output
-│   └── ghostscript_bridge.py      ← DO DODANIA: EPS→PDF, rasteryzacja CMYK
+│   ├── contour.py                 ← detekcja konturu (wektor, raster, circle, alpha) — DZIAŁA
+│   ├── bleed.py                   ← offset konturu + kolor krawędzi (ICC FOGRA39) — DZIAŁA
+│   ├── export.py                  ← eksport PDF (sticker + sheet, OCG layers per ploter) — DZIAŁA
+│   ├── svg_convert.py             ← SVG → PDF (cairosvg) — DZIAŁA
+│   ├── crop.py                    ← crop do wysokości (sticker + maski circle/rounded/oval) — DZIAŁA
+│   ├── preflight.py               ← szybka analiza pliku (DPI, tryb koloru, rozmiar) — DZIAŁA
+│   ├── nesting.py                 ← shelf-based nesting, 3 grouping modes — DZIAŁA
+│   ├── panelize.py                ← linie paneli (FlexCut) w arkuszu — DZIAŁA
+│   ├── marks.py                   ← znaczniki OPOS (Summa) / 4 narożne (JWEI) — DZIAŁA
+│   ├── pdf_metadata.py            ← PDF/X-4 OutputIntent FOGRA39 + TrimBox/BleedBox — DZIAŁA
+│   └── ghostscript_bridge.py      ← EPS → PDF (gs subprocess) — DZIAŁA
 ├── profiles/
-│   └── output_profiles.json       ← DO DODANIA: ustawienia per maszyna
-├── tests/
-│   ├── test_contour.py
-│   ├── test_bleed.py
-│   ├── test_export.py
-│   └── fixtures/                  ← pliki testowe
+│   └── CoatedFOGRA39.icc          ← ICC profile (opcjonalnie, fallback do systemowych lokalizacji)
+├── tests/                         ← DO DODANIA: test_contour.py, test_bleed.py, test_export.py, fixtures/
 ├── requirements.txt
 ├── uruchom.bat                    ← launcher Windows
-└── uruchom.command                ← launcher macOS
+├── uruchom.command                ← launcher macOS
+└── pakuj.bat                      ← pakowanie releasu (Windows)
 ```
 
 ---
@@ -149,14 +159,10 @@ sticker_prep/
 INPUT FILE (PDF/SVG/EPS/PNG/JPG)
   │
   ▼
-file_loader.load()              → fitz.Document (zawsze PDF wewnętrznie)
-  │                               • PDF/AI: otwarcie bezpośrednie
-  │                               • SVG: CairoSVG → tmp PDF
-  │                               • EPS: Ghostscript → tmp PDF
-  │                               • Raster: Pillow → osadź w PDF
-  │
-  ▼
 contour.detect_contour()        → list[Sticker]
+                                  (dispatch wewnętrzny: svg_convert dla SVG,
+                                   ghostscript_bridge dla EPS, bezpośredni PDF,
+                                   _detect_raster dla rastrów)
   │                               • _crop_to_trimbox() — pliki ze spadami
   │                               • find_outermost_drawing() — wektor
   │                               • _render_alpha_contour() — raster-only PDF
@@ -174,10 +180,11 @@ export.export_single_sticker()  → PDF z 3 warstwami:
   │                               3. CutContour (spot color Separation)
   │
   ▼
-pdf_metadata.set_boxes()        → DO DODANIA (pikepdf):
-  │                               • TrimBox = oryginalny rozmiar
-  │                               • BleedBox = TrimBox + 2mm
-  │                               • MediaBox = BleedBox
+pdf_metadata.apply_pdfx4()      → OutputIntent FOGRA39 (ICC) + Box'y:
+  │                               • TrimBox = MediaBox − bleed (rozmiar naklejki)
+  │                               • BleedBox = MediaBox (pełny obszar ze spadem)
+  │                               • CropBox = MediaBox (dla Xerox RIP)
+  │                               • XMP metadata z deklaracją PDF/X-4
   │
   ▼
 OUTPUT: {nazwa}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
@@ -297,25 +304,33 @@ def build_output_name(input_path: Path, trim_w_mm: float, trim_h_mm: float, blee
 
 ## DO ZROBIENIA (priorytety)
 
-### Priorytet 1 — Stabilizacja obecnego kodu
-- [ ] BleedBox/TrimBox w output PDF (pikepdf lub PyMuPDF xref)
-- [ ] Output naming convention (`_PRINT_{W}x{H}mm_bleed{N}mm.pdf`)
-- [ ] Testy jednostkowe (contour, bleed, export)
+### Zrealizowane (stan aktualny)
+- [x] BleedBox/TrimBox/CropBox w output PDF (PyMuPDF xref, modules/pdf_metadata.py)
+- [x] Output naming convention (`_PRINT_{W}x{H}mm_bleed{N}mm.pdf`) — models.build_output_name
+- [x] `ghostscript_bridge.py` — EPS → PDF
+- [x] Migracja GUI na PyQt6 (gui/main_window.py + gui/workers.py)
+- [x] Batch processing w CLI (`bleed_cli.py --batch`)
+- [x] PDF/X-4 OutputIntent FOGRA39 (idempotentny)
+- [x] file_loader.py — abstrakcja loadera (modules/file_loader.py)
+- [x] Testy integracyjne (tests/test_integration_pipeline.py + tests/fixtures.py)
+- [x] Profile eksportu per maszyna (profiles/output_profiles.json + modules/profiles.py)
+- [x] Przełącznik CONTOUR_ENGINE moore/opencv (env BLEED_CONTOUR_ENGINE)
+- [x] GUI: podgląd przed/po side-by-side (gui/preview_panel.py split-view)
+- [x] pikepdf backend w pdf_metadata (env BLEED_PDF_METADATA_ENGINE=pikepdf)
+- [x] Ghostscript RGB→CMYK postprocess (env BLEED_RGB_TO_CMYK=1)
 
-### Priorytet 2 — Nowe formaty
-- [ ] `ghostscript_bridge.py` — EPS → PDF
-- [ ] `file_loader.py` — abstrakcja wczytywania (detect format → load → fitz.Document)
+### Priorytet 1 — Stabilizacja
+- [x] Testy jednostkowe i integracyjne (140+ testów: contour, bleed, export, profiles, pikepdf, cmyk, preview, pipeline)
 
-### Priorytet 3 — Zaawansowane
-- [ ] OpenCV contour detection (alternatywa/uzupełnienie alpha rendering)
-- [ ] pikepdf do czystej modyfikacji metadanych PDF
-- [ ] Profile eksportu per maszyna (output_profiles.json)
-- [ ] GUI: podgląd przed/po side-by-side
+### Priorytet 2 — Zaawansowane
+- [x] Profile eksportu per maszyna
+- [x] GUI: podgląd przed/po side-by-side
+- [x] OpenCV contour detection (przełącznik moore/opencv)
 
-### Priorytet 4 — Opcjonalne
-- [ ] Migracja GUI na PyQt6 (jeśli CTk nie wystarczy)
-- [ ] Ghostscript RGB→CMYK finalna rasteryzacja
-- [ ] Batch processing z CLI (wiele plików naraz)
+### Priorytet 3 — Opcjonalne
+- [x] Ghostscript RGB→CMYK finalna rasteryzacja (opcja postprocess)
+- [x] pikepdf zamiast xref manipulation (dual backend)
+- [x] file_loader.py — eksplicytna abstrakcja loadera
 
 ---
 
@@ -331,20 +346,23 @@ def build_output_name(input_path: Path, trim_w_mm: float, trim_h_mm: float, blee
 
 ---
 
-## Testy (do stworzenia)
+## Testy
 
-```
-tests/fixtures/
-├── rectangle_vector.pdf         ← prostokątna naklejka wektorowa
-├── circle_on_artboard.pdf       ← okrągła naklejka na dużej stronie (Problem 1)
-├── with_trimbox.pdf             ← plik ze spadami i markerami cięcia (Cyclonic)
-├── irregular_alpha.png          ← nieregularny kształt na przezroczystym tle
-├── simple_raster.jpg            ← zdjęcie prostokątne
-└── multipage.pdf                ← wielostronicowy PDF
-```
+Fixtury generowane są w pamięci w `tmp_path` (nie wprowadzamy binariów do repo):
+- `tests/fixtures.py` — generatory: `make_rectangle_vector`, `make_circle_on_artboard`,
+  `make_pdf_with_trimbox`, `make_irregular_alpha_png`, `make_simple_raster`, `make_multipage_pdf`
+- `tests/test_integration_pipeline.py` — end-to-end pipeline dla każdego typu wejścia
 
 Każdy test weryfikuje:
 1. Poprawność cut_segments (typ, liczba, wymiary)
 2. bleed_segments = offset cut_segments o 2mm
 3. Output PDF ma 3 warstwy (fill + grafika + CutContour spot)
-4. TrimBox/BleedBox poprawnie ustawione
+4. TrimBox/BleedBox/CropBox poprawnie ustawione
+
+Uruchomienie: `python3 -m pytest tests/ -q`
+
+## Zmienne środowiskowe (opcjonalne przełączniki)
+
+- `BLEED_CONTOUR_ENGINE` — `moore` (domyślnie) | `opencv` | `auto` — silnik detekcji konturu raster
+- `BLEED_PDF_METADATA_ENGINE` — `pymupdf` (domyślnie) | `pikepdf` — backend zapisu PDF/X-4
+- `BLEED_RGB_TO_CMYK` — `1` włącza postprocess Ghostscript RGB→CMYK

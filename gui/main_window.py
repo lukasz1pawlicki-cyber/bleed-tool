@@ -147,13 +147,16 @@ class MainWindow(QMainWindow):
 
     # --- Preview slots ---
 
-    def _on_bleed_preview(self, paths: list):
-        """Slot: bleed zakończony → pokaż podgląd + dodaj do nest."""
+    def _on_bleed_preview(self, input_infos: list, output_paths: list):
+        """Slot: bleed zakończony → pokaż podgląd + dodaj do nest.
+
+        input_infos: [(src_path, page_idx), ...] parallel do output_paths.
+        """
         if self._preview_panel:
-            self._preview_panel.show_bleed_results(paths)
+            self._preview_panel.show_bleed_results(output_paths, input_infos=input_infos)
         # Auto-agregacja: dodaj outputy bleed do listy plików w nest
-        if self._nest_tab and paths:
-            self._nest_tab.add_files(paths)
+        if self._nest_tab and output_paths:
+            self._nest_tab.add_files(output_paths)
 
     def _on_nest_preview(self, job, sheet_pdfs, bleed_mm):
         """Slot: nest zakończony → pokaż podgląd arkuszy."""

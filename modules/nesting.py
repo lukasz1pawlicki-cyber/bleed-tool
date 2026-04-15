@@ -35,6 +35,7 @@ Naprawione wzgledem sticker-toolkit:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 from models import Sticker, Placement, Sheet, Job
@@ -285,7 +286,6 @@ def nest_job(
     # -------------------------------------------------------------------
     # Smart pre-rotation: jeśli obrót 90° zmieści więcej na jednym arkuszu
     # -------------------------------------------------------------------
-    import math as _math
     _pre_rotate_90 = False
     # Zaokrąglenie do 1mm — kompensuje drobne różnice pt→mm (170.01 vs 169.97)
     unique_sizes = set((round(s.width_mm + bleed2, 0), round(s.height_mm + bleed2, 0)) for s in valid)
@@ -298,8 +298,8 @@ def nest_job(
             g = gap_mm
             # Bez tolerancji — czysta estymacja pojemności siatki.
             # (FLOAT_TOLERANCE_MM służy do fit-check przy placement, nie do estymacji)
-            nx = int(_math.floor((area_w + g) / (w + g))) if w > 0 else 0
-            ny = int(_math.floor(((area_h or 99999) + g) / (h + g))) if h > 0 else 0
+            nx = int(math.floor((area_w + g) / (w + g))) if w > 0 else 0
+            ny = int(math.floor(((area_h or 99999) + g) / (h + g))) if h > 0 else 0
             return nx * ny
         n_normal = _grid_count(fw, fh)
         n_rotated = _grid_count(fh, fw) if abs(fw - fh) > 0.1 else n_normal
@@ -1048,62 +1048,6 @@ def _center_placements(sheet: Sheet, center_y: bool = False, bleed2: float = 0.0
         p.y_mm += dy
 
     log.debug(f"Centrowanie: dx={dx:.1f}mm, dy={dy:.1f}mm")
-
-
-def _center_rows(sheet: Sheet, bleed2: float = 0.0, center_y: bool = False):
-    """Centruje kazdy wiersz niezaleznie (poziomo w printable area).
-
-    Grupuje placements po y_mm → kazdy wiersz centrowany osobno.
-    Dzieki temu wiersze z mniejsza liczba naklejek nie sa wyrownane do lewej.
-
-    Args:
-        sheet: arkusz z placements
-        bleed2: 2 * bleed_mm (do obliczenia pełnego footprintu)
-        center_y: czy centrowac tez w pionie (caly blok)
-    """
-    if not sheet.placements:
-        return
-
-    def _foot_w(p):
-        """Pelna szerokosc footprintu (content + bleed) z uwzglednieniem rotacji."""
-        if abs(p.rotation_deg) in (90.0, 270.0):
-            return p.sticker.height_mm + bleed2
-        return p.sticker.width_mm + bleed2
-
-    def _foot_h(p):
-        if abs(p.rotation_deg) in (90.0, 270.0):
-            return p.sticker.width_mm + bleed2
-        return p.sticker.height_mm + bleed2
-
-    pa_x0, pa_y0, pa_x1, pa_y1 = sheet.printable_rect_mm
-    pa_cx = (pa_x0 + pa_x1) / 2
-
-    # Grupuj placements po wierszu (y_mm zaokraglone do 0.5mm)
-    rows: dict[float, list] = {}
-    for p in sheet.placements:
-        key = round(p.y_mm * 2) / 2  # zaokraglij do 0.5mm
-        rows.setdefault(key, []).append(p)
-
-    # Centruj kazdy wiersz osobno (X)
-    for key, placements in rows.items():
-        row_left = min(p.x_mm for p in placements)
-        row_right = max(p.x_mm + _foot_w(p) for p in placements)
-        row_cx = (row_left + row_right) / 2
-        dx = pa_cx - row_cx
-        if abs(dx) > 0.1:
-            for p in placements:
-                p.x_mm += dx
-
-    # Opcjonalnie centruj w pionie (caly blok)
-    if center_y:
-        pa_cy = (pa_y0 + pa_y1) / 2
-        content_bottom = min(p.y_mm for p in sheet.placements)
-        content_top = max(p.y_mm + _foot_h(p) for p in sheet.placements)
-        cc_y = (content_bottom + content_top) / 2
-        dy = pa_cy - cc_y
-        if abs(dy) > 0.1:
-            for p in sheet.placements:
-                p.y_mm += dy
 
 
 def _shelves_top(shelves: list[_Shelf]) -> float:

@@ -7,11 +7,13 @@ z możliwością przesunięcia (offset).
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import tempfile
 from pathlib import Path
 
+import cairosvg
 import fitz
 import numpy as np
 from PIL import Image, ImageDraw
@@ -139,8 +141,6 @@ def load_preview_image(
         img = Image.open(file_path).convert("RGB")
     elif ext == '.svg':
         try:
-            import cairosvg
-            import io
             png_data = cairosvg.svg2png(url=file_path, output_width=max_size)
             img = Image.open(io.BytesIO(png_data)).convert("RGB")
             return img
@@ -183,8 +183,6 @@ def _load_source_image(file_path: str, dpi: int) -> Image.Image:
 
     if ext == '.svg':
         try:
-            import cairosvg
-            import io
             # Render SVG na docelowe DPI (szerokie)
             png_data = cairosvg.svg2png(url=file_path, dpi=dpi)
             img = Image.open(io.BytesIO(png_data))

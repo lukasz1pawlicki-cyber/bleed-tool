@@ -260,8 +260,18 @@ QGraphicsView {
 /* Legend */
 QLabel[class="legend-label"] { font-size: 10px; color: #86868b; font-weight: 500; }
 
+/* File list scroll area — jasne tło pod drop zone (lista plików)
+   Bez tej reguly macOS/Qt renderuje QScrollArea ciemno-szare (dark-mode auto). */
+QScrollArea {
+    background: #ffffff;
+    border: 1px solid #e5e5ea;
+    border-radius: 8px;
+}
+QScrollArea > QWidget > QWidget { background: #ffffff; }
+QScrollArea > QWidget#qt_scrollarea_viewport { background: #ffffff; }
+
 /* File item */
-QWidget[class="file-item"] { background: transparent; border-radius: 6px; }
+QWidget[class="file-item"] { background: #ffffff; border-radius: 6px; }
 QWidget[class="file-item"]:hover { background: #f5f5f7; }
 
 /* Scrollbars */

@@ -25,6 +25,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import DEFAULT_BLEED_MM
+from models import build_output_name
 
 log = logging.getLogger("bleed-tool")
 
@@ -112,14 +113,20 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
 
             for sticker in stickers:
                 if multi:
-                    out = os.path.join(output_dir, f"bleed_{name}_p{sticker.page_index + 1}.pdf")
                     label = f"{name} p{sticker.page_index + 1}"
+                    page_idx = sticker.page_index
                 else:
-                    out = os.path.join(output_dir, f"bleed_{name}.pdf")
                     label = name
+                    page_idx = None
 
                 try:
                     sticker = generate_bleed(sticker, bleed_mm=bleed_mm)
+                    # Nazwa wyjsciowa: {stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
+                    out_name = build_output_name(
+                        filepath, sticker.width_mm, sticker.height_mm,
+                        bleed_mm, page_index=page_idx,
+                    )
+                    out = os.path.join(output_dir, out_name)
                     info = export_single_sticker(sticker, out, bleed_mm=bleed_mm, white=white)
 
                     size_kb = os.path.getsize(out) / 1024

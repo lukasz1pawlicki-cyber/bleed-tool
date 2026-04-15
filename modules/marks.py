@@ -20,17 +20,17 @@ from __future__ import annotations
 
 import logging
 from models import Sheet, Mark
-from config import PLOTTERS
+from config import (
+    PLOTTERS,
+    REGMARK_DIST_MM,
+    OPOS_XY_MARGIN_MM,
+    OPOS_XY_HEIGHT_MM,
+)
 
 log = logging.getLogger(__name__)
 
 # --- Parametry z pluginu Summa GoSign Tools (gosign_opos_regmarks_base.py) ---
-_REGMARK_SIZE_MM = 3
-_REGMARK_MARGIN_LR_MM = _REGMARK_SIZE_MM * 4   # 12mm
-_REGMARK_MARGIN_TB_MM = _REGMARK_SIZE_MM        # 3mm
-_REGMARK_DIST_MM = 400                          # max odległość między markerami Y
-_OPOS_XY_MARGIN_MM = 10                         # gap bar ↔ narożnik
-_OPOS_XY_HEIGHT_MM = 3                          # wysokość bara
+# REGMARK_*/OPOS_XY_* — zdefiniowane w config.py
 
 
 def generate_marks(
@@ -129,7 +129,7 @@ def _generate_summa_marks(
     dy_total = tl[1] - bl[1]
     dy_step = dy_total
     n_y = 0
-    while dy_step > _REGMARK_DIST_MM:
+    while dy_step > REGMARK_DIST_MM:
         dy_step /= 2
         n_y = n_y * 2 + 1
     n_y += 2   # +2 = dolny i górny narożnik
@@ -160,8 +160,8 @@ def _generate_summa_marks(
     # Plugin: x = leftBorder + OPOSXYMargin + mark_size
     #         width = rightBorder - mark_size - leftBorder - 2 * OPOSXYMargin
     #         y = bottomBorder (= dolna krawędź markerów)
-    bar_x = bl[0] + mark_w + _OPOS_XY_MARGIN_MM
-    bar_end_x = br[0] - _OPOS_XY_MARGIN_MM
+    bar_x = bl[0] + mark_w + OPOS_XY_MARGIN_MM
+    bar_end_x = br[0] - OPOS_XY_MARGIN_MM
     bar_w = bar_end_x - bar_x
     bar_y = bl[1]  # ten sam Y co dolne narożniki
 
@@ -170,12 +170,12 @@ def _generate_summa_marks(
             x_mm=bar_x,
             y_mm=bar_y,
             width_mm=bar_w,
-            height_mm=_OPOS_XY_HEIGHT_MM,
+            height_mm=OPOS_XY_HEIGHT_MM,
             mark_type=mark_type,
             is_bar=True,
         )
         sheet.marks.append(bar)
-        log.info(f"Mark [OPOS XY bar]: ({bar_x:.1f}, {bar_y:.1f})mm, {bar_w:.1f}×{_OPOS_XY_HEIGHT_MM}mm")
+        log.info(f"Mark [OPOS XY bar]: ({bar_x:.1f}, {bar_y:.1f})mm, {bar_w:.1f}×{OPOS_XY_HEIGHT_MM}mm")
 
 
 def _generate_jwei_marks(
@@ -193,7 +193,6 @@ def _generate_jwei_marks(
       - Y: mark_offset_y_mm (50mm) od górnej/dolnej
     Wartości X/Y mogą być zamienione przez 'Odwróć markery' w FlexCut dialog.
     """
-    from config import PLOTTERS
     jwei_cfg = PLOTTERS.get("jwei", {})
     off_x = jwei_cfg.get("mark_offset_x_mm", mark_offset)
     off_y = jwei_cfg.get("mark_offset_y_mm", mark_offset)

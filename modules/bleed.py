@@ -17,12 +17,23 @@ from __future__ import annotations
 
 import logging
 import os
-from functools import lru_cache
+import re
 
 import numpy as np
+from PIL import Image, ImageCms
 
 from models import Sticker
-from config import DEFAULT_BLEED_MM, MM_TO_PT, PT_TO_MM
+from config import (
+    DEFAULT_BLEED_MM,
+    MM_TO_PT,
+    PT_TO_MM,
+    SNAP_STEP_MM,
+    SNAP_TOLERANCE_MM,
+    ICC_SEARCH_PATHS as _ICC_SEARCH_PATHS,
+)
+# contour.py nie importuje bleed.py — brak ryzyka cyklu.
+# _sample_page_edge_color uzywane jako fallback w generate_bleed().
+from modules.contour import _sample_page_edge_color
 
 log = logging.getLogger(__name__)
 
@@ -30,9 +41,6 @@ log = logging.getLogger(__name__)
 # =============================================================================
 # ICC COLOR MANAGEMENT
 # =============================================================================
-
-# Ścieżki szukania profilu FOGRA39
-from config import ICC_SEARCH_PATHS as _ICC_SEARCH_PATHS
 
 
 def _find_fogra39_path() -> str | None:
@@ -67,8 +75,6 @@ def _get_icc_transform():
         return None
 
     try:
-        from PIL import ImageCms
-
         srgb_profile = ImageCms.createProfile("sRGB")
         fogra39_profile = ImageCms.getOpenProfile(fogra39_path)
 
@@ -97,8 +103,6 @@ def rgb_to_cmyk_icc(rgb: tuple[float, float, float]) -> tuple[float, float, floa
     transform = _get_icc_transform()
     if transform is None:
         return rgb_to_cmyk_simple(rgb)
-
-    from PIL import Image, ImageCms
 
     # ImageCms operuje na pikselach (0-255)
     r8 = int(round(rgb[0] * 255))
@@ -142,7 +146,6 @@ def extract_native_cmyk(doc, page) -> tuple[float, float, float, float] | None:
     Zwraca (c, m, y, k) w zakresie 0-1 lub None jeśli brak CMYK.
     Używane dla plików CMYK aby uniknąć podwójnej konwersji CMYK→RGB→CMYK.
     """
-    import re
     try:
         contents = bytearray()
         for xref in page.get_contents():
@@ -469,7 +472,6 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
                     break
             # Fallback: sampluj z renderowanej strony
             if not found_color:
-                from modules.contour import _sample_page_edge_color
                 rendered_rgb = _sample_page_edge_color(page)
                 if not all(c > 0.95 for c in rendered_rgb):
                     edge_rgb = rendered_rgb
@@ -518,15 +520,13 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
 # =============================================================================
 # SNAP WYMIARÓW — dociąganie do pełnych rozmiarów
 # =============================================================================
-
-_SNAP_STEP_MM = 0.5       # Siatka zaokrąglenia: 0.5mm
-_SNAP_TOLERANCE_MM = 0.05  # Max odchylenie żeby dociągnąć
+# Stałe SNAP_STEP_MM i SNAP_TOLERANCE_MM zdefiniowane w config.py
 
 
 def _snap_value_mm(value_mm: float) -> float:
-    """Dociąga wymiar do najbliższej wielokrotności _SNAP_STEP_MM.
+    """Dociąga wymiar do najbliższej wielokrotności SNAP_STEP_MM.
 
-    Jeśli różnica <= _SNAP_TOLERANCE_MM, zwraca zaokrągloną wartość.
+    Jeśli różnica <= SNAP_TOLERANCE_MM, zwraca zaokrągloną wartość.
     W przeciwnym razie zwraca oryginalną.
 
     Przykłady (step=0.5, tol=0.05):
@@ -535,8 +535,8 @@ def _snap_value_mm(value_mm: float) -> float:
       39.96  → 40.0   (diff=0.04 ≤ 0.05)
       35.30  → 35.30  (diff=0.20 > 0.05, bez zmiany)
     """
-    rounded = round(value_mm / _SNAP_STEP_MM) * _SNAP_STEP_MM
-    if abs(value_mm - rounded) <= _SNAP_TOLERANCE_MM:
+    rounded = round(value_mm / SNAP_STEP_MM) * SNAP_STEP_MM
+    if abs(value_mm - rounded) <= SNAP_TOLERANCE_MM:
         return rounded
     return value_mm
 

@@ -10,6 +10,7 @@ import traceback
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from config import DEFAULT_BLEED_MM, DEFAULT_MARK_ZONE_MM, PLOTTERS, MM_TO_PT, PT_TO_MM
+from models import build_output_name
 
 
 class BleedWorker(QThread):
@@ -17,13 +18,15 @@ class BleedWorker(QThread):
 
     progress = pyqtSignal(int, int)       # (current, total)
     log_message = pyqtSignal(str)         # linia logu
-    finished = pyqtSignal(list)           # output_paths
+    # finished: (output_paths, input_infos) gdzie input_infos = [(src_path, page_idx), ...]
+    # parallel do output_paths (po 1 pozycji na wygenerowany output)
+    finished = pyqtSignal(list, list)
     error = pyqtSignal(str)              # błąd krytyczny
 
     def __init__(self, files, output_dir, bleed_mm=2.0, black_100k=False,
                  cutline_mode="kiss-cut", target_height_mm=None, white=False,
                  crop_enabled=False, crop_shape="square", crop_offsets=None,
-                 radius_pct=9, parent=None):
+                 radius_pct=9, contour_engine=None, parent=None):
         super().__init__(parent)
         self._files = files
         self._output_dir = output_dir
@@ -36,6 +39,7 @@ class BleedWorker(QThread):
         self._crop_shape = crop_shape
         self._crop_offsets = crop_offsets or {}
         self._radius_pct = radius_pct
+        self._contour_engine = contour_engine  # "moore" | "opencv" | "auto" | None
 
     def run(self):
         try:
@@ -44,13 +48,21 @@ class BleedWorker(QThread):
             self.error.emit(f"{e}\n{traceback.format_exc()}")
 
     def _run_inner(self):
+        import config
         from modules.contour import detect_contour, scale_sticker
         from modules.bleed import generate_bleed
         from modules.export import export_single_sticker
 
+        # Ustaw silnik detekcji konturu dla tej sesji (raster)
+        if self._contour_engine:
+            config.CONTOUR_ENGINE = self._contour_engine
+            self.log_message.emit(f"  Silnik konturu: {self._contour_engine}")
+
         os.makedirs(self._output_dir, exist_ok=True)
         t0 = time.time()
         output_paths = []
+        # input_infos[i] = (source_input_path, page_idx_in_source) dla output_paths[i]
+        input_infos: list[tuple[str, int]] = []
         ok, err = 0, 0
         total = len(self._files)
 
@@ -81,15 +93,21 @@ class BleedWorker(QThread):
                     if self._target_height_mm and not self._crop_enabled:
                         sticker = scale_sticker(sticker, self._target_height_mm)
                     sticker = generate_bleed(sticker, bleed_mm=self._bleed_mm)
-                    stem = os.path.splitext(name)[0]
-                    suffix = f"_p{si + 1}" if len(stickers) > 1 else ""
-                    out = os.path.join(self._output_dir, f"bleed_{stem}{suffix}.pdf")
+                    # Nazwa wyjsciowa: {stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
+                    page_idx = si if len(stickers) > 1 else None
+                    out_name = build_output_name(
+                        pdf, sticker.width_mm, sticker.height_mm,
+                        self._bleed_mm, page_index=page_idx,
+                    )
+                    out = os.path.join(self._output_dir, out_name)
                     export_single_sticker(
                         sticker, out, bleed_mm=self._bleed_mm,
                         black_100k=self._black_100k, cutcontour=cutcontour,
                         cutline_mode=self._cutline_mode, white=self._white,
                     )
                     output_paths.append(out)
+                    # Źródło dla split-view: oryginalny plik + indeks strony
+                    input_infos.append((pdf, sticker.page_index))
                     sz = os.path.getsize(out) / 1024
                     self.log_message.emit(
                         f"  {name}: {sticker.width_mm:.1f}x{sticker.height_mm:.1f}mm -> {sz:.0f}KB"
@@ -116,7 +134,7 @@ class BleedWorker(QThread):
         summary += f" ({elapsed:.1f}s)"
         self.log_message.emit(summary)
         self.progress.emit(total, total)
-        self.finished.emit(output_paths)
+        self.finished.emit(output_paths, input_infos)
 
 
 class NestWorker(QThread):

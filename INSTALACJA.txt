@@ -20,8 +20,13 @@ URUCHOMIENIE
     (jesli nie dziala: Terminal → cd do folderu → bash uruchom.command)
 
   Przy pierwszym uruchomieniu program automatycznie zainstaluje
-  brakujace biblioteki (PyMuPDF, NumPy, Pillow, customtkinter, cairosvg).
+  brakujace biblioteki (PyQt6, PyMuPDF, NumPy, Pillow, cairosvg).
   Wymaga polaczenia z internetem.
+
+  Opcjonalnie: Ghostscript (dla plikow .eps/.ai zapisanych jako PostScript)
+    - macOS:  brew install ghostscript
+    - Windows: https://ghostscript.com/releases/gsdnld.html
+    - Linux:  sudo apt install ghostscript
 
 UZYCIE
 ------
@@ -36,7 +41,11 @@ UZYCIE
   CLI:
     python bleed_cli.py plik.pdf
     python bleed_cli.py folder/ -o output/ --bleed 3.0
+    python bleed_cli.py --batch ./wszystkie -o ./out --recursive
     python bleed_cli.py --help
+
+  Nazwa pliku wyjsciowego: {stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
+  Przyklad: logo.pdf -> logo_PRINT_100x50mm_bleed2mm.pdf
 
 ROZWIAZYWANIE PROBLEMOW
 ------------------------
@@ -54,13 +63,20 @@ ROZWIAZYWANIE PROBLEMOW
      → Windows: pip install cairosvg
      → macOS: brew install cairo && pip install cairosvg
 
+  5. Blad EPS: "gs: command not found"
+     → Zainstaluj Ghostscript (patrz sekcja WYMAGANIA)
+
 ZAWARTOSC
 ---------
-  bleed_app.py        — Interfejs graficzny (glowny program)
-  bleed_cli.py        — Interfejs linii polecen
-  config.py           — Konfiguracja
-  models.py           — Struktury danych
-  modules/            — Moduly: contour, bleed, export, svg_convert
+  bleed_app.py        — Interfejs graficzny (PyQt6, glowny program)
+  bleed_cli.py        — Interfejs linii polecen (single + --batch)
+  config.py           — Konfiguracja (DEFAULT_BLEED, SPOT_COLORS, PLOTTERS)
+  models.py           — Struktury danych (Sticker, Placement, Sheet)
+  gui/                — Moduly GUI: main_window, workers, widgets, theme
+  modules/            — Pipeline: contour, bleed, export, nesting, panelize,
+                        marks, crop, preflight, svg_convert, pdf_metadata,
+                        ghostscript_bridge
+  profiles/           — ICC profile (opcjonalnie CoatedFOGRA39.icc)
   uruchom.bat         — Launcher Windows
   uruchom.command     — Launcher macOS/Linux
   requirements.txt    — Lista zaleznosci Python

@@ -4,6 +4,8 @@ Bleed Tool — Konfiguracja
 Stałe potrzebne do pipeline bleed + nest: contour → bleed → nest → panelize → marks → export.
 """
 
+import os as _os
+
 # =============================================================================
 # DOMYŚLNE PARAMETRY
 # =============================================================================
@@ -141,10 +143,67 @@ PT_TO_MM = 25.4 / 72.0   # 1pt = 0.3528mm
 FLOAT_TOLERANCE_MM = 0.01
 
 # =============================================================================
+# CONTOUR ENGINE — silnik detekcji konturu rastrowego
+# =============================================================================
+# "moore"  — Moore boundary tracing (Python, default, zero extra deps)
+# "opencv" — cv2.findContours (C, ~kilkadziesiąt× szybsze, wymaga opencv-python)
+# "auto"   — użyj opencv jeśli dostępne, fallback na moore
+#
+# Zmienna środowiskowa BLEED_CONTOUR_ENGINE nadpisuje tę wartość.
+CONTOUR_ENGINE = _os.environ.get("BLEED_CONTOUR_ENGINE", "moore").lower()
+
+
+# =============================================================================
+# PDF METADATA ENGINE — silnik zapisu PDF/X-4 OutputIntent
+# =============================================================================
+# "pymupdf" — PyMuPDF xref manipulation (default, zero extra deps)
+# "pikepdf" — pikepdf.OutputIntent (czystsze API, wymaga pikepdf)
+#
+# Zmienna środowiskowa BLEED_PDF_METADATA_ENGINE nadpisuje tę wartość.
+PDF_METADATA_ENGINE = _os.environ.get("BLEED_PDF_METADATA_ENGINE", "pymupdf").lower()
+
+
+# =============================================================================
+# RGB → CMYK KONWERSJA (opcjonalna, postprocess przez Ghostscript)
+# =============================================================================
+# Jeśli True, po wygenerowaniu PDF z bleedem zostanie uruchomiony Ghostscript
+# który skonwertuje RGB → CMYK używając ICC FOGRA39. Spot colors są zachowane.
+#
+# Zalety:
+#   - Wszystkie kolory wyjściowe w CMYK (drukarka UV nie musi konwertować)
+#   - Konwersja wysokiej jakości (ICC rendering intent = RelativeColorimetric)
+# Wady:
+#   - Wymaga Ghostscript w PATH
+#   - Dodaje 2-10s na plik
+#
+# Zmienna środowiskowa BLEED_RGB_TO_CMYK włącza konwersję.
+RGB_TO_CMYK_POSTPROCESS = _os.environ.get("BLEED_RGB_TO_CMYK", "0").lower() in ("1", "true", "yes")
+RGB_TO_CMYK_RENDERING_INTENT = _os.environ.get(
+    "BLEED_CMYK_INTENT", "RelativeColorimetric"
+)
+
+
+# =============================================================================
+# SNAP WYMIARÓW (bleed.py)
+# =============================================================================
+# Dociąganie wymiarów naklejek do pełnych rozmiarów (eliminuje białe gap-y)
+SNAP_STEP_MM = 0.5        # Siatka zaokrąglenia
+SNAP_TOLERANCE_MM = 0.05  # Max odchylenie żeby dociągnąć
+
+# =============================================================================
+# OPOS REGMARKS (marks.py, Summa S3)
+# =============================================================================
+# Parametry z pluginu Summa GoSign Tools (gosign_opos_regmarks_base.py)
+REGMARK_SIZE_MM = 3
+REGMARK_MARGIN_LR_MM = REGMARK_SIZE_MM * 4   # 12mm (4× size)
+REGMARK_MARGIN_TB_MM = REGMARK_SIZE_MM        # 3mm
+REGMARK_DIST_MM = 400                         # max odległość między markerami Y
+OPOS_XY_MARGIN_MM = 10                        # gap bar ↔ narożnik
+OPOS_XY_HEIGHT_MM = 3                         # wysokość bara
+
+# =============================================================================
 # ICC PROFILE
 # =============================================================================
-
-import os as _os
 
 ICC_SEARCH_PATHS = [
     # macOS — Adobe Creative Cloud / Creative Suite
@@ -161,3 +220,25 @@ ICC_SEARCH_PATHS = [
     # Lokalny katalog projektu
     _os.path.join(_os.path.dirname(__file__), "profiles", "CoatedFOGRA39.icc"),
 ]
+
+# =============================================================================
+# PROFILES LOADER — external profiles/output_profiles.json
+# =============================================================================
+# Po imporcie: ładuje JSON i nadpisuje PLOTTERS (in-place). Brak pliku = noop.
+# Odłożone do końca pliku żeby PLOTTERS były już zdefiniowane.
+
+try:
+    from modules.profiles import apply_profiles_to_config as _apply_profiles
+    import sys as _sys
+    _apply_profiles(_sys.modules[__name__])
+    # Po scaleniu: odśwież cache'owane aliasy CUT_CMYK_*
+    if "summa_s3" in PLOTTERS and "cut_layers" in PLOTTERS["summa_s3"]:
+        _summa_layers = PLOTTERS["summa_s3"]["cut_layers"]
+        CUT_CMYK_CUTCONTOUR = _summa_layers.get("CutContour", {}).get("cmyk", CUT_CMYK_CUTCONTOUR)
+        CUT_CMYK_FLEXCUT = _summa_layers.get("FlexCut", {}).get("cmyk", CUT_CMYK_FLEXCUT)
+        CUT_CMYK_REGMARK = _summa_layers.get("Regmark", {}).get("cmyk", CUT_CMYK_REGMARK)
+except Exception as _e:  # pragma: no cover — defensive, nie blokuj importu
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        f"Profiles loader failed: {_e} — używam hardcoded PLOTTERS"
+    )

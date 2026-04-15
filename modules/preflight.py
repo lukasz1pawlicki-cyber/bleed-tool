@@ -45,19 +45,17 @@ def _preflight_raster(file_path: str) -> dict:
 
     # DPI — Pillow zwraca (xdpi, ydpi) lub None
     dpi_info = img.info.get("dpi")
+    dpi_assumed = False
     if dpi_info and isinstance(dpi_info, (tuple, list)) and dpi_info[0] > 0:
         dpi = float(dpi_info[0])
     else:
-        dpi = None
+        # Brak DPI — zaloż 300 (fallback dla eksportu)
+        dpi = 300.0
+        dpi_assumed = True
 
     # Rozmiar w mm
-    if dpi and dpi > 0:
-        w_mm = w_px / dpi * 25.4
-        h_mm = h_px / dpi * 25.4
-    else:
-        # Brak DPI — zaloż 300
-        w_mm = w_px / 300.0 * 25.4
-        h_mm = h_px / 300.0 * 25.4
+    w_mm = w_px / dpi * 25.4
+    h_mm = h_px / dpi * 25.4
 
     has_transparency = mode in ("RGBA", "LA", "PA") or "transparency" in img.info
 
@@ -77,7 +75,7 @@ def _preflight_raster(file_path: str) -> dict:
     warnings: list[dict] = []
 
     # Rozdzielczosc
-    if dpi is None:
+    if dpi_assumed:
         warnings.append(_make_issue(
             "NO_DPI", "Brak metadanych DPI — zakladam 300 DPI", "info"))
     elif dpi < 72:
@@ -124,7 +122,8 @@ def _preflight_raster(file_path: str) -> dict:
         "path": file_path,
         "name": os.path.basename(file_path),
         "size_mm": (round(w_mm, 1), round(h_mm, 1)),
-        "dpi": round(dpi, 0) if dpi else None,
+        "dpi": round(dpi, 0),
+        "dpi_assumed": dpi_assumed,
         "color_mode": color_mode,
         "has_transparency": has_transparency,
         "has_spot_colors": False,

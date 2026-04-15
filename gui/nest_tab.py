@@ -381,6 +381,11 @@ class NestTab(QWidget):
     # --- Max copies ---
 
     def _calc_max_copies(self):
+        """Oblicza maks. liczbę kopii mieszczących się na JEDNYM arkuszu.
+
+        Używa prawdziwego nest_job (binary search) zamiast formuły grid —
+        zapewnia zgodność z faktycznym wynikiem nestowania.
+        """
         if not self.files:
             self._log("Max: brak plików")
             return
@@ -389,34 +394,82 @@ class NestTab(QWidget):
             return
         plotter_cfg = PLOTTERS.get(self.plotter, {})
         mark_zone = plotter_cfg.get("mark_zone_mm", DEFAULT_MARK_ZONE_MM)
-        margins = (5, 5, 5, 5)
-        avail_w = sheet_w - margins[1] - margins[3] - 2 * mark_zone
-        avail_h = sheet_h - margins[0] - margins[2] - 2 * mark_zone
+        leading_offset = plotter_cfg.get("leading_offset_mm", 0)
+        side_offset = plotter_cfg.get("side_offset_mm", 0)
+        # Te same transformacje co w NestWorker._run_inner
+        nest_w = sheet_w - 2 * side_offset
+        nest_h = sheet_h
         gap = self.gap_mm
 
         import fitz
+        from models import Sticker, Job
+        from modules.nesting import nest_job
+
         try:
             doc = fitz.open(self.files[0])
-            fw = doc[0].rect.width * PT_TO_MM
-            fh = doc[0].rect.height * PT_TO_MM
+            pg = doc[0]
+            fw = pg.rect.width * PT_TO_MM
+            fh = pg.rect.height * PT_TO_MM
+            cw_pt = pg.rect.width
+            ch_pt = pg.rect.height
             doc.close()
         except Exception as e:
             self._log(f"Max: błąd — {e}")
             return
 
-        def count_fit(w, h, aw, ah, g):
-            if w <= 0 or h <= 0:
-                return 0
-            nx = int(math.floor((aw + g) / (w + g) + FLOAT_TOLERANCE_MM))
-            ny = int(math.floor((ah + g) / (h + g) + FLOAT_TOLERANCE_MM))
-            return nx * ny
+        # Minimalny stub cut_segments (nesting potrzebuje tylko wymiarów)
+        cut_segs = [
+            ('l', (0, 0), (cw_pt, 0)),
+            ('l', (cw_pt, 0), (cw_pt, ch_pt)),
+            ('l', (cw_pt, ch_pt), (0, ch_pt)),
+            ('l', (0, ch_pt), (0, 0)),
+        ]
+        st = Sticker(
+            source_path=self.files[0], page_index=0,
+            width_mm=fw, height_mm=fh,
+            cut_segments=cut_segs, bleed_segments=[],
+            edge_color_rgb=(1, 1, 1), edge_color_cmyk=(0, 0, 0, 0),
+        )
 
-        n_normal = count_fit(fw, fh, avail_w, avail_h, gap)
-        n_rotated = count_fit(fh, fw, avail_w, avail_h, gap)
-        n_max = max(n_normal, n_rotated, 1)
+        def fits_on_one_sheet(n: int) -> bool:
+            try:
+                job = Job(stickers=[(st, n)], plotter=self.plotter)
+                job = nest_job(
+                    job,
+                    sheet_width_mm=nest_w,
+                    sheet_height_mm=nest_h,
+                    gap_mm=gap,
+                    mark_zone_mm=mark_zone,
+                    bleed_mm=0,
+                    grouping_mode={"Grupuj": "group", "Osobne": "separate", "Mieszaj": "mix"}.get(
+                        self._grouping_seg.value(), "group"),
+                )
+                placed = sum(len(s.placements) for s in job.sheets)
+                return len(job.sheets) <= 1 and placed >= n
+            except Exception:
+                return False
+
+        # Binary search: górne oszacowanie z gridu, potem zawężamy
+        upper = max(
+            1,
+            int(math.floor((nest_w - 2 * mark_zone - 10 + gap) / max(0.1, min(fw, fh) + gap)))
+            * int(math.floor((nest_h - 2 * mark_zone - 10 + gap) / max(0.1, min(fw, fh) + gap))),
+        )
+        upper = max(upper, 1)
+
+        lo, hi = 1, upper
+        best = 1 if fits_on_one_sheet(1) else 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if fits_on_one_sheet(mid):
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        n_max = max(best, 1)
         self._copies_edit.setText(str(n_max))
-        orient = "obrot 90" if n_rotated > n_normal else "normalne"
-        self._log(f"Max: {n_max} kopii ({orient}, {fw:.0f}x{fh:.0f}mm na {avail_w:.0f}x{avail_h:.0f}mm)")
+        self._log(f"Max: {n_max} kopii ({fw:.0f}x{fh:.0f}mm na arkuszu {sheet_w:.0f}x{sheet_h:.0f}mm)")
 
     def _get_sheet_size(self) -> tuple[float, float]:
         mode = self._mode_seg.value()

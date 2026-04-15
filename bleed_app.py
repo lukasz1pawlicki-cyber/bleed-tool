@@ -2,7 +2,6 @@
 Bleed Tool — Entry Point (PyQt6)
 ===================================
 Uruchamia GUI na PyQt6 z QSS theming.
-Stary GUI (CustomTkinter) zachowany jako bleed_app_tk.py.
 """
 
 import sys

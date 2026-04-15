@@ -143,3 +143,126 @@ def eps_to_pdf(eps_path: str) -> str:
 
     log.info(f"EPS → PDF OK: {tmp_path}")
     return tmp_path
+
+
+def pdf_to_cmyk(
+    input_pdf: str,
+    output_pdf: str | None = None,
+    icc_path: str | None = None,
+    rendering_intent: str = "RelativeColorimetric",
+    preserve_spot_colors: bool = True,
+    timeout_sec: int = 120,
+) -> str:
+    """Konwertuje PDF z RGB → CMYK przez Ghostscript (ColorConversionStrategy).
+
+    Zachowuje wektor (nie rasteryzuje — w przeciwieństwie do starszych podejść
+    z pdfwrite+DEVICE=tiff32nb). Kolory RGB są konwertowane do CMYK przy użyciu
+    ICC profilu (FOGRA39). Spot colors (CutContour, FlexCut) są zachowywane
+    jeśli preserve_spot_colors=True — wymagane dla linii cięcia.
+
+    Args:
+        input_pdf: ścieżka do wejściowego PDF (dowolny color space)
+        output_pdf: ścieżka wyjściowa (None = tmp file)
+        icc_path: ścieżka do ICC profilu CMYK (FOGRA39). None = bez explicit ICC
+                  (GS użyje wbudowanego profilu Default CMYK).
+        rendering_intent: "Perceptual" | "RelativeColorimetric" (default) |
+                          "Saturation" | "AbsoluteColorimetric"
+        preserve_spot_colors: jeśli True, spot colors (Separation) nie są
+                              konwertowane do CMYK alternate (zachowane dla RIP)
+        timeout_sec: limit czasu dla GS (default 120s, bo duże PDF = wolniej)
+
+    Returns:
+        ścieżka do wyjściowego PDF.
+
+    Raises:
+        FileNotFoundError: gdy input lub Ghostscript nie istnieje
+        RuntimeError: gdy konwersja się nie powiodła
+    """
+    if not os.path.exists(input_pdf):
+        raise FileNotFoundError(f"Plik PDF nie istnieje: {input_pdf}")
+
+    gs_bin = find_ghostscript()
+    if gs_bin is None:
+        raise FileNotFoundError(
+            "Ghostscript nie jest zainstalowany — wymagany dla RGB→CMYK konwersji."
+        )
+
+    if output_pdf is None:
+        tmp = tempfile.NamedTemporaryFile(suffix="_cmyk.pdf", delete=False)
+        output_pdf = tmp.name
+        tmp.close()
+
+    # Budowa command-line
+    cmd = [
+        gs_bin,
+        "-dNOPAUSE",
+        "-dBATCH",
+        "-dQUIET",
+        "-sDEVICE=pdfwrite",
+        "-dPDFSETTINGS=/prepress",
+        # Color conversion
+        "-sColorConversionStrategy=CMYK",
+        "-sProcessColorModel=DeviceCMYK",
+        f"-sRenderingIntent={rendering_intent}",
+        # Zachowaj metadane (TrimBox/BleedBox)
+        "-dPreserveAnnots=true",
+        "-dPreserveEPSInfo=true",
+    ]
+
+    # Spot colors: Separation colors (CutContour, FlexCut) muszą zostać
+    # zachowane — RIP plotera czyta je po nazwie spot
+    if preserve_spot_colors:
+        cmd.extend([
+            "-dOverrideICC=false",
+            "-sColorConversionStrategyForImages=CMYK",
+        ])
+
+    # ICC profil — Destination dla konwersji RGB→CMYK
+    if icc_path and os.path.isfile(icc_path):
+        cmd.append(f"-sOutputICCProfile={icc_path}")
+
+    cmd.extend([
+        f"-sOutputFile={output_pdf}",
+        input_pdf,
+    ])
+
+    log.info(
+        f"Konwersja RGB → CMYK (Ghostscript): {os.path.basename(input_pdf)} "
+        f"[intent={rendering_intent}, spot={preserve_spot_colors}]"
+    )
+    log.debug(f"Ghostscript cmd: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired:
+        if os.path.exists(output_pdf):
+            os.unlink(output_pdf)
+        raise RuntimeError(
+            f"Konwersja RGB → CMYK przekroczyła limit czasu ({timeout_sec}s)"
+        )
+    except Exception as e:
+        if os.path.exists(output_pdf):
+            os.unlink(output_pdf)
+        raise RuntimeError(f"Błąd uruchomienia Ghostscript: {e}") from e
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if os.path.exists(output_pdf):
+            os.unlink(output_pdf)
+        raise RuntimeError(
+            f"Ghostscript RGB→CMYK zakończył się błędem (kod {result.returncode}): "
+            f"{stderr or '(brak szczegółów)'}"
+        )
+
+    log.info(f"RGB → CMYK OK: {output_pdf}")
+    return output_pdf
+
+
+def is_ghostscript_available() -> bool:
+    """True jeśli Ghostscript jest dostępny w PATH."""
+    return find_ghostscript() is not None

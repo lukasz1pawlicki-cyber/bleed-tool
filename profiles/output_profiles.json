@@ -1,0 +1,42 @@
+{
+  "_comment": "Profile eksportu per maszyna. Klucz = nazwa plotera (snake_case). Ładowane przez modules/profiles.py. Nadpisują wartości z config.PLOTTERS.",
+  "_version": 1,
+  "profiles": {
+    "summa_s3": {
+      "label": "Summa S3 T160",
+      "description": "Ploter tnący z OPOS — czyta znaczniki rejestracji i kontur CutContour",
+      "mark_type": "opos_rectangle",
+      "mark_size_mm": [3, 3],
+      "min_marks": 4,
+      "mark_offset_mm": 10,
+      "mark_zone_mm": 13,
+      "leading_offset_mm": 20,
+      "side_offset_mm": 10,
+      "cut_layers": {
+        "CutContour": {"ocg_name": "CutContour", "cmyk": [1, 0, 1, 0]},
+        "FlexCut":    {"ocg_name": "FlexCut",    "cmyk": [0, 1, 1, 0]},
+        "Regmark":    {"ocg_name": "Regmark",    "cmyk": [0, 0, 0, 1]}
+      },
+      "panel_support": true,
+      "panel_spot_color": "FlexCut"
+    },
+    "jwei": {
+      "label": "JWEI CTE-1606H",
+      "description": "Cyfrowy stół tnący — 4 narożne znaczniki, narzędzia SP2/SP3 z OptiScout",
+      "mark_type": "opos_rectangle",
+      "mark_size_mm": [3, 3],
+      "min_marks": 4,
+      "mark_offset_mm": 12,
+      "mark_offset_x_mm": 5,
+      "mark_offset_y_mm": 50,
+      "mark_zone_mm": 5,
+      "cut_layers": {
+        "CutContour": {"ocg_name": "SP3",      "cmyk": [1, 0, 1, 0]},
+        "FlexCut":    {"ocg_name": "SP2",      "cmyk": [0, 1, 1, 0]},
+        "Regmark":    {"ocg_name": "regmarks", "cmyk": [0, 0, 0, 1]}
+      },
+      "panel_support": true,
+      "panel_spot_color": "FlexCut"
+    }
+  }
+}
