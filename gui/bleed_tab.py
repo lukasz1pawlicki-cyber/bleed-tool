@@ -8,7 +8,7 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
-    QProgressBar, QFileDialog, QSizePolicy,
+    QProgressBar, QFileDialog, QSizePolicy, QMessageBox,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 
@@ -421,3 +421,13 @@ class BleedTab(QWidget):
         self._progress.setVisible(False)
         self._status_label.setText("BŁĄD")
         self._log(f"[BŁĄD KRYTYCZNY] {msg}")
+        # Popup dla operatora — samego logu może nie zauważyć
+        # (skracamy bardzo długie tracebacki, pełna treść jest w panelu logu)
+        short = msg if len(msg) <= 600 else msg[:600] + "\n\n[...] pełny log w panelu na dole."
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("Błąd przetwarzania")
+        box.setText("Nie udało się wygenerować bleedu dla jednego lub więcej plików.")
+        box.setInformativeText(short)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()

@@ -9,7 +9,7 @@ import math
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QComboBox, QProgressBar, QFileDialog,
-    QSizePolicy,
+    QSizePolicy, QMessageBox,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 
@@ -606,3 +606,11 @@ class NestTab(QWidget):
         self._progress.setVisible(False)
         self._status_label.setText("BŁĄD")
         self._log(f"[BŁĄD KRYTYCZNY] {msg}")
+        short = msg if len(msg) <= 600 else msg[:600] + "\n\n[...] pełny log w panelu na dole."
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("Błąd rozkładania arkuszy")
+        box.setText("Nie udało się wygenerować arkusza.")
+        box.setInformativeText(short)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()

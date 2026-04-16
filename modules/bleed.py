@@ -245,12 +245,34 @@ def flatten_segments_to_polyline(
 # OFFSET POLILINII
 # =============================================================================
 
-def offset_polyline(polyline: np.ndarray, distance: float) -> np.ndarray:
-    """Offset polilinii na zewnątrz o distance (w pt). Miter-style per-vertex.
+# Domyślny miter limit (wg SVG/CSS): ratio miter_length / stroke_width.
+# Standard SVG = 4.0 → cap dla kątów <~29° (2·asin(1/4) ≈ 28.96°).
+# Dla naklejek taki limit eliminuje spikes na ostrych narożnikach
+# (bez wizualnego skrócenia spadu dla typowych kształtów).
+DEFAULT_MITER_LIMIT = 4.0
 
-    Dla każdego wierzchołka oblicza normalne dwóch sąsiednich krawędzi,
-    a następnie bisector (miter) z poprawną długością: distance / sin(half_angle).
-    Gwarantuje dokładny offset na prostych krawędziach i w narożnikach.
+
+def offset_polyline(polyline: np.ndarray, distance: float,
+                    miter_limit: float = DEFAULT_MITER_LIMIT) -> np.ndarray:
+    """Offset polilinii na zewnątrz o distance (w pt). Miter-style per-vertex
+    z SVG-kompatybilnym miter limit.
+
+    Dla każdego wierzchołka:
+      • Idealny miter: offset_length = distance / sin(half_angle).
+      • Jeśli sin(half_angle) < 1/miter_limit (bardzo ostry kąt),
+        miter eksplodowałby w spike → capujemy na `miter_limit × distance`
+        w kierunku bisector (zgodnie ze standardem SVG stroke-miterlimit).
+      • Dla kątów ~180° (krawędzie równoległe) używamy normalnej bezpośrednio.
+
+    Zachowanie:
+      • sin_half > 0 (convex): cap w kierunku bisector, limit outward.
+      • sin_half < 0 (concave): także cap |sin_half| < threshold (zapobiega
+        ujemnym eksplozjom w kierunku wnętrza kształtu).
+
+    Argumenty:
+      polyline: kształt (N, 2) floats.
+      distance: wielkość spadu w pt (dla 2 mm = 2 × 72/25.4).
+      miter_limit: wg SVG stroke-miterlimit (default 4.0).
     """
     n = len(polyline)
 
@@ -265,12 +287,6 @@ def offset_polyline(polyline: np.ndarray, distance: float) -> np.ndarray:
             edge_normals[i] = np.array([-edge[1], edge[0]]) / length
 
     # Kierunek nawinięcia — normalne muszą wskazywać na zewnątrz
-    x = polyline[:, 0]
-    y = polyline[:, 1]
-    x_next = np.roll(x, -1)
-    y_next = np.roll(y, -1)
-    signed_area = np.sum(x * y_next - x_next * y) / 2.0
-
     centroid = polyline.mean(axis=0)
     test_count = min(10, n)
     test_indices = np.linspace(0, n - 1, test_count, dtype=int)
@@ -281,7 +297,12 @@ def offset_polyline(polyline: np.ndarray, distance: float) -> np.ndarray:
     if dot_sum < 0:
         edge_normals = -edge_normals
 
-    # Miter offset per-vertex: bisector z poprawną długością
+    # Próg sin(half_angle) odpowiadający miter_limit
+    # miter_length = distance / |sin_half|  →  cap gdy |sin_half| < 1/miter_limit
+    sin_half_threshold = 1.0 / max(miter_limit, 1.0)
+    miter_cap_length = miter_limit * distance
+
+    # Miter offset per-vertex
     offsets = np.zeros_like(polyline, dtype=np.float64)
     for i in range(n):
         n_prev = edge_normals[(i - 1) % n]  # normalna krawędzi wchodzącej
@@ -294,15 +315,21 @@ def offset_polyline(polyline: np.ndarray, distance: float) -> np.ndarray:
         if bis_len < 1e-8:
             # Krawędzie równoległe (straight segment) — użyj normalnej
             offsets[i] = n_curr * distance
+            continue
+
+        bisector /= bis_len
+        # sin(half_angle) = dot(edge_normal, bisector)
+        sin_half = np.dot(n_prev, bisector)
+
+        if abs(sin_half) < sin_half_threshold:
+            # Ostry kąt — cap na miter_limit × distance (bevel-like plateau).
+            # Bez cappowania miter explode'owałby do spike długości
+            # distance / sin_half (dla 10° to już ~12× distance).
+            # Zachowujemy znak, żeby concave (sin_half<0) nie odwracał kierunku.
+            sign = 1.0 if sin_half >= 0 else -1.0
+            offsets[i] = bisector * (sign * miter_cap_length)
         else:
-            bisector /= bis_len
-            # sin(half_angle) = dot(edge_normal, bisector)
-            sin_half = np.dot(n_prev, bisector)
-            if abs(sin_half) < 0.1:
-                # Bardzo ostry kąt — cap miter żeby nie eksplodował
-                offsets[i] = bisector * distance
-            else:
-                offsets[i] = bisector * (distance / sin_half)
+            offsets[i] = bisector * (distance / sin_half)
 
     return polyline + offsets
 
@@ -311,21 +338,49 @@ def offset_polyline(polyline: np.ndarray, distance: float) -> np.ndarray:
 # FIT CUBIC BÉZIER
 # =============================================================================
 
+def _linear_bezier_controls(p0: np.ndarray, p3: np.ndarray
+                            ) -> tuple[np.ndarray, np.ndarray]:
+    """Control points dla krzywej praktycznie prostej: 1/3 i 2/3 chord.
+
+    Bezpieczny fallback gdy nie da się zrobić rzetelnego least-squares
+    (za mało próbek, degeneracja, lstsq rank < 2). Dla krzywych prawie
+    prostych to najlepsza aproksymacja bez artefaktów.
+    """
+    p1 = p0 + (p3 - p0) / 3.0
+    p2 = p0 + 2.0 * (p3 - p0) / 3.0
+    return p1, p2
+
+
 def _fit_cubic_bezier(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Fituje cubic Bézier (p1, p2 control points) do zestawu punktów.
 
     p0 i p3 to pierwszy i ostatni punkt. Parametryzacja chord-length.
-    Rozwiązanie least-squares.
+    Rozwiązanie least-squares z zabezpieczeniami numerycznymi:
+
+      • n < 4 próbek → nie dostarczy sensownego fit-u (system
+        niedookreślony) → zwracamy linear controls.
+      • Zerowa długość chord → collinear points (cusp / duplicate) →
+        linear fallback.
+      • Macierz A ma rank < 2 (kolumny b1 i b2 prawie kolinearne — np.
+        wszystkie punkty blisko t=0 lub t=1) → linear fallback zamiast
+        pseudo-inverse, który generuje control points daleko poza bbox.
+      • Sanity check na wynik: jeśli control point wyszedł > 10×chord
+        od p0 (spike), też fallback (to ratuje offsetowe artefakty na
+        ostrych narożnikach, gdy po offsecie mamy niemal linię).
     """
     n = len(points)
     p0 = points[0]
     p3 = points[-1]
 
+    # Za mało próbek dla rzetelnego fitu
+    if n < 4:
+        return _linear_bezier_controls(p0, p3)
+
     # Parametryzacja chord-length
     dists = np.linalg.norm(np.diff(points, axis=0), axis=1)
     total = dists.sum()
     if total < 1e-10:
-        return p0.copy(), p3.copy()
+        return _linear_bezier_controls(p0, p3)
 
     t = np.zeros(n)
     t[1:] = np.cumsum(dists) / total
@@ -341,12 +396,34 @@ def _fit_cubic_bezier(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     # Least squares: [b1, b2] @ [p1; p2] = rhs
     A = np.column_stack([b1, b2])
+
+    # Rank check: dla dobrego systemu rank(A) == 2. Jeśli kolumny są
+    # prawie kolinearne (np. wszystkie próbki w małym t-zakresie po
+    # offsecie), lstsq da numerycznie rozstrzelone control points.
     p1 = np.zeros(2)
     p2 = np.zeros(2)
+    rank_ok = True
     for d in range(2):
         result = np.linalg.lstsq(A, rhs[:, d], rcond=None)
+        # result[2] to rank A obliczony przez lstsq
+        if result[2] < 2:
+            rank_ok = False
+            break
         p1[d] = result[0][0]
         p2[d] = result[0][1]
+
+    if not rank_ok:
+        return _linear_bezier_controls(p0, p3)
+
+    # Sanity check: control point nie powinien leżeć > 10× chord od p0.
+    # Gdy się zdarza (numerycznie źle uwarunkowany system), preferujemy
+    # gładką linearną aproksymację od spike'ów w finalnym PDF.
+    chord = np.linalg.norm(p3 - p0)
+    if chord > 1e-8:
+        max_allowed = 10.0 * chord
+        if (np.linalg.norm(p1 - p0) > max_allowed
+                or np.linalg.norm(p2 - p0) > max_allowed):
+            return _linear_bezier_controls(p0, p3)
 
     return p1, p2
 

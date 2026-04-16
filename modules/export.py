@@ -53,6 +53,61 @@ log = logging.getLogger(__name__)
 
 
 # =============================================================================
+# HELPERY: bezpieczny tempfile + kontrola pamięci
+# =============================================================================
+
+# Limit megapikseli dla pojedynczego rastra w eksporcie.
+# Próg dobrany dla maszyn produkcyjnych (minimum 4 GB wolnego RAM).
+# A2 @ 300dpi ≈ 35 MP, A1 @ 300dpi ≈ 70 MP → domyślny limit pozwala na A1
+# z kanałem alpha (70 MP × 4 B = 280 MB) + expanded canvas z bleedem.
+_MAX_RASTER_MEGAPIXELS = int(os.environ.get("BLEED_MAX_RASTER_MP", "120"))
+
+
+def _check_raster_memory(width: int, height: int, channels: int = 4,
+                         context: str = "raster") -> None:
+    """Sprawdza czy alokacja (width × height × channels) mieści się w limicie.
+
+    Rzuca MemoryError z komunikatem PL dla operatora zanim nastąpi faktyczna
+    alokacja numpy, która mogłaby zabić proces bez jasnego powodu.
+    """
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > _MAX_RASTER_MEGAPIXELS:
+        estimated_mb = (width * height * channels) / 1024 / 1024
+        raise MemoryError(
+            f"Zbyt duży obraz do eksportu ({context}): "
+            f"{width}×{height}px = {megapixels:.0f} MP (≈{estimated_mb:.0f} MB). "
+            f"Limit: {_MAX_RASTER_MEGAPIXELS} MP. "
+            f"Zredukuj DPI lub format arkusza, albo zwiększ BLEED_MAX_RASTER_MP."
+        )
+
+
+class _SafeTempPng:
+    """Context manager dla tymczasowego PNG — gwarantuje cleanup.
+
+    Zwykłe `tempfile.NamedTemporaryFile(delete=False)` + `os.unlink(tmp.name)`
+    na końcu nie chroni przed wyciekiem gdy pomiędzy save() a unlink() zostanie
+    wyrzucony wyjątek. Context manager zapewnia usunięcie w finally.
+    """
+
+    def __init__(self, suffix: str = ".png"):
+        self._suffix = suffix
+        self.name: str = ""
+
+    def __enter__(self) -> "_SafeTempPng":
+        tmp = tempfile.NamedTemporaryFile(suffix=self._suffix, delete=False)
+        tmp.close()
+        self.name = tmp.name
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self.name and os.path.exists(self.name):
+            try:
+                os.unlink(self.name)
+            except OSError as e:
+                log.warning(f"Nie udało się usunąć pliku tymczasowego {self.name}: {e}")
+
+
+# =============================================================================
 # SEGMENTY → PDF PATH OPERATORS
 # =============================================================================
 
@@ -1672,6 +1727,9 @@ def export_single_sticker(
                 new_h = h_r + 2 * bleed_px
                 new_w = w_r + 2 * bleed_px
 
+                _check_raster_memory(new_w, new_h, channels=4,
+                                     context="raster RGBA z dilation")
+
                 # Expanded canvas (biały = tło)
                 expanded = np.full((new_h, new_w, 3), 255, dtype=np.uint8)
                 expanded[bleed_px:bleed_px + h_r, bleed_px:bleed_px + w_r] = composited
@@ -1724,6 +1782,8 @@ def export_single_sticker(
                 h, w = rgba.shape[:2]
                 new_h = h + 2 * bleed_px
                 new_w = w + 2 * bleed_px
+                _check_raster_memory(new_w, new_h, channels=4,
+                                     context="raster-only PDF z dilation")
                 expanded = np.zeros((new_h, new_w, 4), dtype=np.uint8)
                 expanded[bleed_px:bleed_px + h, bleed_px:bleed_px + w] = rgba
                 fill_range = bleed_px * 3
@@ -1748,14 +1808,14 @@ def export_single_sticker(
                 src_img.close()
 
         # Zapisz do pliku tymczasowego i wstaw na pełną stronę
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        tmp.close()
-        ext_img.save(tmp.name)
-        ext_img.close()
-
-        full_rect = fitz.Rect(0, 0, out_w, out_h)
-        out_page.insert_image(full_rect, filename=tmp.name)
-        os.unlink(tmp.name)
+        # (context manager gwarantuje usunięcie nawet przy wyjątku)
+        with _SafeTempPng(".png") as tmp:
+            try:
+                ext_img.save(tmp.name)
+            finally:
+                ext_img.close()
+            full_rect = fitz.Rect(0, 0, out_w, out_h)
+            out_page.insert_image(full_rect, filename=tmp.name)
         log.info("Warstwa 1+2: bleed + grafika rastrowa — OK")
     else:
         # ====== ŚCIEŻKA WEKTOROWA: solid fill + show_pdf_page ======
@@ -2940,6 +3000,8 @@ def _apply_outer_bleed(
 
     # Expand canvas o bleed_px
     bleed_px = max(1, int(ob_mm * dpi / 25.4))
+    _check_raster_memory(cw + 2 * bleed_px, ch + 2 * bleed_px, channels=3,
+                         context="outer bleed dilation (sheet)")
     expanded = np.zeros((ch + 2 * bleed_px, cw + 2 * bleed_px, 3), dtype=np.uint8)
     expanded[bleed_px:bleed_px + ch, bleed_px:bleed_px + cw] = crop
 
@@ -2960,12 +3022,6 @@ def _apply_outer_bleed(
     # Konwertuj na PIL
     bleed_img = PILImage.fromarray(expanded)
 
-    # Wstaw do PDF — rect obejmujący bbox + bleed
-    import tempfile, os
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    bleed_img.save(tmp.name)
-    tmp.close()
-
     # Rect w PDF coords
     insert_x0 = x0_mm * MM_TO_PT - ob_pt
     insert_y0 = sheet_h_pt - (y1_mm * MM_TO_PT + ob_pt)
@@ -2973,13 +3029,10 @@ def _apply_outer_bleed(
     insert_y1 = sheet_h_pt - (y0_mm * MM_TO_PT - ob_pt)
     insert_rect = fitz.Rect(insert_x0, insert_y0, insert_x1, insert_y1)
 
-    # Wstaw PRZED istniejącymi content streams (tło)
-    page.insert_image(insert_rect, filename=tmp.name, overlay=False)
-
-    try:
-        os.unlink(tmp.name)
-    except OSError:
-        pass
+    # Wstaw do PDF przez bezpieczny tempfile (context manager = cleanup na finally)
+    with _SafeTempPng(".png") as tmp:
+        bleed_img.save(tmp.name)
+        page.insert_image(insert_rect, filename=tmp.name, overlay=False)
 
     log.info(f"Outer bleed: {ob_mm}mm dilation, bbox ({x0_mm:.1f},{y0_mm:.1f})-({x1_mm:.1f},{y1_mm:.1f})mm")
 

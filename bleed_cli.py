@@ -79,9 +79,39 @@ def find_batch_files(folder: str, recursive: bool = False) -> list[str]:
     return sorted(set(files))
 
 
+def _unique_output_path(path: str) -> str:
+    """Zwraca ścieżkę, która nie istnieje: dopisuje suffix _v2, _v3, ..."""
+    if not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    i = 2
+    while True:
+        candidate = f"{stem}_v{i}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        i += 1
+
+
+def _resolve_output(path: str, overwrite: bool) -> str | None:
+    """Rozstrzyga kolizję nazw. Zwraca None jeśli pomijamy plik.
+
+    overwrite=True  → nadpisz istniejący plik
+    overwrite=False → dopisz suffix _v2, _v3, ... (nie trać pracy operatora)
+    """
+    if not os.path.exists(path) or overwrite:
+        return path
+    new_path = _unique_output_path(path)
+    print(f"  [i] Plik istnieje, zapis jako: {os.path.basename(new_path)}")
+    return new_path
+
+
 def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
-              file_list: list[str] | None = None, white: bool = False):
-    """Generuje bleed dla plików w input_path lub z podanej listy file_list."""
+              file_list: list[str] | None = None, white: bool = False,
+              overwrite: bool = False, fail_fast: bool = False) -> tuple[int, int]:
+    """Generuje bleed dla plików w input_path lub z podanej listy file_list.
+
+    Zwraca (ok, err) — liczbę udanych i nieudanych eksportów.
+    """
     from modules.contour import detect_contour
     from modules.bleed import generate_bleed
     from modules.export import export_single_sticker
@@ -89,7 +119,7 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
     files = file_list if file_list is not None else find_files(input_path)
     if not files:
         print("Brak plikow do przetworzenia.")
-        return
+        return (0, 0)
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -127,6 +157,7 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
                         bleed_mm, page_index=page_idx,
                     )
                     out = os.path.join(output_dir, out_name)
+                    out = _resolve_output(out, overwrite=overwrite)
                     info = export_single_sticker(sticker, out, bleed_mm=bleed_mm, white=white)
 
                     size_kb = os.path.getsize(out) / 1024
@@ -139,17 +170,23 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
                 except Exception as e:
                     print(f"  [ERR] {label}: {e}")
                     err += 1
+                    if fail_fast:
+                        raise
 
             # Zamknij dokument po przetworzeniu wszystkich stron
             if stickers[0].pdf_doc is not None:
                 stickers[0].pdf_doc.close()
 
         except Exception as e:
+            if fail_fast:
+                print(f"\n[FATAL] Przerwanie (--fail-fast): {e}")
+                raise
             print(f"  [ERR] {name}: {e}")
             err += 1
 
     elapsed = time.time() - t0
     print(f"\nDone: {ok} OK, {err} errors in {elapsed:.1f}s")
+    return (ok, err)
 
 
 def main():
@@ -191,6 +228,16 @@ def main():
         help="Dodaj bialy poddruk (White ink) pod grafika",
     )
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Nadpisuj istniejace pliki wyjsciowe (domyslnie: dopisuje suffix _v2)",
+    )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Przerwij batch przy pierwszym bledzie (domyslnie: kontynuuj)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose logging",
@@ -208,13 +255,29 @@ def main():
             ext_list = ", ".join(_SUPPORTED_EXT)
             print(f"Brak obslugiwanych plikow ({ext_list}) w: {args.batch}")
             sys.exit(1)
-        run_bleed(args.batch, args.output, args.bleed, file_list=files, white=args.white)
+        try:
+            _ok, err = run_bleed(
+                args.batch, args.output, args.bleed,
+                file_list=files, white=args.white,
+                overwrite=args.overwrite, fail_fast=args.fail_fast,
+            )
+        except Exception:
+            sys.exit(2)
+        sys.exit(0 if err == 0 else 1)
     elif args.input:
         # Tryb pojedynczy — oryginalny (backward compatible)
         if args.recursive:
             print("[!] Flaga --recursive dziala tylko z --batch")
             sys.exit(1)
-        run_bleed(args.input, args.output, args.bleed, white=args.white)
+        try:
+            _ok, err = run_bleed(
+                args.input, args.output, args.bleed,
+                white=args.white, overwrite=args.overwrite,
+                fail_fast=args.fail_fast,
+            )
+        except Exception:
+            sys.exit(2)
+        sys.exit(0 if err == 0 else 1)
     else:
         parser.print_help()
         sys.exit(1)
