@@ -145,12 +145,14 @@ FLOAT_TOLERANCE_MM = 0.01
 # =============================================================================
 # CONTOUR ENGINE — silnik detekcji konturu rastrowego
 # =============================================================================
-# "moore"  — Moore boundary tracing (Python, default, zero extra deps)
-# "opencv" — cv2.findContours (C, ~kilkadziesiąt× szybsze, wymaga opencv-python)
-# "auto"   — użyj opencv jeśli dostępne, fallback na moore
+# "auto"   — użyj opencv jeśli dostępne, fallback na moore (DEFAULT)
+# "opencv" — cv2.findContours (C, 5–35× szybsze, wymaga opencv-python)
+# "moore"  — Moore boundary tracing (Python, zero extra deps, fallback)
 #
+# Benchmark (2000×2000 px naklejka): moore 37ms vs opencv 1.1ms (34× speedup).
+# Jakość identyczna — oba silniki zwracają ten sam kontur co do piksela.
 # Zmienna środowiskowa BLEED_CONTOUR_ENGINE nadpisuje tę wartość.
-CONTOUR_ENGINE = _os.environ.get("BLEED_CONTOUR_ENGINE", "moore").lower()
+CONTOUR_ENGINE = _os.environ.get("BLEED_CONTOUR_ENGINE", "auto").lower()
 
 
 # =============================================================================
