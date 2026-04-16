@@ -412,6 +412,57 @@ def _parse_svg_dimension(value: str) -> float | None:
         return None
 
 
+def preflight_gate(file_path: str, strict: bool = False) -> tuple[bool, dict]:
+    """Sprawdza plik i decyduje czy mozna go eksportowac.
+
+    Ten helper dodaje "gate" przed eksportem — uruchamia preflight_check
+    i zwraca boolean blokujacy lub pozwalajacy na przejscie do pipeline
+    detect_contour -> generate_bleed -> export.
+
+    Args:
+        file_path: sciezka do pliku wejsciowego
+        strict: jesli True, ostrzezenia tez blokuja (dla produkcji);
+                jesli False (default), tylko errors blokuja.
+
+    Returns:
+        (can_export, preflight_result):
+            can_export — True gdy plik mozna bezpiecznie eksportowac
+            preflight_result — pelne wyniki z preflight_check() dla logowania
+    """
+    result = preflight_check(file_path)
+    status = result.get("status", "error")
+    if status == "error":
+        return (False, result)
+    if strict and status == "warning":
+        return (False, result)
+    return (True, result)
+
+
+def preflight_summary(result: dict) -> str:
+    """Formatuje wyniki preflight do jednej linii (PL) dla log/stdout.
+
+    Przyklad: "ok · 80×50mm · CMYK · 300dpi"
+    """
+    parts = [result.get("status", "?")]
+    w, h = result.get("size_mm", (0, 0))
+    if w and h:
+        parts.append(f"{w:.0f}×{h:.0f}mm")
+    mode = result.get("color_mode")
+    if mode and mode not in ("Unknown", "Vector"):
+        parts.append(mode)
+    elif result.get("is_vector"):
+        parts.append("wektor")
+    dpi = result.get("dpi")
+    if dpi:
+        parts.append(f"{dpi:.0f}dpi")
+    if result.get("has_transparency"):
+        parts.append("alpha")
+    issues = result.get("issues", []) + result.get("warnings", [])
+    if issues:
+        parts.append(f"{len(issues)} uwagi")
+    return " · ".join(parts)
+
+
 def preflight_check(file_path: str) -> dict:
     """Sprawdza plik pod katem produkcji naklejek.
 

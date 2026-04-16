@@ -13,11 +13,50 @@ from PyQt6.QtWidgets import (
     QGraphicsEllipseItem, QGraphicsRectItem,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QObject, QThread, pyqtSlot
 from PyQt6.QtGui import (
     QPixmap, QImage, QPen, QColor, QBrush, QWheelEvent, QMouseEvent,
     QPainterPath,
 )
+
+
+class _RenderWorker(QObject):
+    """Worker renderujacy PDF do QPixmap w watku tla.
+
+    Komunikacja: slot render_request wywolany z main thread przez BlockingQueued
+    lub QueuedConnection wykonuje fitz.open + get_pixmap w worker thread.
+    Wynik (QPixmap) emitowany przez sygnal pixmap_ready z request_id ktory pozwala
+    main thread ignorowac outdated requesty (user mogl przekliknac dalej).
+
+    Cache jest trzymany w PreviewPanel (main thread) — worker nie cache'uje sam,
+    zeby uniknac race conditions na dict (QPixmap nie jest w pelni thread-safe
+    po przekazaniu).
+    """
+
+    pixmap_ready = pyqtSignal(int, str, object)  # (request_id, path, QPixmap|None)
+
+    @pyqtSlot(int, str, int, bool)
+    def render_request(self, request_id: int, path: str, dpi: int, alpha: bool):
+        """Renderuje strone PDF. Emit pixmap_ready niezaleznie od sukcesu."""
+        try:
+            import fitz
+            doc = fitz.open(path)
+            page = doc[0]
+            mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+            pix = page.get_pixmap(matrix=mat, alpha=alpha)
+            if alpha:
+                qimg = QImage(pix.samples, pix.width, pix.height,
+                              pix.stride, QImage.Format.Format_RGBA8888)
+            else:
+                qimg = QImage(pix.samples, pix.width, pix.height,
+                              pix.stride, QImage.Format.Format_RGB888)
+            # copy() — odklej dane od pix.samples (zwolni sie gdy doc.close)
+            qpix = QPixmap.fromImage(qimg.copy())
+            doc.close()
+            self.pixmap_ready.emit(request_id, path, qpix)
+        except Exception as e:
+            log.warning(f"Async render failed: {path}: {e}")
+            self.pixmap_ready.emit(request_id, path, None)
 
 from gui.theme import PREVIEW_CUTCONTOUR, PREVIEW_FLEXCUT, PREVIEW_MARK
 
@@ -228,6 +267,36 @@ class PreviewPanel(QWidget):
             "Dodaj pliki i kliknij \"Generuj arkusze\"\naby zobaczyć podgląd"
         )
         self._placeholder = QLabel(placeholder_text or default_placeholder)
+
+        # Async render worker — tworzony LAZY dopiero przy pierwszym cache miss.
+        # Eksplicitny opt-in: testy nie uruchamiaja threada (brak render_sheet),
+        # a realne show_nest_job dostaje nieblokujacy render dla duzych arkuszy.
+        self._render_thread: QThread | None = None
+        self._render_worker: _RenderWorker | None = None
+        self._async_request_counter = 0
+        self._active_async_requests: dict[int, dict] = {}  # req_id -> {role, cache_key}
+        self._async_ticket: int = 0  # increment per _render_current, invalidate prev
+
+    def _ensure_render_thread(self) -> None:
+        """Lazy init workera. Wolane przed pierwszym async submit."""
+        if self._render_thread is not None:
+            return
+        self._render_thread = QThread()
+        self._render_worker = _RenderWorker()
+        self._render_worker.moveToThread(self._render_thread)
+        self._render_worker.pixmap_ready.connect(
+            self._on_async_pixmap_ready, type=Qt.ConnectionType.QueuedConnection
+        )
+        self._render_thread.start()
+
+    def _shutdown_render_thread(self) -> None:
+        """Zatrzymuje worker thread. Idempotentne (safe dla multiple calls)."""
+        try:
+            if self._render_thread is not None and self._render_thread.isRunning():
+                self._render_thread.quit()
+                self._render_thread.wait(2000)
+        except RuntimeError:
+            pass
         self._placeholder.setObjectName("preview-placeholder")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -335,7 +404,14 @@ class PreviewPanel(QWidget):
             self._split_btn.setVisible(False)
             self._split_btn.setChecked(False)
         self._split_view = False
+        self._active_async_requests.clear()
+        self._async_ticket += 1  # invalidate pending async
         self._update_nav()
+
+    def closeEvent(self, event):
+        """Czysty shutdown worker threada przy zamknieciu panelu."""
+        self._shutdown_render_thread()
+        super().closeEvent(event)
 
     # --- Navigation ---
 
@@ -553,19 +629,100 @@ class PreviewPanel(QWidget):
             doc.close()
 
     def _render_sheet(self, idx: int):
+        """Renderuje arkusz. Cache hit = synchronic, miss = async (nieblokujacy).
+
+        Dla arkusza A4+ @ 150dpi synchroniczny render trwa ~300-800ms
+        co zamraza GUI. Delegacja do worker thread pozwala interfejsowi
+        pozostac responsywnym podczas renderowania.
+        """
         pp, cp = self._sheet_pdfs[idx]
 
-        # Print PDF
-        print_pix = self._render_pdf_page(pp, dpi=150)
-        if print_pix:
-            self._scene.addPixmap(print_pix)
+        # Invalidate wszystkie pending async z poprzednich _render_sheet
+        self._async_ticket += 1
+        current_ticket = self._async_ticket
 
-        # Cut overlay (jeśli istnieje)
+        # Print PDF
+        pp_key = self._cache_key(pp, 150, False)
+        if pp_key in self._cache:
+            self._scene.addPixmap(self._cache[pp_key])
+        else:
+            self._placeholder_in_scene("Renderowanie arkusza...")
+            self._submit_async_render(pp, dpi=150, alpha=False,
+                                      role="print", ticket=current_ticket)
+
+        # Cut overlay (jesli istnieje)
         if os.path.isfile(cp):
-            cut_pix = self._render_pdf_page(cp, dpi=150, alpha=True)
-            if cut_pix:
-                item = self._scene.addPixmap(cut_pix)
+            cp_key = self._cache_key(cp, 150, True)
+            if cp_key in self._cache:
+                item = self._scene.addPixmap(self._cache[cp_key])
                 item.setOpacity(0.8)
+            else:
+                self._submit_async_render(cp, dpi=150, alpha=True,
+                                          role="cut", ticket=current_ticket)
+
+    def _cache_key(self, path: str, dpi: int, alpha: bool) -> tuple:
+        return (path, dpi, alpha,
+                os.path.getmtime(path) if os.path.isfile(path) else 0)
+
+    def _placeholder_in_scene(self, text: str) -> None:
+        """Tymczasowy tekst "Renderowanie..." w scenie."""
+        item = self._scene.addText(text)
+        item.setDefaultTextColor(QColor("#666"))
+        item.setPos(10, 10)
+
+    def _submit_async_render(self, path: str, dpi: int, alpha: bool,
+                             role: str, ticket: int) -> None:
+        """Wysyla request renderowania do _RenderWorker w watku tla."""
+        self._ensure_render_thread()
+        self._async_request_counter += 1
+        rid = self._async_request_counter
+        self._active_async_requests[rid] = {
+            "role": role,
+            "path": path,
+            "dpi": dpi,
+            "alpha": alpha,
+            "ticket": ticket,
+        }
+        # QueuedConnection + invokeMethod approach
+        from PyQt6.QtCore import QMetaObject, Q_ARG, Qt as _Qt
+        QMetaObject.invokeMethod(
+            self._render_worker, "render_request",
+            _Qt.ConnectionType.QueuedConnection,
+            Q_ARG(int, rid),
+            Q_ARG(str, path),
+            Q_ARG(int, dpi),
+            Q_ARG(bool, alpha),
+        )
+
+    @pyqtSlot(int, str, object)
+    def _on_async_pixmap_ready(self, request_id: int, path: str,
+                               qpix: object) -> None:
+        """Slot wywolany po zakonczeniu renderu w watku tla."""
+        req = self._active_async_requests.pop(request_id, None)
+        if req is None:
+            return
+        # Sprawdz czy request nie jest outdated (user przelkiknal do innego arkusza)
+        if req["ticket"] != self._async_ticket:
+            return
+        if qpix is None:
+            return
+        # Cache + wstaw do sceny (pozbadz sie wszystkich placeholder textow)
+        key = self._cache_key(req["path"], req["dpi"], req["alpha"])
+        if len(self._cache) > 10:
+            self._cache.pop(next(iter(self._cache)))
+        self._cache[key] = qpix
+
+        # Usun placeholder text (pierwszy tekstowy element bez grafiki)
+        from PyQt6.QtWidgets import QGraphicsTextItem
+        for item in list(self._scene.items()):
+            if isinstance(item, QGraphicsTextItem):
+                self._scene.removeItem(item)
+                break
+
+        item = self._scene.addPixmap(qpix)
+        if req["role"] == "cut":
+            item.setOpacity(0.8)
+        self._view.fit_content()
 
     def _render_pdf_page(self, path: str, dpi: int = 150, alpha: bool = False) -> QPixmap | None:
         """Renderuje pierwszą stronę PDF jako QPixmap."""

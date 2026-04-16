@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Bleed Tool — Mockup: Single Screen Workflow (pkt 7)</title>
+<style>
+  /* Kolory z gui/theme.py — spojne z aktualnym programem */
+  :root {
+    --accent: #4f6ef7;
+    --accent-hover: #3b5bdb;
+    --success: #37b24d;
+    --error: #e53935;
+    --warning: #f59f00;
+    --card-bg: #ffffff;
+    --main-bg: #f1f3f5;
+    --sidebar-bg: #f8f9fa;
+    --text: #212529;
+    --text-secondary: #868e96;
+    --border: #ced4da;
+    --border-soft: #e9ecef;
+    --preview-cut: #00e676;
+    --preview-flex: #ff1744;
+    --preview-mark: #000000;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, "SF Pro Text", "Segoe UI", Inter, sans-serif;
+    color: var(--text);
+    background: #dee2e6;
+  }
+
+  .page {
+    max-width: 1440px; margin: 18px auto;
+    background: var(--main-bg);
+    border-radius: 8px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.15);
+    overflow: hidden;
+  }
+  .title-bar {
+    padding: 6px 14px; background: #e9ecef; border-bottom: 1px solid var(--border);
+    font-size: 11px; color: var(--text-secondary);
+  }
+  .app {
+    display: grid;
+    grid-template-columns: 320px 1fr 420px;
+    grid-template-rows: 52px 1fr 140px 52px;
+    grid-template-areas:
+      "head    head    head"
+      "files   work    preview"
+      "files   log     preview"
+      "footer  footer  footer";
+    height: 820px;
+  }
+
+  /* HEADER: drop zone + pipeline progress */
+  .head {
+    grid-area: head;
+    display: grid;
+    grid-template-columns: 1fr 560px;
+    gap: 12px;
+    padding: 8px 14px;
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border-soft);
+    align-items: center;
+  }
+  .drop-zone {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    border: 2px dashed var(--border);
+    border-radius: 6px;
+    background: #fafbfc;
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+  .drop-zone strong { color: var(--text); }
+  .pipeline {
+    display: flex; gap: 6px; align-items: center;
+    font-size: 11px;
+  }
+  .stage {
+    flex: 1;
+    background: var(--border-soft);
+    border-radius: 4px;
+    height: 28px;
+    position: relative;
+    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+  .stage .bar {
+    position: absolute; left:0; top:0; bottom:0;
+    background: var(--accent);
+    opacity: 0.18;
+  }
+  .stage.done .bar { background: var(--success); opacity: 0.22; }
+  .stage.done { color: #1a7d2f; }
+  .stage.active { color: var(--accent); }
+  .stage .label { position: relative; z-index: 1; }
+  .pipeline .arrow { color: var(--text-secondary); }
+
+  /* FILES PANEL (lewa kolumna) */
+  .files {
+    grid-area: files;
+    background: var(--card-bg);
+    border-right: 1px solid var(--border-soft);
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .section-head {
+    padding: 10px 14px 6px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    letter-spacing: 0.5px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .files-list {
+    overflow-y: auto;
+    flex: 1;
+    padding: 2px 6px;
+  }
+  .file-row {
+    display: grid;
+    grid-template-columns: 22px 1fr 60px;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    align-items: center;
+    font-size: 12px;
+    margin: 1px 0;
+  }
+  .file-row:hover { background: var(--border-soft); }
+  .file-row.selected { background: rgba(79, 110, 247, 0.08); border-left: 3px solid var(--accent); padding-left: 7px; }
+  .file-row .status {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: white;
+  }
+  .status.ok     { background: var(--success); }
+  .status.warn   { background: var(--warning); }
+  .status.err    { background: var(--error); }
+  .status.wait   { background: var(--border); color: #555; }
+  .status.proc   { background: var(--accent); color: white; }
+  .status.proc::after {
+    content: ""; width: 10px; height: 10px;
+    border: 2px solid rgba(255,255,255,0.8);
+    border-top-color: transparent; border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .file-row .name {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .file-row .meta {
+    font-size: 10px; color: var(--text-secondary);
+    text-align: right;
+  }
+  .file-row .issue {
+    grid-column: 2 / 4;
+    font-size: 10px;
+    color: var(--error);
+    margin-top: 2px;
+  }
+  .file-row.warn-row .issue { color: #b47b00; }
+
+  /* MIDDLE: WORKSPACE + LOG */
+  .work {
+    grid-area: work;
+    padding: 14px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .card h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .card h3 .hint {
+    font-size: 11px; color: var(--text-secondary); font-weight: 400;
+  }
+  .form-row {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;
+    margin-bottom: 8px;
+  }
+  .form-row:last-child { margin-bottom: 0; }
+  .field label {
+    display: block; font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 3px;
+  }
+  .field input, .field select {
+    width: 100%;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+    background: white;
+    color: var(--text);
+  }
+  .util-bar {
+    position: relative;
+    height: 14px;
+    background: var(--border-soft);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .util-bar .fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: linear-gradient(90deg, var(--warning), var(--success));
+    border-radius: 3px;
+  }
+  .util-line {
+    display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    align-items: center; font-size: 12px;
+  }
+  .util-line .percent { font-weight: 600; color: var(--success); }
+  .util-line small { color: var(--text-secondary); display: block; font-size: 10px; }
+
+  .log {
+    grid-area: log;
+    background: var(--sidebar-bg);
+    border-top: 1px solid var(--border-soft);
+    border-right: 1px solid var(--border-soft);
+    padding: 8px 12px;
+    overflow-y: auto;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .log .lvl-info  { color: var(--text); }
+  .log .lvl-warn  { color: #b47b00; }
+  .log .lvl-err   { color: var(--error); }
+  .log .lvl-ok    { color: #1a7d2f; }
+  .log .t         { color: var(--text-secondary); }
+
+  /* PREVIEW (prawa kolumna) */
+  .preview {
+    grid-area: preview;
+    background: var(--main-bg);
+    padding: 12px;
+    overflow-y: auto;
+    border-left: 1px solid var(--border-soft);
+  }
+  .preview-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+  .preview-toolbar button {
+    padding: 3px 10px; font-size: 11px;
+    border: 1px solid var(--border); background: white;
+    border-radius: 3px; cursor: pointer;
+    color: var(--text);
+  }
+  .preview-toolbar button.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .preview-stage {
+    background: white;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 14px;
+    margin-bottom: 10px;
+    position: relative;
+  }
+  .preview-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-secondary); font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .sticker-svg {
+    display: block; margin: 0 auto;
+    background:
+      linear-gradient(45deg, #f4f5f7 25%, transparent 25%),
+      linear-gradient(-45deg, #f4f5f7 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #f4f5f7 75%),
+      linear-gradient(-45deg, transparent 75%, #f4f5f7 75%);
+    background-size: 12px 12px;
+    background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+    border: 1px solid var(--border-soft);
+  }
+  .sheet-svg {
+    background: white;
+    border: 1px solid var(--border-soft);
+  }
+
+  /* FOOTER: akcja */
+  .footer {
+    grid-area: footer;
+    background: var(--card-bg);
+    border-top: 1px solid var(--border-soft);
+    padding: 0 16px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .footer .summary { font-size: 12px; color: var(--text-secondary); }
+  .footer .summary strong { color: var(--text); }
+  .footer .actions { display: flex; gap: 8px; }
+  .btn {
+    padding: 9px 18px;
+    border: none; border-radius: 4px; cursor: pointer;
+    font-size: 13px; font-weight: 500;
+    background: white; color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn:hover { background: var(--border-soft); }
+  .btn.primary {
+    background: var(--accent); color: white;
+    border-color: var(--accent);
+  }
+  .btn.primary:hover { background: var(--accent-hover); }
+
+  /* Legenda */
+  .legend { display: flex; gap: 14px; font-size: 10px; color: var(--text-secondary); margin-top: 8px; }
+  .legend span { display: flex; align-items: center; gap: 4px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+  /* Nagłówek objaśnień */
+  .explainer {
+    max-width: 1440px; margin: 0 auto 8px;
+    padding: 10px 16px;
+    background: rgba(79, 110, 247, 0.06);
+    border: 1px solid rgba(79, 110, 247, 0.2);
+    border-radius: 6px;
+    font-size: 12px;
+    color: #2b3a6b;
+  }
+  .explainer strong { color: var(--accent); }
+  .explainer ul { margin: 6px 0 0 16px; padding: 0; }
+  .explainer li { margin: 2px 0; }
+</style>
+</head>
+<body>
+
+<div class="explainer" style="margin-top: 18px;">
+  <strong>Mockup: Single Screen Workflow (pkt 7)</strong><br>
+  Jeden ekran zamiast osobnych zakładek Bleed/Nest. Główne różnice wobec obecnego GUI:
+  <ul>
+    <li><strong>Lista plików z indykatorami</strong> — ✓/⚠/✗/⟳ per plik (preflight + status bleed)</li>
+    <li><strong>Pipeline progress bar</strong> — 3 etapy live (Preflight → Bleed → Arkusz)</li>
+    <li><strong>Podgląd bieżącego pliku</strong> (klik w liście) — bleed + arkusz side-by-side</li>
+    <li><strong>Utylizacja materiału live</strong> (pkt 1 listy)</li>
+    <li><strong>Jedna akcja:</strong> "Eksportuj do plotera" → cały pipeline bez klikania Bleed→Nest</li>
+  </ul>
+</div>
+
+<div class="page">
+<div class="title-bar">Bleed Tool — projekt: zlecenie_2024_04.bleedproj</div>
+<div class="app">
+
+  <!-- HEAD: drop zone + pipeline -->
+  <div class="head">
+    <div class="drop-zone">
+      📁 <strong>4 pliki · 12.3 MB</strong> · Przeciągnij kolejne tutaj albo kliknij aby dodać
+    </div>
+    <div class="pipeline">
+      <div class="stage done">
+        <div class="bar" style="width:100%"></div>
+        <span class="label">✓ Preflight 4/4</span>
+      </div>
+      <span class="arrow">→</span>
+      <div class="stage active">
+        <div class="bar" style="width:75%"></div>
+        <span class="label">Bleed 3/4</span>
+      </div>
+      <span class="arrow">→</span>
+      <div class="stage">
+        <div class="bar" style="width:0"></div>
+        <span class="label">Arkusz</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILES -->
+  <div class="files">
+    <div class="section-head">
+      Pliki <span style="font-weight:400; text-transform:none">4 · 12.3 MB</span>
+    </div>
+    <div class="files-list">
+
+      <div class="file-row">
+        <div class="status ok">✓</div>
+        <div>
+          <div class="name">logo_firmy_v3.pdf</div>
+        </div>
+        <div class="meta">80×50mm<br>PDF wektor</div>
+      </div>
+
+      <div class="file-row selected">
+        <div class="status ok">✓</div>
+        <div>
+          <div class="name">naklejka_circle_pro.svg</div>
+        </div>
+        <div class="meta">60×60mm<br>SVG</div>
+      </div>
+
+      <div class="file-row warn-row">
+        <div class="status warn">!</div>
+        <div>
+          <div class="name">etykieta_butelka.png</div>
+          <div class="issue">⚠ RGB · auto-fix → CMYK FOGRA39</div>
+        </div>
+        <div class="meta">120×80mm<br>300 dpi</div>
+      </div>
+
+      <div class="file-row">
+        <div class="status proc"></div>
+        <div>
+          <div class="name">kod_qr_product.pdf</div>
+        </div>
+        <div class="meta">30×30mm<br>bleed...</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- WORKSPACE: parametry + utylizacja -->
+  <div class="work">
+
+    <div class="card">
+      <h3>Parametry bleed <span class="hint">wspólne dla wszystkich plików</span></h3>
+      <div class="form-row">
+        <div class="field">
+          <label>Spad (mm)</label>
+          <input type="text" value="2.0">
+        </div>
+        <div class="field">
+          <label>Silnik konturu</label>
+          <select><option>auto (OpenCV)</option><option>moore</option><option>opencv</option></select>
+        </div>
+        <div class="field">
+          <label>Crop</label>
+          <select><option>— wyłączony —</option><option>circle</option><option>rounded</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field" style="display:flex; align-items:center; gap:6px; padding-top:18px;">
+          <input type="checkbox" id="white"> <label for="white" style="margin:0;">Biały poddruk (White ink)</label>
+        </div>
+        <div class="field" style="display:flex; align-items:center; gap:6px; padding-top:18px;">
+          <input type="checkbox" id="k100" checked> <label for="k100" style="margin:0;">Czarny 100% K</label>
+        </div>
+        <div class="field" style="display:flex; align-items:center; gap:6px; padding-top:18px;">
+          <input type="checkbox" id="overwrite"> <label for="overwrite" style="margin:0;">Nadpisuj istniejące</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Arkusz <span class="hint">Summa S3 · OPOS · FOGRA39</span></h3>
+      <div class="form-row">
+        <div class="field">
+          <label>Format</label>
+          <select><option>A4 portrait (210×297 mm)</option><option>A3</option><option>Rolka 700 mm</option></select>
+        </div>
+        <div class="field">
+          <label>Odstęp (mm)</label>
+          <input type="text" value="3">
+        </div>
+        <div class="field">
+          <label>Marginesy (mm)</label>
+          <input type="text" value="10">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label>Znaczniki</label>
+          <select><option>OPOS (Summa)</option><option>4 narożne (JWEI)</option><option>Brak</option></select>
+        </div>
+        <div class="field">
+          <label>Linie paneli</label>
+          <select><option>— wyłączone —</option><option>FlexCut 10 mm / 1 mm</option></select>
+        </div>
+        <div class="field">
+          <label>Kolejność</label>
+          <select><option>rzędy (poziomo)</option><option>kolumny (pionowo)</option></select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Utylizacja materiału</h3>
+      <div class="util-line">
+        <div>
+          <span class="percent">78%</span> &nbsp;<small style="display:inline; color:var(--text-secondary);">32 naklejki na 1 arkuszu A4 · marnuje 22% (13 700 mm²)</small>
+          <div class="util-bar"><div class="fill" style="width:78%"></div></div>
+        </div>
+        <div style="text-align:right; font-size:11px; color:var(--text-secondary);">
+          Zmień liczbę powtórzeń ↓<br>
+          <input type="number" value="8" style="width:60px; padding:3px 6px; border:1px solid var(--border); border-radius:3px;">
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- LOG -->
+  <div class="log">
+    <div><span class="t">10:42:11</span> <span class="lvl-ok">[OK]</span> logo_firmy_v3.pdf: 80.0×50.0mm (12.4KB)</div>
+    <div><span class="t">10:42:11</span> <span class="lvl-ok">[OK]</span> naklejka_circle_pro.svg: 60.0×60.0mm (18.2KB)</div>
+    <div><span class="t">10:42:12</span> <span class="lvl-warn">[WARN]</span> etykieta_butelka.png: RGB → konwersja FOGRA39</div>
+    <div><span class="t">10:42:12</span> <span class="lvl-ok">[OK]</span> etykieta_butelka.png: 120.0×80.0mm (412.3KB)</div>
+    <div><span class="t">10:42:13</span> <span class="lvl-info">[i]</span> kod_qr_product.pdf: detect_contour... (cache miss)</div>
+    <div><span class="t">10:42:13</span> <span class="lvl-info">[i]</span> Silnik konturu: opencv (34× szybciej niż moore)</div>
+  </div>
+
+  <!-- PREVIEW -->
+  <div class="preview">
+    <div class="preview-toolbar">
+      <div>
+        <button>&lt;</button>
+        <button>&gt;</button>
+        &nbsp;<strong style="color:var(--text);">2/4</strong> · naklejka_circle_pro.svg
+      </div>
+      <div>
+        <button class="active">Sticker</button>
+        <button>Arkusz</button>
+      </div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="preview-label">PDF z bleedem (60×60 mm + 2mm)</div>
+      <svg class="sticker-svg" width="280" height="280" viewBox="-12 -12 84 84">
+        <!-- bleed ring (solid fill) -->
+        <circle cx="30" cy="30" r="32" fill="#d73c48"/>
+        <!-- sticker body -->
+        <circle cx="30" cy="30" r="30" fill="#e74c3c"/>
+        <text x="30" y="28" text-anchor="middle" font-size="6" fill="white" font-weight="bold">CIRCLE</text>
+        <text x="30" y="38" text-anchor="middle" font-size="4" fill="white">60mm</text>
+        <!-- CutContour -->
+        <circle cx="30" cy="30" r="30" fill="none" stroke="#00e676" stroke-width="0.3"/>
+        <!-- Bleed line (dashed) -->
+        <circle cx="30" cy="30" r="32" fill="none" stroke="#aaa" stroke-width="0.2" stroke-dasharray="0.8,0.8"/>
+      </svg>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--preview-cut)"></span> CutContour</span>
+        <span><span class="dot" style="background:#aaa"></span> Bleed 2mm</span>
+      </div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="preview-label">Arkusz A4 · 8 szt × 4 pliki = 32 (78% utylizacji)</div>
+      <svg class="sheet-svg" width="390" height="262" viewBox="0 0 210 148">
+        <!-- registracja OPOS narożne -->
+        <rect x="8" y="8" width="3" height="3" fill="black"/>
+        <rect x="199" y="8" width="3" height="3" fill="black"/>
+        <rect x="8" y="137" width="3" height="3" fill="black"/>
+        <rect x="199" y="137" width="3" height="3" fill="black"/>
+
+        <!-- rząd 1: logo_firmy_v3 (80×50) -->
+        <g transform="translate(15,18)">
+          <rect width="80" height="50" fill="#4f6ef7"/>
+          <rect x="-2" y="-2" width="84" height="54" fill="none" stroke="#00e676" stroke-width="0.3"/>
+          <text x="40" y="28" text-anchor="middle" font-size="4" fill="white">logo_firmy_v3</text>
+        </g>
+        <g transform="translate(98,18)">
+          <rect width="80" height="50" fill="#4f6ef7"/>
+          <rect x="-2" y="-2" width="84" height="54" fill="none" stroke="#00e676" stroke-width="0.3"/>
+          <text x="40" y="28" text-anchor="middle" font-size="4" fill="white">logo_firmy_v3</text>
+        </g>
+
+        <!-- rząd 2: 4 koła (naklejka_circle 60×60) -->
+        <g transform="translate(15,72)">
+          <circle cx="30" cy="30" r="30" fill="#e74c3c"/>
+          <circle cx="30" cy="30" r="30" fill="none" stroke="#00e676" stroke-width="0.3"/>
+        </g>
+        <g transform="translate(78,72)">
+          <circle cx="30" cy="30" r="30" fill="#e74c3c"/>
+          <circle cx="30" cy="30" r="30" fill="none" stroke="#00e676" stroke-width="0.3"/>
+        </g>
+        <g transform="translate(141,72)">
+          <circle cx="30" cy="30" r="30" fill="#e74c3c"/>
+          <circle cx="30" cy="30" r="30" fill="none" stroke="#00e676" stroke-width="0.3"/>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--preview-cut)"></span> CutContour</span>
+        <span><span class="dot" style="background:black"></span> OPOS</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <div class="summary">
+      <strong>4 pliki</strong> · 32 naklejki na <strong>1 arkuszu A4</strong> · 78% utylizacji ·
+      <span style="color: var(--warning)">1 ostrzeżenie</span>
+    </div>
+    <div class="actions">
+      <button class="btn">Zapisz projekt...</button>
+      <button class="btn">Eksportuj pojedyncze PDF</button>
+      <button class="btn primary">→ Eksportuj do plotera (print + cut)</button>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<div class="explainer" style="margin-top: 20px; margin-bottom: 30px;">
+  <strong>Co zostaje tak samo:</strong>
+  <ul>
+    <li>Wszystkie algorytmy (detect_contour, bleed, export, nesting) — bez zmian</li>
+    <li>Zasady PDF/X-4, spot color CutContour/FlexCut, FOGRA39 — identyczne</li>
+    <li>CLI (bleed_cli.py) — bez zmian, dalej batch</li>
+    <li>Możliwość rozbicia na osobne fazy: operator nadal może kliknąć "Eksportuj pojedyncze PDF" (tylko bleed) jeśli nie chce arkusza</li>
+  </ul>
+  <strong>Czego wymagałaby implementacja:</strong>
+  <ul>
+    <li>Rewrite main_window.py (~200 nowych linii) + nowy plik workspace_tab.py</li>
+    <li>Przeniesienie form fields z bleed_tab.py + nest_tab.py do jednego panelu</li>
+    <li>Sygnał pipeline progress (QThread emit per etap, nie tylko per plik)</li>
+    <li>Live utility calculation (wymaga pkt 1 listy — policzenia utylizacji w nesting.py)</li>
+    <li>Opcjonalnie: projekty .bleedproj (pkt 5 listy) — plik JSON z plikami + parametrami</li>
+    <li>Szacunek: 2-3 dni roboty, ~400 linii nowych + refaktoryzacja istniejącego GUI</li>
+  </ul>
+  <strong>Ryzyka:</strong>
+  <ul>
+    <li>Regresja funkcji, które w 2 tabach były naturalnie rozdzielone (FlexCut dialog, crop preview)</li>
+    <li>Więcej elementów na jednym ekranie = może być zatłoczone na małych monitorach (poniżej 1280px)</li>
+    <li>Utrata osobnych workers (BleedWorker, NestWorker) — trzeba zrobić PipelineWorker</li>
+  </ul>
+</div>
+
+</body>
+</html>

@@ -172,6 +172,57 @@ class Sheet:
         x0, y0, x1, y1 = self.printable_rect_mm
         return y1 - y0
 
+    @property
+    def used_area_mm2(self) -> float:
+        """Sumaryczna powierzchnia naklejek na arkuszu (z uwzglednieniem rotacji).
+
+        Liczymy trim bbox (width_mm × height_mm) kazdego placement — bez bleedu.
+        Dla rotacji 90° wymiary sa wymieniane.
+        """
+        total = 0.0
+        for pl in self.placements:
+            w = pl.sticker.width_mm
+            h = pl.sticker.height_mm
+            if pl.rotation_deg in (90, 90.0):
+                w, h = h, w
+            total += w * h
+        return total
+
+    @property
+    def printable_area_mm2(self) -> float:
+        """Powierzchnia obszaru drukowania (po odjeciu marginesow i mark_zone)."""
+        return max(0.0, self.printable_width_mm * self.printable_height_mm)
+
+    @property
+    def utilization_percent(self) -> float:
+        """Procent utylizacji materialu w obszarze drukowania (0-100).
+
+        100% = caly printable area zajety naklejkami (idealne dopasowanie).
+        Typowe wartosci: 70-90% dla dobrze ulozonych zestawow.
+        Zwraca 0.0 gdy brak placements lub printable_area=0.
+        """
+        area = self.printable_area_mm2
+        if area <= 0:
+            return 0.0
+        return min(100.0, 100.0 * self.used_area_mm2 / area)
+
+    @property
+    def sheet_area_mm2(self) -> float:
+        """Pelna powierzchnia arkusza (wraz z marginesami)."""
+        return max(0.0, self.width_mm * self.height_mm)
+
+    @property
+    def utilization_of_sheet_percent(self) -> float:
+        """Procent utylizacji liczonej wobec pelnej powierzchni arkusza.
+
+        Nizszy niz utilization_percent (bo wlicza marginesy + mark zone).
+        Bardziej przydatny do realnej oceny marnowania materialu.
+        """
+        area = self.sheet_area_mm2
+        if area <= 0:
+            return 0.0
+        return min(100.0, 100.0 * self.used_area_mm2 / area)
+
 
 @dataclass
 class Job:

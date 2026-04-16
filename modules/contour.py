@@ -1801,6 +1801,11 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
 
     UWAGA: pdf_doc pozostaje otwarty! Zamknięcie po stronie konsumenta.
 
+    Cache: dla PDF i plikow rastrowych cut_segments sa cache'owane
+    na podstawie sha1(path + mtime + size + engine). Cache hit pomija
+    najdrozszy krok (tracing konturu) i typowo konczy sie w <10ms.
+    EPS/SVG NIE sa cache'owane (wymagaja konwersji tmp_pdf).
+
     Returns:
         list[Sticker] — jeden per prawidłowa strona
     """
@@ -1808,10 +1813,30 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
         raise FileNotFoundError(f"Plik nie istnieje: {pdf_path}")
 
     original_path = pdf_path
+    ext = os.path.splitext(pdf_path)[1].lower()
+    _cacheable = ext in (".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")
+
+    # Cache check (tylko PDF + raster, nie EPS/SVG).
+    if _cacheable:
+        from modules import cache as _cache
+        cached = _cache.load(pdf_path, config.CONTOUR_ENGINE)
+        if cached is not None:
+            # Re-open pdf_doc dla PDF (raster uzywa raster_path, nie pdf_doc).
+            # Dla raster_only PDF wszystkie stickers wspoldziela jeden pdf_doc.
+            reopened_doc = None
+            for s in cached:
+                if s.raster_path is None and reopened_doc is None:
+                    reopened_doc = fitz.open(pdf_path)
+                s.pdf_doc = reopened_doc
+            return cached
 
     # === ŚCIEŻKA 1: Pliki rastrowe (PNG/JPG/TIFF/BMP/WEBP) ===
     if detect_type(pdf_path) == FileType.RASTER:
-        return [_detect_raster(pdf_path)]
+        result = [_detect_raster(pdf_path)]
+        if _cacheable:
+            from modules import cache as _cache
+            _cache.save(pdf_path, config.CONTOUR_ENGINE, result)
+        return result
 
     # === ŚCIEŻKI 2-3: EPS/SVG → tmp PDF ===
     pdf_path, tmp_pdf, svg_contour, svg_w_mm, svg_h_mm = _prepare_pdf_path(pdf_path)
@@ -1860,5 +1885,11 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     if not stickers:
         doc.close()
         raise ValueError(f"Brak prawidlowych stron w {pdf_path}")
+
+    # Zapis do cache (tylko PDF; EPS/SVG maja tmp_pdf inny od original_path).
+    # Sprawdzamy rozszerzenie ORYGINALNEGO pliku, nie tmp_pdf.
+    if _cacheable and not tmp_pdf:
+        from modules import cache as _cache
+        _cache.save(original_path, config.CONTOUR_ENGINE, stickers)
 
     return stickers

@@ -593,7 +593,35 @@ class NestTab(QWidget):
         self._nest_btn.setText("Generuj arkusze")
         self._progress.setVisible(False)
         total = sum(len(s.placements) for s in job.sheets)
-        self._status_label.setText(f"Gotowe — {total} naklejek na {len(job.sheets)} arkusz(ach)")
+
+        # Utylizacja materialu — srednia wazona po arkuszach
+        # (printable_area uwzglednia marginesy + mark_zone).
+        if job.sheets:
+            used = sum(s.used_area_mm2 for s in job.sheets)
+            printable = sum(s.printable_area_mm2 for s in job.sheets)
+            sheet_total = sum(s.sheet_area_mm2 for s in job.sheets)
+            util_print = 100.0 * used / printable if printable > 0 else 0.0
+            util_sheet = 100.0 * used / sheet_total if sheet_total > 0 else 0.0
+            # Wlasna ocena (kolor w logu)
+            emoji = "✓" if util_sheet >= 65 else ("·" if util_sheet >= 45 else "⚠")
+            self._status_label.setText(
+                f"Gotowe — {total} naklejek na {len(job.sheets)} arkusz(ach) · "
+                f"utylizacja {util_sheet:.0f}% arkusza ({util_print:.0f}% obszaru druku)"
+            )
+            self._log(
+                f"{emoji} Utylizacja materialu: {util_sheet:.1f}% arkusza "
+                f"({util_print:.1f}% obszaru drukowania, {used:.0f}/{sheet_total:.0f} mm²)"
+            )
+            if util_sheet < 45:
+                self._log(
+                    "  ⚠ Niska utylizacja — rozwaz zwiekszenie liczby powtorzen "
+                    "lub mniejszy format arkusza."
+                )
+        else:
+            self._status_label.setText(
+                f"Gotowe — {total} naklejek na {len(job.sheets)} arkusz(ach)"
+            )
+
         self._last_job = job
         self._last_pdfs = sheet_pdfs
         self._last_bleed = 0.0
