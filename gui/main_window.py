@@ -77,10 +77,13 @@ class MainWindow(QMainWindow):
 
         self._splitter.addWidget(left)
 
-        # Prawy panel — preview (placeholder)
+        # Prawy panel — preview. Niezalezne panele dla bleed i nest
+        # (kazda zakladka ma wlasny stan podgladu, nie nadpisuja sie nawzajem).
         self._preview_container = QWidget()
         self._preview_layout = QVBoxLayout(self._preview_container)
         self._preview_layout.setContentsMargins(0, 4, 4, 4)
+        self._preview_stack = QStackedWidget()
+        self._preview_layout.addWidget(self._preview_stack)
         self._splitter.addWidget(self._preview_container)
 
         # Proporcje splitera
@@ -93,14 +96,15 @@ class MainWindow(QMainWindow):
         # === Inicjalizacja zakładek (lazy) ===
         self._bleed_tab = None
         self._nest_tab = None
-        self._preview_panel = None
+        self._bleed_preview = None  # PreviewPanel dla zakladki Bleed (split-view on)
+        self._nest_preview = None   # PreviewPanel dla zakladki Nest (split-view off)
         self._init_tabs()
         self._activate_tab("bleed")
 
     # --- Tab management ---
 
     def _init_tabs(self):
-        """Tworzy zakładki i preview panel."""
+        """Tworzy zakładki i dwa niezalezne preview panels."""
         from gui.bleed_tab import BleedTab
         from gui.nest_tab import NestTab
         from gui.preview_panel import PreviewPanel
@@ -110,16 +114,22 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._bleed_tab)   # index 0
         self._stack.addWidget(self._nest_tab)     # index 1
 
-        self._preview_panel = PreviewPanel()
-        self._preview_layout.addWidget(self._preview_panel)
+        # Dwa niezalezne panele podgladu — kazdy z wlasnym stanem.
+        # Bleed: split-view wlaczony (przed/po oryginalu vs wynik).
+        # Nest:  split-view wylaczony (brak oryginalu dla arkusza) —
+        #        przycisk "Przed/Po" w ogole nie powstaje.
+        self._bleed_preview = PreviewPanel(split_enabled=True)
+        self._nest_preview = PreviewPanel(split_enabled=False)
+        self._preview_stack.addWidget(self._bleed_preview)  # index 0
+        self._preview_stack.addWidget(self._nest_preview)   # index 1
 
-        # Połączenia: po przetworzeniu → podgląd
+        # Połączenia: po przetworzeniu → podgląd w swoim panelu
         self._bleed_tab.preview_ready.connect(self._on_bleed_preview)
         self._nest_tab.preview_ready.connect(self._on_nest_preview)
 
-        # Crop preview: live update w panelu podglądu
-        self._bleed_tab.crop_preview_requested.connect(self._preview_panel.show_crop_preview)
-        self._preview_panel.crop_offset_changed.connect(self._bleed_tab.update_crop_offset)
+        # Crop preview: live update tylko w panelu bleed
+        self._bleed_tab.crop_preview_requested.connect(self._bleed_preview.show_crop_preview)
+        self._bleed_preview.crop_offset_changed.connect(self._bleed_tab.update_crop_offset)
 
         # Wyczyść z dowolnej zakładki → clear all
         self._bleed_tab._file_section.clear_requested.connect(self.clear_all)
@@ -138,6 +148,8 @@ class MainWindow(QMainWindow):
         self._active_tab = key
         idx = 0 if key == "bleed" else 1
         self._stack.setCurrentIndex(idx)
+        # Zsynchronizuj panel podgladu z aktywna zakladka
+        self._preview_stack.setCurrentIndex(idx)
 
         # Style nav buttons
         for k, btn in self._nav_buttons.items():
@@ -148,31 +160,33 @@ class MainWindow(QMainWindow):
     # --- Preview slots ---
 
     def _on_bleed_preview(self, input_infos: list, output_paths: list):
-        """Slot: bleed zakończony → pokaż podgląd + dodaj do nest.
+        """Slot: bleed zakończony → pokaż podgląd w panelu bleed + dodaj do nest.
 
         input_infos: [(src_path, page_idx), ...] parallel do output_paths.
         """
-        if self._preview_panel:
-            self._preview_panel.show_bleed_results(output_paths, input_infos=input_infos)
+        if self._bleed_preview:
+            self._bleed_preview.show_bleed_results(output_paths, input_infos=input_infos)
         # Auto-agregacja: dodaj outputy bleed do listy plików w nest
         if self._nest_tab and output_paths:
             self._nest_tab.add_files(output_paths)
 
     def _on_nest_preview(self, job, sheet_pdfs, bleed_mm):
-        """Slot: nest zakończony → pokaż podgląd arkuszy."""
-        if self._preview_panel:
-            self._preview_panel.show_nest_job(job, sheet_pdfs, bleed_mm)
+        """Slot: nest zakończony → pokaż podgląd arkuszy w panelu nest."""
+        if self._nest_preview:
+            self._nest_preview.show_nest_job(job, sheet_pdfs, bleed_mm)
 
     # --- Clear all ---
 
     def clear_all(self):
-        """Wyczyść pliki z obu zakładek + podgląd + log."""
+        """Wyczyść pliki z obu zakładek + oba podgladu + log."""
         if self._bleed_tab:
             self._bleed_tab.clear()
         if self._nest_tab:
             self._nest_tab.clear()
-        if self._preview_panel:
-            self._preview_panel.clear()
+        if self._bleed_preview:
+            self._bleed_preview.clear()
+        if self._nest_preview:
+            self._nest_preview.clear()
         self.log_panel.clear_log()
 
     # --- Convenience ---

@@ -138,3 +138,44 @@ def test_split_render_creates_items_in_scene(qapp, two_pdfs):
     # Co najmniej 2 elementy (input + output pixmapy)
     items = panel._scene.items()
     assert len(items) >= 2
+
+
+# ============================================================================
+# split_enabled=False — tryb dla zakladki Nest (brak przycisku "Przed/Po")
+# ============================================================================
+
+def test_panel_without_split_has_no_button(qapp):
+    """PreviewPanel(split_enabled=False) nie tworzy przycisku 'Przed/Po'."""
+    from gui.preview_panel import PreviewPanel
+    panel = PreviewPanel(split_enabled=False)
+    assert panel._split_btn is None
+
+
+def test_panel_without_split_bleed_results_does_not_crash(qapp, two_pdfs):
+    """show_bleed_results na panelu bez split_enabled nie crashuje (None guard)."""
+    from gui.preview_panel import PreviewPanel
+    panel = PreviewPanel(split_enabled=False)
+    panel.show_bleed_results([two_pdfs[1]], input_paths=[two_pdfs[0]])
+    assert len(panel._results) == 1
+    assert panel._split_view is False
+
+
+def test_panel_without_split_clear_does_not_crash(qapp, two_pdfs):
+    from gui.preview_panel import PreviewPanel
+    panel = PreviewPanel(split_enabled=False)
+    panel.show_bleed_results([two_pdfs[1]], input_paths=[two_pdfs[0]])
+    panel.clear()
+    assert len(panel._results) == 0
+
+
+def test_panel_without_split_custom_placeholder(qapp):
+    from gui.preview_panel import PreviewPanel
+    panel = PreviewPanel(split_enabled=False, placeholder_text="test placeholder")
+    assert panel._placeholder.text() == "test placeholder"
+
+
+def test_panel_without_split_default_placeholder_mentions_arkusze(qapp):
+    """Domyslny placeholder dla nest mentions 'arkusze' zamiast 'bleed'."""
+    from gui.preview_panel import PreviewPanel
+    panel = PreviewPanel(split_enabled=False)
+    assert "arkusze" in panel._placeholder.text().lower()

@@ -118,8 +118,17 @@ class PreviewPanel(QWidget):
 
     crop_offset_changed = pyqtSignal(str, tuple)  # (filepath, (ox, oy))
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, split_enabled: bool = True,
+                 placeholder_text: str | None = None):
+        """
+        Args:
+            split_enabled: czy tworzyć przycisk "Przed/Po" (split-view).
+                True dla zakładki Bleed (porównanie oryginału z wynikiem),
+                False dla zakładki Nest (podgląd arkusza — brak "przed").
+            placeholder_text: tekst placeholder gdy brak podglądu.
+        """
         super().__init__(parent)
+        self._split_enabled = split_enabled
         self._results: list[dict] = []
         self._job = None
         self._sheet_pdfs: list[tuple] = []
@@ -156,16 +165,20 @@ class PreviewPanel(QWidget):
         toolbar.addWidget(self._next_btn)
 
         # Split view toggle — podgląd przed/po side-by-side (tylko bleed mode)
-        self._split_btn = QPushButton("Przed/Po")
-        self._split_btn.setCheckable(True)
-        self._split_btn.setFixedHeight(26)
-        self._split_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._split_btn.setToolTip(
-            "Podgląd side-by-side: oryginał (lewo) vs wynik z bleedem (prawo)"
-        )
-        self._split_btn.clicked.connect(self._on_toggle_split)
-        self._split_btn.setVisible(False)  # widoczny tylko gdy _results
-        toolbar.addWidget(self._split_btn)
+        # W trybie nest ten przycisk nie powstaje w ogóle.
+        if self._split_enabled:
+            self._split_btn = QPushButton("Przed/Po")
+            self._split_btn.setCheckable(True)
+            self._split_btn.setFixedHeight(26)
+            self._split_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._split_btn.setToolTip(
+                "Podgląd side-by-side: oryginał (lewo) vs wynik z bleedem (prawo)"
+            )
+            self._split_btn.clicked.connect(self._on_toggle_split)
+            self._split_btn.setVisible(False)  # widoczny tylko gdy _results
+            toolbar.addWidget(self._split_btn)
+        else:
+            self._split_btn = None
 
         toolbar.addStretch()
 
@@ -209,7 +222,12 @@ class PreviewPanel(QWidget):
         layout.addWidget(self._view, stretch=1)
 
         # Placeholder (overlay na view — center)
-        self._placeholder = QLabel("Przeciągnij pliki i kliknij\n\"Generuj bleed\" aby zobaczyć podgląd")
+        default_placeholder = (
+            "Przeciągnij pliki i kliknij\n\"Generuj bleed\" aby zobaczyć podgląd"
+            if self._split_enabled else
+            "Dodaj pliki i kliknij \"Generuj arkusze\"\naby zobaczyć podgląd"
+        )
+        self._placeholder = QLabel(placeholder_text or default_placeholder)
         self._placeholder.setObjectName("preview-placeholder")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -275,12 +293,13 @@ class PreviewPanel(QWidget):
             except Exception:
                 pass
 
-        # Split-view dostępny tylko gdy mamy input paths
+        # Split-view dostępny tylko gdy mamy input paths i panel go obsługuje
         has_inputs = any(r.get("input_path") for r in self._results)
-        self._split_btn.setVisible(has_inputs)
-        if not has_inputs:
-            self._split_btn.setChecked(False)
-            self._split_view = False
+        if self._split_btn is not None:
+            self._split_btn.setVisible(has_inputs)
+            if not has_inputs:
+                self._split_btn.setChecked(False)
+                self._split_view = False
 
         self._update_nav()
         self._render_current()
@@ -299,8 +318,9 @@ class PreviewPanel(QWidget):
         self._current_idx = 0
         self._cache.clear()
         # Split-view ma sens tylko w trybie bleed (przed/po oryginału)
-        self._split_btn.setVisible(False)
-        self._split_btn.setChecked(False)
+        if self._split_btn is not None:
+            self._split_btn.setVisible(False)
+            self._split_btn.setChecked(False)
         self._split_view = False
         self._update_nav()
         self._render_current()
@@ -311,8 +331,9 @@ class PreviewPanel(QWidget):
         self._sheet_pdfs = []
         self._cache.clear()
         self._scene.clear()
-        self._split_btn.setVisible(False)
-        self._split_btn.setChecked(False)
+        if self._split_btn is not None:
+            self._split_btn.setVisible(False)
+            self._split_btn.setChecked(False)
         self._split_view = False
         self._update_nav()
 
