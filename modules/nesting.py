@@ -767,9 +767,19 @@ def nest_job(
     # Konsolidacja: przenies naklejki z ostatniego arkusza do wczesniejszych
     # (nie dla trybu "separate" — tam kazdy wzor ma swoj arkusz)
     # -------------------------------------------------------------------
-    # Konsolidacja tylko w trybie "mix" — w trybie "group" psuloby kolejnosc wzorcow
-    if len(job.sheets) >= 2 and grouping_mode == "mix":
-        _consolidate_last_sheet(job, area_w, area_h, gap_mm, origin_x, origin_y, is_roll, top, mark_zone_mm, bleed2)
+    # Tryb "mix": pelna konsolidacja (dowolny wzor -> dowolny arkusz).
+    # Tryb "group": konsolidacja z ograniczeniem do tego samego source_path —
+    #   naklejki z ostatniego arkusza wracaja tylko na arkusze ktore juz
+    #   zawieraja ten sam wzor. Nie mieszamy grup, ale wykorzystujemy wolne
+    #   miejsce po rotacji 90° (np. 35 kopii 170×40mm: 3. arkusz z niepelna
+    #   grupa moze wciagnac rotacje do 1./2. arkusza tego samego wzoru).
+    if len(job.sheets) >= 2 and grouping_mode in ("mix", "group"):
+        same_source_only = (grouping_mode == "group")
+        _consolidate_last_sheet(
+            job, area_w, area_h, gap_mm, origin_x, origin_y,
+            is_roll, top, mark_zone_mm, bleed2,
+            same_source_only=same_source_only,
+        )
 
     # -------------------------------------------------------------------
     # Centruj zawartosc na kazdym arkuszu
@@ -816,6 +826,7 @@ def _consolidate_last_sheet(
     top: float,
     mark_zone_mm: float,
     bleed2: float = 0.0,
+    same_source_only: bool = False,
 ):
     """Przenosi naklejki z ostatniego arkusza do wczesniejszych.
 
@@ -826,6 +837,10 @@ def _consolidate_last_sheet(
     Kluczowe: shelfy sa budowane RAZ per arkusz i mutowane w trakcie
     przenoszenia (aktualizacja cursor_x), wiec kolejne naklejki widza
     aktualny stan.
+
+    same_source_only: gdy True (tryb "group"), naklejka jest przenoszona
+    TYLKO na arkusze ktore juz zawieraja ten sam source_path — chroni
+    grupowanie wzorow przed wymieszaniem.
     """
     last_sheet = job.sheets[-1]
     prev_sheets = job.sheets[:-1]
@@ -851,7 +866,15 @@ def _consolidate_last_sheet(
     log.info(
         f"Konsolidacja: ostatni arkusz ({len(last_sheet.placements)} nak, "
         f"{fill_ratio:.0%} zapelnienia) — probuje przeniesc do wczesniejszych"
+        + (" [same-source]" if same_source_only else "")
     )
+
+    # Indeks source_path na arkusz (tryb group) — naklejke przenosimy
+    # tylko na arkusz ktory juz ma ten wzor.
+    prev_sheet_sources: list[set[str]] = [
+        {p.sticker.source_path for p in ps.placements}
+        for ps in prev_sheets
+    ]
 
     # FIX: odbuduj shelvy z uwzglednieniem bleed2
     prev_shelves_map: list[list[_Shelf]] = [
@@ -880,6 +903,9 @@ def _consolidate_last_sheet(
         sticker = placement.sticker
 
         for sheet_idx, prev_sheet in enumerate(prev_sheets):
+            # Tryb group: przenosimy tylko na arkusz ktory juz ma ten wzor.
+            if same_source_only and sticker.source_path not in prev_sheet_sources[sheet_idx]:
+                continue
             prev_shelves = prev_shelves_map[sheet_idx]
 
             # 1. Backfill w istniejacych shelfach

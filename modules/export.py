@@ -2393,8 +2393,8 @@ def _make_seg_key(sx: float, sy: float, ex: float, ey: float,
 
 def _deduplicate_cut_segments(
     placements: list[Placement],
-    flexcut_h_mm: list[float],
-    flexcut_v_mm: list[float],
+    flexcut_h: list[tuple[float, float, float]],
+    flexcut_v: list[tuple[float, float, float]],
     bleed_mm: float,
     gap_mm: float = 5.0,
     tolerance_mm: float = 0.3,
@@ -2403,6 +2403,11 @@ def _deduplicate_cut_segments(
 
     Gdy gap=0, sąsiednie naklejki mają wspólne krawędzie — te same segmenty
     są generowane dwukrotnie. Ta funkcja zachowuje tylko pierwszą kopię.
+
+    flexcut_h / flexcut_v: lista (position_mm, start_mm, end_mm) — pelny
+    span kazdej linii FlexCut. Filtr uzywa span'u zeby usunac kiss-cut
+    TYLKO gdy faktycznie lezy W ZAKRESIE FlexCut (nie tylko ma identyczna
+    wspolrzedna w innym obszarze arkusza).
 
     Pipeline:
       1. Dla każdego placement: konwertuj segmenty do sheet coords (mm)
@@ -2423,12 +2428,17 @@ def _deduplicate_cut_segments(
             result.append((placement, []))
             continue
 
-        # Filtruj FlexCut (istniejąca logika)
+        # Filtr kiss-cut na liniach FlexCut.
+        # Usuwamy kiss-cut TYLKO gdy DOKLADNIE pokrywa sie z linia FlexCut
+        # (tolerancja ~0.3mm — szum pt<->mm) I lezy W ZAKRESIE spanu FlexCut.
+        # Dwukrotne ciecie w tym samym miejscu uszkadza ploter/material.
+        # Kiss-cut na tej samej wspolrzednej ale w innej czesci arkusza
+        # (poza spanem FlexCut) zostaje zachowane.
         segments = sticker.cut_segments
-        if flexcut_h_mm or flexcut_v_mm:
+        if flexcut_h or flexcut_v:
             segments = _filter_segments_on_flexcut(
                 segments, placement, sticker, bleed_mm,
-                flexcut_h_mm, flexcut_v_mm, gap_mm,
+                flexcut_h, flexcut_v, gap_mm,
             )
 
         # Deduplikacja
@@ -2471,27 +2481,37 @@ def _filter_segments_on_flexcut(
     placement: Placement,
     sticker: Sticker,
     bleed_mm: float,
-    flexcut_h_mm: list[float],
-    flexcut_v_mm: list[float],
+    flexcut_h: list[tuple[float, float, float]],
+    flexcut_v: list[tuple[float, float, float]],
     gap_mm: float = 5.0,
 ) -> list:
-    """Filtruje segmenty CutContour — usuwa te leżące na liniach FlexCut.
+    """Filtruje segmenty CutContour — usuwa te leżące DOKŁADNIE na liniach FlexCut.
 
-    CutContour jest na krawędzi trim (bleed_mm do wewnątrz footprintu),
-    a FlexCut jest na krawędzi footprintu ± gap/2. Offset między nimi
-    wynosi bleed_mm + gap_mm/2. Tolerancja musi to uwzględniać.
+    Segment jest usuwany gdy:
+      1. Ma orientacje zgodna z FlexCut (horizontal/vertical)
+      2. Jego wspolrzedna pokrywa sie z pozycja FlexCut (tol = 0.3mm —
+         szum float-point pt<->mm)
+      3. Jego zakres nakladkuje sie ze spanem FlexCut w drugiej osi
+         (inaczej to kiss-cut w innym obszarze arkusza o przypadkowo
+         zgodnej wspolrzednej — MUSI zostac zachowany)
 
-    Segment jest usuwany jeśli oba jego punkty końcowe mają tę samą
-    współrzędną Y (segment poziomy) lub X (pionowy) i ta współrzędna
-    pokrywa się z pozycją FlexCut w granicach tolerancji.
+    flexcut_h/flexcut_v: lista (position_mm, start_mm, end_mm).
+
+    Stara wersja (tol = bleed + gap/2 + 1 bez span-check) dwukrotnie
+    zawodzila:
+      - tolerancja zbyt szeroka → usuwala kiss-cut odsuniete o gap/2
+      - brak span-check → usuwala kiss-cut naklejek w innym obszarze
+        arkusza ale o przypadkowo identycznej wspolrzednej.
     """
-    if not flexcut_h_mm and not flexcut_v_mm:
+    if not flexcut_h and not flexcut_v:
         return segments
 
-    # Tolerancja: offset CutContour vs FlexCut = bleed + gap/2, + margines 1mm
-    tol = bleed_mm + gap_mm / 2.0 + 1.0
-    # Tolerancja na sprawdzenie "segment jest prostą linią" (mały epsilon)
+    # Tolerancja koincydencji — tylko szum float-point pt<->mm konwersji.
+    tol = 0.3
+    # Tolerancja na sprawdzenie "segment jest prostą linią" (mały epsilon).
     line_tol = 1.0
+    # Margines overlap span — mikro-overlap sasiadujacych jednostek cie
+    span_tol = 0.3
 
     pt_to_mm_x = sticker.width_mm / sticker.page_width_pt if sticker.page_width_pt > 0 else 0
     pt_to_mm_y = sticker.height_mm / sticker.page_height_pt if sticker.page_height_pt > 0 else 0
@@ -2543,18 +2563,33 @@ def _filter_segments_on_flexcut(
         # Segment poziomy? (oba punkty mają podobne Y)
         if abs(sy - ey) < line_tol:
             avg_y = (sy + ey) / 2
-            for fy in flexcut_h_mm:
-                if abs(avg_y - fy) < tol:
-                    skip = True
-                    break
+            seg_x0 = min(sx, ex)
+            seg_x1 = max(sx, ex)
+            for fy, fstart, fend in flexcut_h:
+                if abs(avg_y - fy) >= tol:
+                    continue
+                # Filtruj TYLKO gdy segment mieści się W CAŁOŚCI w span FlexCut.
+                # Częściowy overlap (np. kiss-cut naklejki wystaje poza FlexCut):
+                # zachowaj cały segment — dwukrotne cięcie w strefie overlap
+                # jest akceptowalne (krótsze niż FlexCut), ale obcięcie całego
+                # segmentu straciłoby kiss-cut w części wystającej.
+                if seg_x0 < fstart - span_tol or seg_x1 > fend + span_tol:
+                    continue  # segment wystaje poza FlexCut, zachowaj
+                skip = True
+                break
 
         # Segment pionowy? (oba punkty mają podobne X)
         if not skip and abs(sx - ex) < line_tol:
             avg_x = (sx + ex) / 2
-            for fx in flexcut_v_mm:
-                if abs(avg_x - fx) < tol:
-                    skip = True
-                    break
+            seg_y0 = min(sy, ey)
+            seg_y1 = max(sy, ey)
+            for fx, fstart, fend in flexcut_v:
+                if abs(avg_x - fx) >= tol:
+                    continue
+                if seg_y0 < fstart - span_tol or seg_y1 > fend + span_tol:
+                    continue  # segment wystaje poza FlexCut, zachowaj
+                skip = True
+                break
 
         if not skip:
             filtered.append(seg)
@@ -2911,130 +2946,110 @@ def _apply_outer_bleed(
     bleed_mm: float,
     outer_bleed_mm: float,
 ) -> None:
-    """Generuje zewnętrzny spad wokół grupy naklejek.
+    """Generuje zewnetrzny spad po obwodzie GRUPY naklejek.
 
-    Algorytm:
-      1. Renderuje aktualną stronę (ze wszystkimi naklejkami) jako raster
-      2. Cropuje do bbox naklejek
-      3. Rozszerza canvas o outer_bleed_mm (nearest-neighbor dilation)
-      4. Wstawia rozszerzony obraz jako tło (za naklejkami — na dole content streamu)
+    Algorytm (Chebyshev EDT + nearest-mask-pixel lookup):
+      1. Render strony jako raster 300 DPI.
+      2. Zbuduj binarna maske `mask` — unia prostokatow footprintow
+         placementow. Definiuje ksztalt grupy.
+      3. `scipy.ndimage.distance_transform_cdt(~mask, metric='chessboard',
+         return_indices=True)` — dla kazdego piksela poza maska zwraca
+         Chebyshev-dystans do maski + indeksy najblizszego piksela maski.
+      4. Piksele z dist <= bleed_px dostaja kolor z najblizszego piksela
+         maski (INDEKSY podane przez EDT).
+      5. Wstaw zmodyfikowany raster jako tlo (overlay=False).
 
-    Uwzględnia aktualny stan obrotów (renderuje to co jest w PDF).
+    Wlasnosci:
+      - Kolor spadu pobierany z NAJBLIZSZEGO piksela maski — dla liniowej
+        krawedzi propagacja PROSTOPADLA (pixel nad krawedzia -> pixel
+        bezposrednio pod nim). Dla naroznika — kolor piksela naroznikowego.
+        Bez diagonalnych artefaktow "skosu".
+      - Chebyshev metric -> SZKADRATOWE narozniki spadu (2mm × 2mm).
+      - Jednoprzebiegowa dilacja przez C-zoptymalizowane scipy — znaczaco
+         szybsze niz iteracyjny numpy (>10x na typowym arkuszu).
     """
     from PIL import Image as PILImage
     import numpy as np
+    from scipy.ndimage import distance_transform_cdt
 
     sheet_w_pt = sheet.width_mm * MM_TO_PT
     sheet_h_pt = sheet.height_mm * MM_TO_PT
 
-    # Oblicz bbox naklejek
     bleed2 = 2 * bleed_mm
     def _pw(p):
         return p.sticker.height_mm + bleed2 if int(p.rotation_deg) % 360 in (90, 270) else p.sticker.width_mm + bleed2
     def _ph(p):
         return p.sticker.width_mm + bleed2 if int(p.rotation_deg) % 360 in (90, 270) else p.sticker.height_mm + bleed2
 
-    x0_mm = min(p.x_mm for p in sheet.placements)
-    y0_mm = min(p.y_mm for p in sheet.placements)
-    x1_mm = max(p.x_mm + _pw(p) for p in sheet.placements)
-    y1_mm = max(p.y_mm + _ph(p) for p in sheet.placements)
-
     ob_mm = outer_bleed_mm
-    ob_pt = ob_mm * MM_TO_PT
 
     # Render strony jako raster (300 DPI)
     dpi = 300
+    scale = dpi / 72.0
+    bleed_px = max(1, int(ob_mm * dpi / 25.4))
     pix = page.get_pixmap(dpi=dpi, alpha=False)
     img = PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
     arr = np.array(img)
+    H, W = arr.shape[:2]
 
-    # Przelicz bbox na piksele
-    scale = dpi / 72.0
-    # PDF y-up, pixmap y-down
-    px0 = int(x0_mm * MM_TO_PT * scale)
-    py0 = int((sheet_h_pt - y1_mm * MM_TO_PT) * scale)
-    px1 = int(x1_mm * MM_TO_PT * scale)
-    py1 = int((sheet_h_pt - y0_mm * MM_TO_PT) * scale)
+    # Memory guard — pelna strona + maska
+    _check_raster_memory(W, H, channels=3, context="outer bleed union-mask (sheet)")
 
-    # Clamp
-    px0 = max(0, px0)
-    py0 = max(0, py0)
-    px1 = min(arr.shape[1], px1)
-    py1 = min(arr.shape[0], py1)
+    # Zbuduj maske unii placementow (prostokaty footprintow)
+    mask = np.zeros((H, W), dtype=bool)
+    for p in sheet.placements:
+        pw_mm = _pw(p)
+        ph_mm = _ph(p)
+        px0 = int(round(p.x_mm * MM_TO_PT * scale))
+        py0 = int(round((sheet_h_pt - (p.y_mm + ph_mm) * MM_TO_PT) * scale))
+        px1 = int(round((p.x_mm + pw_mm) * MM_TO_PT * scale))
+        py1 = int(round((sheet_h_pt - p.y_mm * MM_TO_PT) * scale))
+        px0 = max(0, px0); py0 = max(0, py0)
+        px1 = min(W, px1); py1 = min(H, py1)
+        if px1 > px0 and py1 > py0:
+            mask[py0:py1, px0:px1] = True
 
-    if px1 <= px0 or py1 <= py0:
-        log.warning("Outer bleed: bbox naklejek pusty — pomijam")
+    if not mask.any():
+        log.warning("Outer bleed: brak placementow — pomijam")
         return
 
-    # Crop do bbox
-    crop = arr[py0:py1, px0:px1].copy()
-    ch, cw = crop.shape[:2]
-
-    # Wypełnij wewnętrzne białe gapy (sub-pikselowe luki między naklejkami)
-    # Iteracyjny nearest-neighbor fill: białe piksele zastępowane kolorem sąsiada
-    # Używa slice-based shift (NIE np.roll — roll zawija krawędzie!)
+    # Pre-fill: sub-pikselowa rasteryzacja powoduje ze skrajne piksele
+    # WEWNATRZ maski (brzeg placement rect) sa BIALE mimo ze sticker
+    # koncy sie tam. Zastepujemy biale piksele wewnatrz maski kolorem
+    # niebialego piksela maski (EDT wynajdzie najblizszy niebialy).
     WHITE_THRESH = 245
-    ch, cw = crop.shape[:2]
-    for _iter in range(5):  # max 5 iteracji — wypełnia gapy do ~5px
-        mask = np.all(crop > WHITE_THRESH, axis=2)
-        if not mask.any():
-            break
-        filled = False
-        # (src_slice_y, src_slice_x, dst_slice_y, dst_slice_x)
-        shifts = [
-            (slice(1, ch), slice(None), slice(0, ch - 1), slice(None)),    # góra (dy=-1)
-            (slice(0, ch - 1), slice(None), slice(1, ch), slice(None)),    # dół (dy=+1)
-            (slice(None), slice(1, cw), slice(None), slice(0, cw - 1)),    # lewo (dx=-1)
-            (slice(None), slice(0, cw - 1), slice(None), slice(1, cw)),    # prawo (dx=+1)
-        ]
-        for sy, sx, dy, dx in shifts:
-            neighbor = crop[sy, sx]
-            neighbor_mask = np.all(neighbor > WHITE_THRESH, axis=2)
-            target_mask = mask[dy, dx]
-            fill_here = target_mask & ~neighbor_mask
-            if fill_here.any():
-                crop[dy, dx][fill_here] = neighbor[fill_here]
-                filled = True
-        if not filled:
-            break
+    # Maska "prawdziwa tresc" = pixele w masce placement ORAZ nie biale
+    content_mask = mask & ~np.all(arr > WHITE_THRESH, axis=2)
+    if content_mask.any():
+        # Dla bialych pikseli wewnatrz maski znajdz najblizsza tresc
+        dist_white, idx_white = distance_transform_cdt(
+            ~content_mask, metric='chessboard', return_indices=True
+        )
+        white_in_mask = mask & np.all(arr > WHITE_THRESH, axis=2)
+        if white_in_mask.any():
+            rr, cc = np.where(white_in_mask)
+            arr[rr, cc] = arr[idx_white[0, rr, cc], idx_white[1, rr, cc]]
 
-    # Expand canvas o bleed_px
-    bleed_px = max(1, int(ob_mm * dpi / 25.4))
-    _check_raster_memory(cw + 2 * bleed_px, ch + 2 * bleed_px, channels=3,
-                         context="outer bleed dilation (sheet)")
-    expanded = np.zeros((ch + 2 * bleed_px, cw + 2 * bleed_px, 3), dtype=np.uint8)
-    expanded[bleed_px:bleed_px + ch, bleed_px:bleed_px + cw] = crop
+    # Chebyshev EDT + indices: jeden przebieg C-zoptymalizowany.
+    # Dla kazdego piksela poza maska znajduje najblizszy (Chebyshev) piksel
+    # maski. Kolor bleedu kopiowany z tego pixela — daje PROSTOPADLA
+    # propagacje (pixel nad krawedzia dostaje kolor piksela DOKLADNIE pod
+    # nim, bez diagonalnego "skosu"). Narozniki kwadratowe (Chebyshev = max).
+    dist, idx = distance_transform_cdt(~mask, metric='chessboard', return_indices=True)
+    fill_zone = (~mask) & (dist <= bleed_px) & (dist > 0)
+    if fill_zone.any():
+        rr, cc = np.where(fill_zone)
+        arr[rr, cc] = arr[idx[0, rr, cc], idx[1, rr, cc]]
 
-    # Nearest-neighbor dilation — wypełnij bleed zone kolorem z krawędzi
-    # Góra
-    for i in range(bleed_px):
-        expanded[i, bleed_px:bleed_px + cw] = crop[0]
-    # Dół
-    for i in range(bleed_px):
-        expanded[bleed_px + ch + i, bleed_px:bleed_px + cw] = crop[-1]
-    # Lewo
-    for i in range(bleed_px):
-        expanded[:, i] = expanded[:, bleed_px]
-    # Prawo
-    for i in range(bleed_px):
-        expanded[:, bleed_px + cw + i] = expanded[:, bleed_px + cw - 1]
-
-    # Konwertuj na PIL
-    bleed_img = PILImage.fromarray(expanded)
-
-    # Rect w PDF coords
-    insert_x0 = x0_mm * MM_TO_PT - ob_pt
-    insert_y0 = sheet_h_pt - (y1_mm * MM_TO_PT + ob_pt)
-    insert_x1 = x1_mm * MM_TO_PT + ob_pt
-    insert_y1 = sheet_h_pt - (y0_mm * MM_TO_PT - ob_pt)
-    insert_rect = fitz.Rect(insert_x0, insert_y0, insert_x1, insert_y1)
-
-    # Wstaw do PDF przez bezpieczny tempfile (context manager = cleanup na finally)
+    # Wstaw rozszerzony raster jako tlo — pokrywa cala strone,
+    # ale tylko obszar unia+bleed ma content, reszta jest biala (oryginalne tlo).
+    bleed_img = PILImage.fromarray(arr)
+    insert_rect = fitz.Rect(0, 0, sheet_w_pt, sheet_h_pt)
     with _SafeTempPng(".png") as tmp:
         bleed_img.save(tmp.name)
         page.insert_image(insert_rect, filename=tmp.name, overlay=False)
 
-    log.info(f"Outer bleed: {ob_mm}mm dilation, bbox ({x0_mm:.1f},{y0_mm:.1f})-({x1_mm:.1f},{y1_mm:.1f})mm")
+    log.info(f"Outer bleed: {ob_mm}mm union-mask dilation, {len(sheet.placements)} placementow")
 
 
 def _str_to_utf16be_hex(s: str) -> str:
@@ -3139,24 +3154,29 @@ def export_sheet_cut(
     layer_config = plotter_cfg.get("cut_layers", CUT_SUMMA_LAYERS)
     ocg = _setup_cut_ocg_layers(doc_out, out_page, layer_config)
 
-    # Pozycje FlexCut linii w pt — do filtrowania CutContour
-    flexcut_h_mm = []
-    flexcut_v_mm = []
+    # Pozycje FlexCut linii w pt — do filtrowania CutContour.
+    # Zachowujemy pelne span'y (start..end) zeby filtr sprawdzal czy
+    # segment kiss-cut RZECZYWISCIE lezy W ZAKRESIE FlexCut — nie tylko
+    # ma te sama wspolrzedna. Bez tego kiss-cut naklejek poza obszarem
+    # FlexCut (ale o przypadkowej wspolrzednej identycznej z FlexCut)
+    # byly blednie usuwane.
+    flexcut_h = []  # list[(pos_mm, start_mm, end_mm)]
+    flexcut_v = []
     flexcut_h_pt = []
     flexcut_v_pt = []
     for pl in sheet.panel_lines:
         if pl.bridge_length_mm <= 0:
             continue
         if pl.axis == "horizontal":
-            flexcut_h_mm.append(pl.position_mm)
+            flexcut_h.append((pl.position_mm, pl.start_mm, pl.end_mm))
             flexcut_h_pt.append(pl.position_mm * MM_TO_PT)
         elif pl.axis == "vertical":
-            flexcut_v_mm.append(pl.position_mm)
+            flexcut_v.append((pl.position_mm, pl.start_mm, pl.end_mm))
             flexcut_v_pt.append(pl.position_mm * MM_TO_PT)
 
     # Deduplikacja CutContour
     deduped = _deduplicate_cut_segments(
-        sheet.placements, flexcut_h_mm, flexcut_v_mm, bleed_mm,
+        sheet.placements, flexcut_h, flexcut_v, bleed_mm,
         gap_mm=sheet.gap_mm,
     )
 

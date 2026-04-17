@@ -228,7 +228,11 @@ class NestWorker(QThread):
             name = os.path.basename(pdf)
             file_copies = self._file_copies.get(pdf, 1)
             copies = self._copies if self._copies > 1 else file_copies
-            is_bleed_output = name.startswith("bleed_")
+            # Wstępna detekcja po nazwie — potwierdzana później przez obecność
+            # CutContour/FlexCut w content streamach. Rozpoznajemy oba formaty:
+            #   - legacy: bleed_<stem>.pdf
+            #   - aktualny: <stem>_PRINT_{W}x{H}mm_bleed{N}mm.pdf
+            is_bleed_output = name.startswith("bleed_") or "_PRINT_" in name
             try:
                 doc = fitz.open(pdf)
                 open_docs.append(doc)
@@ -241,7 +245,11 @@ class NestWorker(QThread):
                 cw_pt = (pw_mm - 2 * b) * MM_TO_PT
                 ch_pt = (ph_mm - 2 * b) * MM_TO_PT
 
-                # Ekstrakcja CutContour/FlexCut z content streamów PDF
+                # Ekstrakcja CutContour/FlexCut z content streamów PDF.
+                # Obecność tego strumienia = plik jest bleed output (niezależnie od nazwy) —
+                # CutContour musi zostać zstripowany z print PDF przez _prepare_source_for_embedding,
+                # inaczej zielone/czerwone linie kisscut/flexcut wyciekną do grafiki i
+                # _apply_outer_bleed zdilateuje je w bleed zone (zły kolor spadu).
                 cut_segs = None
                 detected_cutline_mode = "kiss-cut"
                 import re as _re
@@ -259,6 +267,9 @@ class NestWorker(QThread):
                         sd = doc.xref_stream(xref)
                         if sd and (b"CutContour" in sd or b"FlexCut" in sd):
                             detected_cutline_mode = "flexcut" if b"FlexCut" in sd else "kiss-cut"
+                            # Potwierdź bleed output po zawartości — gwarancja że
+                            # _strip_cutcontour_streams zadziała na tym pliku.
+                            is_bleed_output = True
                             cut_segs = []
                             last_x, last_y = None, None
                             for line in sd.decode('latin-1', errors='replace').split('\n'):
