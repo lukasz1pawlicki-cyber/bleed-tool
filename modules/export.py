@@ -2971,6 +2971,7 @@ def _apply_outer_bleed(
     from PIL import Image as PILImage
     import numpy as np
     from scipy.ndimage import distance_transform_cdt
+    import math
 
     sheet_w_pt = sheet.width_mm * MM_TO_PT
     sheet_h_pt = sheet.height_mm * MM_TO_PT
@@ -2986,7 +2987,9 @@ def _apply_outer_bleed(
     # Render strony jako raster (300 DPI)
     dpi = 300
     scale = dpi / 72.0
-    bleed_px = max(1, int(ob_mm * dpi / 25.4))
+    # math.ceil gwarantuje pelne pokrycie 2mm. int() by dalo 23px=1.95mm
+    # i w rogach Chebyshev dist=24 wypadlo poza bleed_px → rogi spadu bialo.
+    bleed_px = max(1, int(math.ceil(ob_mm * dpi / 25.4)))
     pix = page.get_pixmap(dpi=dpi, alpha=False)
     img = PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
     arr = np.array(img)
@@ -3013,20 +3016,35 @@ def _apply_outer_bleed(
         log.warning("Outer bleed: brak placementow — pomijam")
         return
 
-    # Chebyshev EDT + nearest-mask-pixel lookup (return_indices=True).
-    # Kazdy piksel w strefie spadu dostaje kolor NAJBLIZSZEGO piksela maski:
-    #   - dla poziomej krawedzi: kolor pixela DOKLADNIE pod nim (perpendicular)
-    #   - dla pionowej krawedzi: kolor pixela dokladnie obok niego (perpendicular)
-    #   - dla naroznika: kolor pixela naroznikowego maski
-    # Dzieki temu design stickera jest PRZECIAGNIETY na spad — pasek teal
-    # w designu stickera daje pasek teal w spadzie; orange body -> orange spad.
-    # Propagacja zachowuje wzory w sposob prostopadly (bez diagonal artefaktow
-    # ktore mialo poprzednie 8-kierunkowe iterative dilation).
-    dist, idx = distance_transform_cdt(~mask, metric='chessboard', return_indices=True)
-    fill_zone = (~mask) & (dist <= bleed_px) & (dist > 0)
+    # Dwu-fazowy EDT:
+    #  1) placement mask -> distans -> definuje STREFE spadu (<=bleed_px)
+    #  2) content_mask (pixele niebiale W MASCE) -> indeksy -> KOLOR
+    #
+    # Dlaczego dwa EDT:
+    # - Rendering sticker'a przez show_pdf_page tworzy ANTIALIASED krawedzie:
+    #   piksele na samej granicy placement rect moga byc biale (subpixel).
+    # - Jeden EDT z maski placement + return_indices: w rogach kopiowal biale
+    #   piksele subpixel-AA do spadu, tracil kolor.
+    # - Content_mask ogranicza zrodlo do NIEBIALYCH pikseli (prawdziwy kontent),
+    #   wiec EDT zawsze wskazuje na solid-color pixel.
+    # - Strefa spadu nadal ograniczana przez placement mask (bleed_px=2mm).
+    WHITE_THRESH = 245
+    content_mask = mask & ~np.all(arr > WHITE_THRESH, axis=2)
+    if not content_mask.any():
+        log.warning("Outer bleed: brak solidnej tresci w naklejkach — pomijam")
+        return
+
+    # Faza 1: dist od placement mask (definiuje strefe spadu)
+    dist_mask = distance_transform_cdt(~mask, metric='chessboard')
+    # Faza 2: indeksy od content mask (wskazuje na niebiale solid-color pixel)
+    _, idx_content = distance_transform_cdt(
+        ~content_mask, metric='chessboard', return_indices=True
+    )
+
+    fill_zone = (~mask) & (dist_mask <= bleed_px) & (dist_mask > 0)
     if fill_zone.any():
         rr, cc = np.where(fill_zone)
-        arr[rr, cc] = arr[idx[0, rr, cc], idx[1, rr, cc]]
+        arr[rr, cc] = arr[idx_content[0, rr, cc], idx_content[1, rr, cc]]
 
     # Wstaw rozszerzony raster jako tlo — pokrywa cala strone,
     # ale tylko obszar unia+bleed ma content, reszta jest biala (oryginalne tlo).
