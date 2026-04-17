@@ -3016,35 +3016,104 @@ def _apply_outer_bleed(
         log.warning("Outer bleed: brak placementow — pomijam")
         return
 
-    # Dwu-fazowy EDT:
-    #  1) placement mask -> distans -> definuje STREFE spadu (<=bleed_px)
-    #  2) content_mask (pixele niebiale W MASCE) -> indeksy -> KOLOR
+    # AXIS-ALIGNED propagation (decomposed):
+    #   - Dla kazdej KOLUMNY rastra propaguje pionowo (UP/DOWN) kolor z
+    #     najblizszego content pixela w TEJ SAMEJ KOLUMNIE — bleed_px rows.
+    #   - Dla kazdego WIERSZA propaguje poziomo (LEFT/RIGHT) kolor z
+    #     najblizszego content pixela w TYM SAMYM WIERSZU — bleed_px cols.
+    #   - Laczenie: pixel filled przez WIELE propagacji -> najblizsza wygrywa.
+    #   - Pixel filled przez tylko JEDNA -> uzywa jej.
+    #   - Pixel filled przez ZADNA -> bialy.
     #
-    # Dlaczego dwa EDT:
-    # - Rendering sticker'a przez show_pdf_page tworzy ANTIALIASED krawedzie:
-    #   piksele na samej granicy placement rect moga byc biale (subpixel).
-    # - Jeden EDT z maski placement + return_indices: w rogach kopiowal biale
-    #   piksele subpixel-AA do spadu, tracil kolor.
-    # - Content_mask ogranicza zrodlo do NIEBIALYCH pikseli (prawdziwy kontent),
-    #   wiec EDT zawsze wskazuje na solid-color pixel.
-    # - Strefa spadu nadal ograniczana przez placement mask (bleed_px=2mm).
+    # Motywacja (kształt litery L w grupie):
+    #   Przy wklęsłym naroźniku (top sticker węższy niż bottom grid) EDT z
+    #   Chebyshev/Manhattan metric daje DIAGONAL boundary miedzy propagacja
+    #   z right edge top sticker i top edge bottom grid — wyglada "pod katem".
+    #   User chce: wybierz JEDNO ramie L i wyprowadz prostopadle, drugie
+    #   niech bedzie dopelnieniem.
+    #   Axis-aligned: zawsze perpendicular po osi (nigdy diagonalnie). W
+    #   narozniku konkawym najblizsze ramie wygrywa (czysta prostokatna
+    #   transition zamiast diagonal).
     WHITE_THRESH = 245
     content_mask = mask & ~np.all(arr > WHITE_THRESH, axis=2)
     if not content_mask.any():
         log.warning("Outer bleed: brak solidnej tresci w naklejkach — pomijam")
         return
 
-    # Faza 1: dist od placement mask (definiuje strefe spadu)
+    # 1D-axis EDT via forward/backward cummax trick (vectorized, bez pętli).
+    # Idee: dla każdej osobnej osi wykonujemy distance-to-nearest-content
+    # uzywajac `np.maximum.accumulate` z indeksem (r lub c) gdzie jest content.
+
+    rows_idx = np.arange(H)[:, None]  # (H, 1)
+    cols_idx = np.arange(W)[None, :]  # (1, W)
+
+    # --- PIONOWA propagacja (per kolumna) ---
+    # forward: dla każdego (r, c) ostatni content row <= r w kolumnie c
+    up_rows = np.where(content_mask, rows_idx, -1).astype(np.int32)
+    up_cummax = np.maximum.accumulate(up_rows, axis=0)
+    up_dist = rows_idx - up_cummax  # dist od content powyzej
+    up_dist[up_cummax < 0] = H + 1  # brak content powyzej
+
+    # backward: pierwszy content row >= r w kolumnie c
+    # Flip, cummax, flip back
+    down_rows = np.where(content_mask, rows_idx, H + 1).astype(np.int32)
+    down_cummin = np.minimum.accumulate(down_rows[::-1], axis=0)[::-1]
+    down_dist = down_cummin - rows_idx
+    down_dist[down_cummin > H] = H + 1
+
+    # pick closer (up or down) for vertical
+    v_src_row = np.where(up_dist <= down_dist, up_cummax, down_cummin).astype(np.int32)
+    v_dist = np.minimum(up_dist, down_dist)
+
+    # --- POZIOMA propagacja (per wiersz) ---
+    left_cols = np.where(content_mask, cols_idx, -1).astype(np.int32)
+    left_cummax = np.maximum.accumulate(left_cols, axis=1)
+    left_dist = cols_idx - left_cummax
+    left_dist[left_cummax < 0] = W + 1
+
+    right_cols = np.where(content_mask, cols_idx, W + 1).astype(np.int32)
+    right_cummin = np.minimum.accumulate(right_cols[:, ::-1], axis=1)[:, ::-1]
+    right_dist = right_cummin - cols_idx
+    right_dist[right_cummin > W] = W + 1
+
+    h_src_col = np.where(left_dist <= right_dist, left_cummax, right_cummin).astype(np.int32)
+    h_dist = np.minimum(left_dist, right_dist)
+
+    # --- Laczenie ---
+    # Strefa spadu = Chebyshev dist od placement mask <= bleed_px (2mm kwadrat).
+    # Zrodlo koloru:
+    #   - axis-aligned: blizsza os (v lub h) jesli w zasiegu bleed_px
+    #   - diagonal corner fallback: jesli axis-aligned nie siega (np. rog
+    #     convex 2mm× 2mm gdzie oba axes > bleed_px), uzyj EDT do content_mask
+    #     (Chebyshev -> wskazuje na najblizszy content pixel, tu = rog maski)
     dist_mask = distance_transform_cdt(~mask, metric='chessboard')
-    # Faza 2: indeksy od content mask (wskazuje na niebiale solid-color pixel)
+    fill_zone = (~mask) & (dist_mask <= bleed_px) & (dist_mask > 0)
+
+    # Najblizsza os (dla kazdego pixela w fill_zone)
+    axis_reachable = (v_dist <= bleed_px) | (h_dist <= bleed_px)
+    use_vertical = v_dist <= h_dist
+
+    # Dla pikseli gdzie axis-aligned nie dziala (convex corner z dist > bleed_px
+    # po obu osiach) fallback na EDT content_mask — daje kolor z najblizszego
+    # content pixela (naturalnie rog convex dostaje kolor z narożnika maski).
     _, idx_content = distance_transform_cdt(
         ~content_mask, metric='chessboard', return_indices=True
     )
 
-    fill_zone = (~mask) & (dist_mask <= bleed_px) & (dist_mask > 0)
-    if fill_zone.any():
-        rr, cc = np.where(fill_zone)
-        arr[rr, cc] = arr[idx_content[0, rr, cc], idx_content[1, rr, cc]]
+    rr, cc = np.where(fill_zone)
+    axis_ok = axis_reachable[rr, cc]
+    use_v = use_vertical[rr, cc] & axis_ok
+    use_h = (~use_vertical[rr, cc]) & axis_ok
+
+    src_rows = np.where(
+        use_v, v_src_row[rr, cc],
+        np.where(use_h, rr, idx_content[0, rr, cc])
+    )
+    src_cols = np.where(
+        use_v, cc,
+        np.where(use_h, h_src_col[rr, cc], idx_content[1, rr, cc])
+    )
+    arr[rr, cc] = arr[src_rows, src_cols]
 
     # Wstaw rozszerzony raster jako tlo — pokrywa cala strone,
     # ale tylko obszar unia+bleed ma content, reszta jest biala (oryginalne tlo).
