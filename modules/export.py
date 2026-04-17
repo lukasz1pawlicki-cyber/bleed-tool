@@ -3013,33 +3013,47 @@ def _apply_outer_bleed(
         log.warning("Outer bleed: brak placementow — pomijam")
         return
 
-    # Pre-fill: sub-pikselowa rasteryzacja powoduje ze skrajne piksele
-    # WEWNATRZ maski (brzeg placement rect) sa BIALE mimo ze sticker
-    # koncy sie tam. Zastepujemy biale piksele wewnatrz maski kolorem
-    # niebialego piksela maski (EDT wynajdzie najblizszy niebialy).
+    # Wyznacz JEDNOLITY kolor spadu z wnetrza naklejek (unika krawedziowych
+    # patternow z designu: teal X-SUPPLEMENTS pasek, bialy tekst, antialiasing).
+    # Sampluje INSIDE rect kazdego placementu (inset 15%), filtruje bialy
+    # (WHITE_THRESH), bierze mediane RGB. Dla grupy naklejek z tego samego
+    # wzoru daje jeden solidny kolor tla spadu.
+    # Poprzednie podejscie (kopiowanie z najblizszego pixela maski) dawalo
+    # VARIABLE spad z pasami tealu/bieli odpowiadajacymi wzorowi przy
+    # krawedzi — wygladalo to "w kratke" / pod katem.
     WHITE_THRESH = 245
-    # Maska "prawdziwa tresc" = pixele w masce placement ORAZ nie biale
-    content_mask = mask & ~np.all(arr > WHITE_THRESH, axis=2)
-    if content_mask.any():
-        # Dla bialych pikseli wewnatrz maski znajdz najblizsza tresc
-        dist_white, idx_white = distance_transform_cdt(
-            ~content_mask, metric='chessboard', return_indices=True
-        )
-        white_in_mask = mask & np.all(arr > WHITE_THRESH, axis=2)
-        if white_in_mask.any():
-            rr, cc = np.where(white_in_mask)
-            arr[rr, cc] = arr[idx_white[0, rr, cc], idx_white[1, rr, cc]]
+    interior_samples = []
+    for p in sheet.placements:
+        pw_mm = _pw(p)
+        ph_mm = _ph(p)
+        # Inset 15% od kazdej krawedzi — omija teksty i paski projektowe przy krawedzi
+        ix0_mm = p.x_mm + pw_mm * 0.15
+        ix1_mm = p.x_mm + pw_mm * 0.85
+        iy_bot_mm = p.y_mm + ph_mm * 0.15
+        iy_top_mm = p.y_mm + ph_mm * 0.85
+        ipx0 = max(0, int(ix0_mm * MM_TO_PT * scale))
+        ipx1 = min(W, int(ix1_mm * MM_TO_PT * scale))
+        ipy0 = max(0, int((sheet_h_pt - iy_top_mm * MM_TO_PT) * scale))
+        ipy1 = min(H, int((sheet_h_pt - iy_bot_mm * MM_TO_PT) * scale))
+        if ipx1 > ipx0 and ipy1 > ipy0:
+            interior = arr[ipy0:ipy1, ipx0:ipx1].reshape(-1, 3)
+            non_white = interior[~np.all(interior > WHITE_THRESH, axis=1)]
+            if len(non_white) > 0:
+                interior_samples.append(np.median(non_white, axis=0))
 
-    # Chebyshev EDT + indices: jeden przebieg C-zoptymalizowany.
-    # Dla kazdego piksela poza maska znajduje najblizszy (Chebyshev) piksel
-    # maski. Kolor bleedu kopiowany z tego pixela — daje PROSTOPADLA
-    # propagacje (pixel nad krawedzia dostaje kolor piksela DOKLADNIE pod
-    # nim, bez diagonalnego "skosu"). Narozniki kwadratowe (Chebyshev = max).
-    dist, idx = distance_transform_cdt(~mask, metric='chessboard', return_indices=True)
+    if interior_samples:
+        body_color = np.median(np.stack(interior_samples), axis=0).astype(np.uint8)
+    else:
+        # Fallback: kolor krawedzi pierwszej naklejki
+        first = sheet.placements[0].sticker.edge_color_rgb
+        body_color = np.array([int(first[0]*255), int(first[1]*255), int(first[2]*255)], dtype=np.uint8)
+
+    # Chebyshev EDT: dla kazdego piksela poza maska Chebyshev-dystans do maski.
+    # Piksele w strefie bleed dostaja JEDNOLITY body_color (bez gradientow/pasow).
+    dist = distance_transform_cdt(~mask, metric='chessboard')
     fill_zone = (~mask) & (dist <= bleed_px) & (dist > 0)
     if fill_zone.any():
-        rr, cc = np.where(fill_zone)
-        arr[rr, cc] = arr[idx[0, rr, cc], idx[1, rr, cc]]
+        arr[fill_zone] = body_color
 
     # Wstaw rozszerzony raster jako tlo — pokrywa cala strone,
     # ale tylko obszar unia+bleed ma content, reszta jest biala (oryginalne tlo).
