@@ -64,9 +64,14 @@ ROZWIAZYWANIE PROBLEMOW
   3. GUI nie startuje / brak okna
      → Uruchom z terminala:  python bleed_app.py
 
-  4. Blad SVG: "cairosvg" / "cairo not found"
-     → Windows: pip install cairosvg
-     → macOS: brew install cairo && pip install cairosvg
+  4. Blad SVG: "cairosvg" / "cairo not found" / gradient/text nie renderuje
+     Program ma automatyczny fallback na svglib (pure Python) — SVG zadziala
+     bez cairo ale gradienty i niektore efekty moga nie renderowac sie.
+     Dla pelnej jakosci zainstaluj natywna cairo:
+     → Windows: GTK3-Runtime z https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases
+                (bleed-tool auto-wykrywa GTK3-Runtime Win64\bin w PATH)
+     → macOS: brew install cairo
+     → Linux: sudo apt install libcairo2 (zwykle juz jest)
 
   5. Blad EPS: "gs: command not found"
      → Zainstaluj Ghostscript (patrz sekcja WYMAGANIA)

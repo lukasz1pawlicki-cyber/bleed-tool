@@ -5,3 +5,8 @@ Pillow>=8.0.0
 PyQt6>=6.5.0
 cairosvg>=2.5.0
 opencv-python>=4.5.0
+# SVG fallback (pure Python) — uzywany gdy cairo DLL niedostepne na Windows.
+# cairosvg jest preferowany (lepsza jakosc), ale svglib gwarantuje ze SVG
+# pipeline zadziala nawet bez GTK3-Runtime/MSYS2.
+svglib>=1.5.0
+reportlab>=4.0.0
