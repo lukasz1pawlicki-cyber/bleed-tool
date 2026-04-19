@@ -16,7 +16,7 @@ import traceback
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsPixmapItem,
-    QGraphicsLineItem, QRubberBand,
+    QGraphicsLineItem, QRubberBand, QStyle,
 )
 from PyQt6.QtCore import Qt, QRectF, QPointF, QRect, QSize, pyqtSignal
 from PyQt6.QtGui import (
@@ -128,7 +128,14 @@ class FlexCutDialog(QDialog):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
 
-        self._prev_btn = QPushButton("\u25C0")  # ◀ black left-pointing triangle
+        # Qt native icons (zawsze rendering, niezalezne od fontu systemowego)
+        _style = self.style()
+        _prev_icon = _style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+        _next_icon = _style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+
+        self._prev_btn = QPushButton()
+        self._prev_btn.setIcon(_prev_icon)
+        self._prev_btn.setIconSize(QSize(16, 16))
         self._prev_btn.setFixedSize(32, 28)
         self._prev_btn.setToolTip("Poprzedni arkusz")
         self._prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -144,7 +151,9 @@ class FlexCutDialog(QDialog):
         self._title.setFont(font)
         toolbar.addWidget(self._title)
 
-        self._next_btn = QPushButton("\u25B6")  # ▶ black right-pointing triangle
+        self._next_btn = QPushButton()
+        self._next_btn.setIcon(_next_icon)
+        self._next_btn.setIconSize(QSize(16, 16))
         self._next_btn.setFixedSize(32, 28)
         self._next_btn.setToolTip("Nastepny arkusz")
         self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)

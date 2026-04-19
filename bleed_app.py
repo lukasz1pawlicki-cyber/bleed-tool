@@ -30,6 +30,19 @@ def main():
     from gui.theme import load_theme
     from gui.main_window import MainWindow
 
+    # Wyczysc cache przy starcie — gwarantuje ze operator zawsze widzi
+    # wyniki z aktualnego kodu algorytmu. Koszt: pierwsze przetwarzanie
+    # pliku nieco wolniejsze (cache miss), ale nastepne w tej samej sesji
+    # trafiaja cache normalnie.
+    try:
+        from modules.cache import clear_all, is_cache_enabled
+        if is_cache_enabled():
+            n = clear_all()
+            if n > 0:
+                print(f"[startup] Wyczyszczono {n} wpisow cache")
+    except Exception as e:
+        print(f"[startup] cache clear skipped: {e}")
+
     app = QApplication(sys.argv)
     app.setApplicationName("Bleed Tool")
     load_theme(app)
