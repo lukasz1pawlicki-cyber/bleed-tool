@@ -87,12 +87,15 @@ def is_cache_enabled() -> bool:
 
 
 def _compute_key(file_path: str, engine: str) -> str:
-    """sha1(realpath + mtime_ns + size + engine + cache_version + algo_sig).
+    """sha1(realpath + mtime_ns + size + engine + raster_mode + cache_ver + algo_sig).
 
     Uzywamy mtime_ns + size pliku wejsciowego (szybkie, nie czytamy zawartosci).
     Dodatkowo wlaczamy algorithm signature (hash mtime+size plikow algorytmu),
     zeby zmiana kodu auto-invalidowala cache — inaczej fix typu "Chaikin psuje
     gwiazdki" nie byl widoczny dla operatora az do recznego clear_all.
+
+    RASTER_MODE w kluczu: smooth i sharp generuja rozne cut_segments dla tego
+    samego pliku, wiec musza byc odrebnymi entries.
     """
     try:
         st = os.stat(file_path)
@@ -100,8 +103,13 @@ def _compute_key(file_path: str, engine: str) -> str:
         return ""
     canonical = os.path.realpath(file_path)
     algo_sig = _algorithm_signature()
+    try:
+        import config as _cfg
+        raster_mode = getattr(_cfg, "RASTER_MODE", "smooth")
+    except ImportError:
+        raster_mode = "smooth"
     raw = (
-        f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}"
+        f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}|raster:{raster_mode}"
         f"|v{_CACHE_VERSION}|algo:{algo_sig}"
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
