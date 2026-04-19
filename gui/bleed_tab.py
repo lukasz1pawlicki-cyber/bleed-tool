@@ -46,6 +46,20 @@ class BleedTab(QWidget):
             crumb="Workflow · Krok 01",
             title="Bleed",
             help_tip="Generuj bleed i CutContour",
+            help_text=(
+                "Krok 01 — Bleed\n\n"
+                "Wejście: PDF / AI / SVG / EPS / PNG / JPG / TIFF.\n"
+                "Wyjście: PDF z 2 mm spadem + wektorowa linia cięcia CutContour (spot color).\n\n"
+                "Parametry:\n"
+                "  • Spad — szerokość spadu w mm (domyślnie 2 mm).\n"
+                "  • Wysokość — opcjonalny crop do wysokości; wymagane dla crop shape.\n"
+                "  • Linia cięcia — Kiss-Cut / FlexCut / Brak.\n"
+                "  • Silnik konturu — Auto (Moore+OpenCV) / Moore / OpenCV.\n"
+                "  • Biały poddruk — dodaje osobną warstwę white.\n\n"
+                "Preflight gate — Off / Lenient / Strict — blokuje eksport gdy plik\n"
+                "nie spełnia wymagań (tryb RGB/CMYK, rozmiar, DPI).\n\n"
+                "Output idzie do Nest (Krok 02) automatycznie."
+            ),
         )
         root.addWidget(self._title_bar)
 

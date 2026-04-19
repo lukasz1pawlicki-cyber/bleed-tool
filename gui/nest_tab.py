@@ -53,6 +53,23 @@ class NestTab(QWidget):
             crumb="Workflow · Krok 02",
             title="Nest",
             help_tip="Rozmieszczanie naklejek na arkuszu",
+            help_text=(
+                "Krok 02 — Nest\n\n"
+                "Wejście: PDF-y z bleedem (z Kroku 01).\n"
+                "Wyjście: PDF-y arkuszy z print + cut + (opc.) white + OPOS markery.\n\n"
+                "Tryb:\n"
+                "  • Arkusze — preset (SRA3, SRA3+, ...). Plotter JWEI 0806.\n"
+                "  • Rola — szerokość + max długość. Plotter Summa S3.\n\n"
+                "Rozkład:\n"
+                "  • Kopie — liczba na plik; Max = binary search dla jednego arkusza.\n"
+                "  • Gap — odstęp między naklejkami (mm).\n"
+                "  • Wzory — Grupuj / Osobne / Mieszaj.\n"
+                "    - Grupuj: każdy wzór trzymany razem\n"
+                "    - Osobne: każdy wzór na osobnym arkuszu\n"
+                "    - Mieszaj: cross-group backfill\n\n"
+                "Utylizacja arkusza ≥ 65% = dobrze, 45-65% ok, < 45% niska.\n"
+                "FlexCut — interaktywne zaznaczanie (mostki, rotacja 180°, spad)."
+            ),
         )
         root.addWidget(self._title_bar)
 
@@ -107,7 +124,7 @@ class NestTab(QWidget):
         self._sheet_combo = QComboBox()
         self._sheet_combo.setProperty("variant", "mono")
         self._sheet_combo.addItems(sheet_names)
-        self._sheet_combo.setFixedWidth(120)
+        self._sheet_combo.setFixedWidth(160)
         _sp = _saved.get("sheet_preset")
         if _sp and _sp in sheet_names:
             self._sheet_combo.setCurrentText(_sp)
@@ -154,7 +171,7 @@ class NestTab(QWidget):
             self._plotter_combo.setCurrentText(_pl)
         else:
             self._plotter_combo.setCurrentText("jwei")
-        self._plotter_combo.setFixedWidth(140)
+        self._plotter_combo.setFixedWidth(160)
         row_plot.addWidget(self._plotter_combo)
         row_plot.addStretch(1)
         sheet_card.body.addLayout(row_plot)
@@ -175,9 +192,10 @@ class NestTab(QWidget):
         self._copies_spin.setMinimum(1)
         self._copies_spin.setMaximum(9999)
         self._copies_spin.setValue(1)
-        self._copies_spin.setFixedWidth(80)
+        self._copies_spin.setFixedSize(80, 26)
         row_cg.addWidget(self._copies_spin)
         max_btn = make_button("Max", variant="ghost", size="sm")
+        max_btn.setFixedHeight(26)
         max_btn.clicked.connect(self._calc_max_copies)
         row_cg.addWidget(max_btn)
         row_cg.addSpacing(12)
@@ -189,7 +207,7 @@ class NestTab(QWidget):
         self._gap_spin.setSingleStep(0.5)
         self._gap_spin.setDecimals(1)
         self._gap_spin.setValue(float(_saved.get("gap_mm", DEFAULT_GAP_MM)))
-        self._gap_spin.setFixedWidth(80)
+        self._gap_spin.setFixedSize(80, 26)
         row_cg.addWidget(self._gap_spin)
         row_cg.addWidget(UnitLabel("mm"))
         row_cg.addStretch(1)

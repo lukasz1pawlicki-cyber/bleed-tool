@@ -11,6 +11,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QSizePolicy,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt
 
@@ -23,9 +24,12 @@ class PageTitleBar(QFrame):
     Uzywany na gorze BleedTab / NestTab.
     """
 
-    def __init__(self, crumb: str, title: str, help_tip: str = "", parent=None):
+    def __init__(self, crumb: str, title: str, help_tip: str = "",
+                 help_text: str = "", parent=None):
         super().__init__(parent)
         self.setObjectName("PageTitleBar")
+        self._title = title
+        self._help_text = help_text or help_tip
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 10, 22, 12)
         lay.setSpacing(2)
@@ -42,8 +46,9 @@ class PageTitleBar(QFrame):
         crumb_label.setObjectName("PageCrumb")
         crumb_row.addWidget(crumb_label)
         crumb_row.addStretch(1)
-        if help_tip:
-            self.help_btn = IconButton("?", tip=help_tip)
+        if help_tip or help_text:
+            self.help_btn = IconButton("?", tip=help_tip or "Pomoc")
+            self.help_btn.clicked.connect(self._show_help)
             crumb_row.addWidget(self.help_btn)
         lay.addLayout(crumb_row)
 
@@ -51,6 +56,15 @@ class PageTitleBar(QFrame):
         title_lbl = QLabel(title)
         title_lbl.setObjectName("PageTitle")
         lay.addWidget(title_lbl)
+
+    def _show_help(self):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(f"Pomoc — {self._title}")
+        box.setText(self._title)
+        box.setInformativeText(self._help_text)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
 
 class CardSection(QFrame):
