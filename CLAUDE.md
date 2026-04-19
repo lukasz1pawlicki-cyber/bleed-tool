@@ -61,15 +61,24 @@ Dodatkowo:
 - `Mark`, `PanelLine` — znaczniki rejestracji, linie FlexCut
 
 ### GUI: `bleed_app.py` (PyQt6 + QSS)
+- Sidebar nawigacyjny (`gui/main_window.py`) + QStackedWidget: **dwie zakładki Bleed i Nest**
+- Każda zakładka ma **niezależny panel podglądu** (`gui/preview_panel.py`) — stan Bleed i stan Nest nie nadpisują się nawzajem
+- Bleed preview: split-view on (przed/po); Nest preview: split-view off (brak oryginału dla arkusza)
+- Zakładki: `gui/bleed_tab.py`, `gui/nest_tab.py`; wspólny pasek plików `gui/file_section.py`; log `gui/log_panel.py`; dialog FlexCut `gui/flexcut_dialog.py`
 - Drag & drop (native QWidget) + kliknięcie do wyboru
-- Podgląd PDF (renderowanie fitz), ustawienia, log
-- QThread workers: `BleedWorker`, `NestWorker` (moduł `gui/workers.py`)
-- Theming: `gui/theme.py` (QSS)
+- QThread workers: `BleedWorker`, `NestWorker` (`gui/workers.py`)
+- Theming: `gui/theme.py` + `gui/resources/style.qss` (QSS)
+- Auto-agregacja: po Bleed wyniki automatycznie trafiają na listę Nest
 
 ### CLI: `bleed_cli.py`
 - `python bleed_cli.py input.pdf -o ./out --bleed 2`
 - Batch: `python bleed_cli.py --batch ./folder -o ./out [--recursive]`
-- Output naming: `{stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf` (build_output_name w models.py)
+- Równoległy batch: `-j N` (0 = auto = liczba CPU) — ProcessPoolExecutor, 4-8x speedup na multi-core
+- Projekty: `--project plik.bleedproj` (ładuj sesję) / `--save-project plik.bleedproj` (zapisz)
+- Preflight gate: `--preflight off|lenient|strict` (domyślnie `lenient` — blokuje błędy)
+- Cache: `--no-cache` (wyłącz dla pojedynczego uruchomienia) / `--clear-cache` (wyczyść i zakończ)
+- `--fail-fast` (przerwij przy pierwszym błędzie) / `--overwrite` (nadpisz zamiast suffix `_v2`)
+- Output naming: `{stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf` (`build_output_name` w `models.py`)
 
 ---
 
@@ -82,6 +91,7 @@ numpy>=1.20.0        # operacje geometryczne, piksele
 Pillow>=8.0.0        # raster I/O, ICC color transform
 PyQt6>=6.5.0         # GUI (drag&drop, QThread workers)
 cairosvg>=2.5.0      # SVG → PDF
+opencv-python>=4.5.0 # detekcja krawędzi (CONTOUR_ENGINE=auto/opencv)
 ```
 
 ### Stack:
@@ -90,10 +100,10 @@ cairosvg>=2.5.0      # SVG → PDF
 |---|---|---|
 | **PyMuPDF** | PDF: render, rysowanie, ekstrakcja, xref manipulation | JEST |
 | **PyQt6** | GUI, drag&drop, QThread workers | JEST |
-| **Ghostscript** | Konwersja EPS→PDF (modules/ghostscript_bridge.py) | JEST (zewn. binarny) |
+| **Ghostscript** | EPS→PDF (`modules/ghostscript_bridge.py`) + opcjonalny RGB→CMYK postprocess | JEST (zewn. binarny) |
 | **Pillow + NumPy** | Obróbka rastrów, ICC FOGRA39 transform | JEST |
-| **pikepdf** | (opcjonalnie) — alternatywa dla xref manipulation w pdf_metadata | NIE UŻYWANE |
-| **OpenCV** | Detekcja krawędzi (alternatywa dla Moore boundary tracing) | NIE UŻYWANE |
+| **OpenCV** | Detekcja krawędzi raster (domyślnie przez `CONTOUR_ENGINE=auto`) | JEST |
+| **pikepdf** | Opcjonalny backend zapisu PDF/X-4 (`BLEED_PDF_METADATA_ENGINE=pikepdf`) | JEST (opcjonalne) |
 
 ### Praca na rastrach wewnątrz PDF:
 ```
@@ -115,39 +125,51 @@ PyMuPDF page.get_pixmap(dpi=300) → Pillow obróbka → NumPy operacje pikselow
 
 ---
 
-## Architektura — struktura docelowa
+## Architektura — struktura projektu
 
 ```
 bleed-tool/
 ├── CLAUDE.md                      ← ten plik
 ├── INSTALACJA.txt                 ← instrukcja instalacji (PL)
-├── bleed_app.py                   ← GUI entry point (PyQt6) — DZIAŁA
-├── bleed_cli.py                   ← CLI (single + --batch) — DZIAŁA
-├── config.py                      ← stałe (DEFAULT_BLEED_MM, SPOT_COLORS, MM_TO_PT, SNAP, OPOS)
+├── bleed_app.py                   ← GUI entry point (PyQt6)
+├── bleed_cli.py                   ← CLI (single + --batch + -j N + --project + --preflight)
+├── config.py                      ← stałe (DEFAULT_BLEED_MM, SPOT_COLORS, PLOTTERS, CONTOUR_ENGINE, PDF_METADATA_ENGINE)
 ├── models.py                      ← dataclasses (Sticker, Placement, Sheet, Mark, PanelLine) + build_output_name
 ├── gui/
-│   ├── main_window.py             ← QMainWindow — bleed + nesting tabs
-│   ├── workers.py                 ← QThread: BleedWorker, NestWorker
-│   ├── theme.py                   ← QSS theming
-│   └── widgets/                   ← drop_zone, preview, settings panels
+│   ├── main_window.py             ← QMainWindow — sidebar + Bleed/Nest tabs + 2x PreviewPanel
+│   ├── bleed_tab.py               ← zakładka Bleed (plik → bleed → preview)
+│   ├── nest_tab.py                ← zakładka Nest (pliki → arkusz → preview)
+│   ├── file_section.py            ← wspólny pasek plików (drag & drop)
+│   ├── preview_panel.py           ← podgląd PDF (split-view przed/po, crop offset)
+│   ├── log_panel.py               ← panel logów
+│   ├── flexcut_dialog.py          ← dialog konfiguracji FlexCut
+│   ├── workers.py                 ← QThread: BleedWorker, NestWorker (async preview)
+│   ├── theme.py                   ← loader QSS
+│   └── resources/
+│       └── style.qss              ← theming
 ├── modules/
-│   ├── contour.py                 ← detekcja konturu (wektor, raster, circle, alpha) — DZIAŁA
-│   ├── bleed.py                   ← offset konturu + kolor krawędzi (ICC FOGRA39) — DZIAŁA
-│   ├── export.py                  ← eksport PDF (sticker + sheet, OCG layers per ploter) — DZIAŁA
-│   ├── svg_convert.py             ← SVG → PDF (cairosvg) — DZIAŁA
-│   ├── crop.py                    ← crop do wysokości (sticker + maski circle/rounded/oval) — DZIAŁA
-│   ├── preflight.py               ← szybka analiza pliku (DPI, tryb koloru, rozmiar) — DZIAŁA
-│   ├── nesting.py                 ← shelf-based nesting, 3 grouping modes — DZIAŁA
-│   ├── panelize.py                ← linie paneli (FlexCut) w arkuszu — DZIAŁA
-│   ├── marks.py                   ← znaczniki OPOS (Summa) / 4 narożne (JWEI) — DZIAŁA
-│   ├── pdf_metadata.py            ← PDF/X-4 OutputIntent FOGRA39 + TrimBox/BleedBox — DZIAŁA
-│   └── ghostscript_bridge.py      ← EPS → PDF (gs subprocess) — DZIAŁA
+│   ├── contour.py                 ← detekcja konturu (wektor, raster, circle, alpha; silniki moore/opencv/auto)
+│   ├── bleed.py                   ← offset konturu + kolor krawędzi (ICC FOGRA39)
+│   ├── export.py                  ← eksport PDF (sticker + sheet, OCG layers per ploter)
+│   ├── svg_convert.py             ← SVG → PDF (cairosvg)
+│   ├── file_loader.py             ← abstrakcja loadera (routing formatów: EPS, SVG, PDF, raster)
+│   ├── crop.py                    ← crop do wysokości (sticker + maski circle/rounded/oval)
+│   ├── preflight.py               ← gate przed eksportem (DPI, tryb koloru, rozmiar)
+│   ├── nesting.py                 ← shelf-based nesting, 3 grouping modes + utylizacja
+│   ├── panelize.py                ← linie paneli (FlexCut) w arkuszu
+│   ├── marks.py                   ← znaczniki OPOS (Summa) / 4 narożne (JWEI)
+│   ├── pdf_metadata.py            ← PDF/X-4 OutputIntent FOGRA39 + TrimBox/BleedBox (dual backend pymupdf/pikepdf)
+│   ├── profiles.py                ← loader profili per maszyna (profiles/output_profiles.json)
+│   ├── project.py                 ← format .bleedproj (zapis/odczyt sesji operatora)
+│   ├── cache.py                   ← disk cache dla detect_contour() (sha1 + pickle)
+│   └── ghostscript_bridge.py      ← EPS → PDF + opcjonalny RGB→CMYK postprocess
 ├── profiles/
-│   └── CoatedFOGRA39.icc          ← ICC profile (opcjonalnie, fallback do systemowych lokalizacji)
-├── tests/                         ← DO DODANIA: test_contour.py, test_bleed.py, test_export.py, fixtures/
+│   ├── CoatedFOGRA39.icc          ← ICC profile (opcjonalnie)
+│   └── output_profiles.json       ← profile per ploter (Summa S3 / JWEI / Mimaki)
+├── tests/                         ← 140+ testów: contour, bleed, export, cache, profiles, projekty, preview, pipeline
 ├── requirements.txt
 ├── uruchom.bat                    ← launcher Windows
-├── uruchom.command                ← launcher macOS
+├── uruchom.command                ← launcher macOS/Linux
 └── pakuj.bat                      ← pakowanie releasu (Windows)
 ```
 
@@ -290,7 +312,9 @@ Publiczne API: **milimetry**. Wewnętrznie: **punkty PDF (pt)**.
 
 ---
 
-## Nazewnictwo pliku wyjściowego (DO ZAIMPLEMENTOWANIA)
+## Nazewnictwo pliku wyjściowego
+
+Zaimplementowane w `models.build_output_name()`:
 
 ```python
 def build_output_name(input_path: Path, trim_w_mm: float, trim_h_mm: float, bleed_mm: float) -> str:
@@ -302,35 +326,31 @@ def build_output_name(input_path: Path, trim_w_mm: float, trim_h_mm: float, blee
 
 ---
 
-## DO ZROBIENIA (priorytety)
+## Zrealizowane funkcjonalności
 
-### Zrealizowane (stan aktualny)
-- [x] BleedBox/TrimBox/CropBox w output PDF (PyMuPDF xref, modules/pdf_metadata.py)
-- [x] Output naming convention (`_PRINT_{W}x{H}mm_bleed{N}mm.pdf`) — models.build_output_name
-- [x] `ghostscript_bridge.py` — EPS → PDF
-- [x] Migracja GUI na PyQt6 (gui/main_window.py + gui/workers.py)
-- [x] Batch processing w CLI (`bleed_cli.py --batch`)
-- [x] PDF/X-4 OutputIntent FOGRA39 (idempotentny)
-- [x] file_loader.py — abstrakcja loadera (modules/file_loader.py)
-- [x] Testy integracyjne (tests/test_integration_pipeline.py + tests/fixtures.py)
-- [x] Profile eksportu per maszyna (profiles/output_profiles.json + modules/profiles.py)
-- [x] Przełącznik CONTOUR_ENGINE moore/opencv (env BLEED_CONTOUR_ENGINE)
-- [x] GUI: podgląd przed/po side-by-side (gui/preview_panel.py split-view)
-- [x] pikepdf backend w pdf_metadata (env BLEED_PDF_METADATA_ENGINE=pikepdf)
-- [x] Ghostscript RGB→CMYK postprocess (env BLEED_RGB_TO_CMYK=1)
+Pipeline:
+- BleedBox/TrimBox/CropBox w output PDF (`modules/pdf_metadata.py`, dual backend PyMuPDF/pikepdf)
+- PDF/X-4 OutputIntent FOGRA39 (idempotentny)
+- Output naming convention `_PRINT_{W}x{H}mm_bleed{N}mm.pdf`
+- `file_loader.py` — eksplicytna abstrakcja loadera (routing EPS/SVG/PDF/raster)
+- `ghostscript_bridge.py` — EPS → PDF + opcjonalny RGB→CMYK postprocess
+- Profile eksportu per maszyna (`profiles/output_profiles.json` + `modules/profiles.py`)
+- Silnik detekcji konturu: `moore` / `opencv` / `auto` (domyślnie `auto`)
 
-### Priorytet 1 — Stabilizacja
-- [x] Testy jednostkowe i integracyjne (140+ testów: contour, bleed, export, profiles, pikepdf, cmyk, preview, pipeline)
+GUI:
+- PyQt6 + QSS, podział na zakładki Bleed i Nest (sidebar nawigacyjny)
+- Niezależne panele podglądu dla Bleed i Nest (stan się nie nadpisuje)
+- Split-view (przed/po) w zakładce Bleed
+- Async preview (QThread workers) — UI nie zamraża się podczas przetwarzania
+- Auto-agregacja outputów Bleed → lista Nest
 
-### Priorytet 2 — Zaawansowane
-- [x] Profile eksportu per maszyna
-- [x] GUI: podgląd przed/po side-by-side
-- [x] OpenCV contour detection (przełącznik moore/opencv)
+CLI / workflow:
+- Batch processing + równoległe procesy (`-j N`, `ProcessPoolExecutor`)
+- Projekty `.bleedproj` — zapis/odczyt sesji (`--project` / `--save-project`)
+- Preflight gate (`--preflight off|lenient|strict`)
+- Disk cache dla `detect_contour()` (sha1 + pickle, invalidacja po mtime/engine)
 
-### Priorytet 3 — Opcjonalne
-- [x] Ghostscript RGB→CMYK finalna rasteryzacja (opcja postprocess)
-- [x] pikepdf zamiast xref manipulation (dual backend)
-- [x] file_loader.py — eksplicytna abstrakcja loadera
+Testy: 140+ testów (contour, bleed, export, cache, profiles, projekty, preview, pipeline) — `tests/fixtures.py` generuje pliki w `tmp_path` (brak binariów w repo).
 
 ---
 
@@ -363,6 +383,8 @@ Uruchomienie: `python3 -m pytest tests/ -q`
 
 ## Zmienne środowiskowe (opcjonalne przełączniki)
 
-- `BLEED_CONTOUR_ENGINE` — `moore` (domyślnie) | `opencv` | `auto` — silnik detekcji konturu raster
+- `BLEED_CONTOUR_ENGINE` — `auto` (domyślnie) | `moore` | `opencv` — silnik detekcji konturu raster
 - `BLEED_PDF_METADATA_ENGINE` — `pymupdf` (domyślnie) | `pikepdf` — backend zapisu PDF/X-4
 - `BLEED_RGB_TO_CMYK` — `1` włącza postprocess Ghostscript RGB→CMYK
+- `BLEED_CACHE_DIR` — katalog cache detect_contour (domyślnie `~/.cache/bleed-tool/contour/` lub `%LOCALAPPDATA%/bleed-tool/contour/`)
+- `BLEED_NO_CACHE` — `1` wyłącza cache (zawsze miss)

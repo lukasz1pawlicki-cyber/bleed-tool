@@ -366,6 +366,7 @@ class BleedTab(QWidget):
         self._progress.setVisible(True)
         self._progress.setValue(0)
         self._status_label.setText("")
+        self._file_section.reset_statuses()
 
         from gui.workers import BleedWorker
         self._worker = BleedWorker(
@@ -384,6 +385,7 @@ class BleedTab(QWidget):
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)
+        self._worker.file_status.connect(self._file_section.set_status)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
         self._worker.start()

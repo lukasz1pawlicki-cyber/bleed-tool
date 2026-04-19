@@ -71,6 +71,26 @@ class DropZone(QLabel):
             self.files_dropped.emit(paths)
 
 
+_STATUS_VALUES = ("wait", "ok", "warn", "err", "proc")
+
+
+class StatusDot(QLabel):
+    """Mala kropka stanu pliku: wait/ok/warn/err/proc (CSS-driven)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(12, 12)
+        self.setProperty("class", "status-dot")
+        self.set_status("wait")
+
+    def set_status(self, status: str):
+        if status not in _STATUS_VALUES:
+            status = "wait"
+        self.setProperty("status", status)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
 class FileSection(QWidget):
     """Drop zone + lista plików z opcjonalnym polem kopii per plik."""
 
@@ -82,6 +102,8 @@ class FileSection(QWidget):
         self._show_copies = show_copies
         self._files: list[str] = []
         self._file_copies: dict[str, int] = {}
+        # path -> (status, issue_msg | None)
+        self._file_status: dict[str, tuple[str, str | None]] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -132,8 +154,21 @@ class FileSection(QWidget):
     def clear_files(self):
         self._files.clear()
         self._file_copies.clear()
+        self._file_status.clear()
         self._rebuild_list()
         self.files_changed.emit()
+
+    def set_status(self, path: str, status: str, issue: str | None = None):
+        """Ustaw status (wait/ok/warn/err/proc) + opcjonalnie komunikat issue."""
+        if path not in self._files:
+            return
+        self._file_status[path] = (status, issue)
+        self._rebuild_list()
+
+    def reset_statuses(self):
+        """Zresetuj statusy wszystkich plikow do wait (przed nowym runem)."""
+        self._file_status.clear()
+        self._rebuild_list()
 
     def _on_clear_clicked(self):
         """Kliknięcie Wyczyść → emituje clear_requested (globalny clear)."""
@@ -154,6 +189,7 @@ class FileSection(QWidget):
         if path in self._files:
             self._files.remove(path)
             self._file_copies.pop(path, None)
+            self._file_status.pop(path, None)
         self._rebuild_list()
         self.files_changed.emit()
 
@@ -166,12 +202,24 @@ class FileSection(QWidget):
                 w.deleteLater()
 
         for filepath in self._files:
+            status, issue = self._file_status.get(filepath, ("wait", None))
+            has_issue = bool(issue)
+
             row = QWidget()
             row.setProperty("class", "file-item")
-            row.setFixedHeight(24 if self._show_copies else 20)
+            # Wyzszy wiersz gdy jest issue (dwie linie)
+            base_h = 24 if self._show_copies else 20
+            row.setFixedHeight(base_h + (18 if has_issue else 0))
             hl = QHBoxLayout(row)
             hl.setContentsMargins(4, 0, 4, 0)
             hl.setSpacing(4)
+
+            # Status dot
+            dot = StatusDot()
+            dot.set_status(status)
+            if issue:
+                dot.setToolTip(issue)
+            hl.addWidget(dot)
 
             # Przycisk usuwania
             rm = QPushButton("x")
@@ -181,7 +229,12 @@ class FileSection(QWidget):
             rm.clicked.connect(lambda checked, p=filepath: self._remove_file(p))
             hl.addWidget(rm)
 
-            # Nazwa pliku
+            # Nazwa + opcjonalnie linia issue (pionowy stack)
+            name_stack = QWidget()
+            ns_layout = QVBoxLayout(name_stack)
+            ns_layout.setContentsMargins(0, 0, 0, 0)
+            ns_layout.setSpacing(0)
+
             name = os.path.basename(filepath)
             lbl = QLabel(name)
             lbl.setToolTip(filepath)
@@ -189,7 +242,19 @@ class FileSection(QWidget):
             font = lbl.font()
             font.setPointSize(9)
             lbl.setFont(font)
-            hl.addWidget(lbl)
+            ns_layout.addWidget(lbl)
+
+            if has_issue:
+                issue_lbl = QLabel(issue)
+                issue_lbl.setProperty("class", "file-issue")
+                issue_lbl.setProperty("severity", status)  # warn | err
+                issue_lbl.setToolTip(issue)
+                font_i = issue_lbl.font()
+                font_i.setPointSize(8)
+                issue_lbl.setFont(font_i)
+                ns_layout.addWidget(issue_lbl)
+
+            hl.addWidget(name_stack, stretch=1)
 
             # Kopie (opcjonalnie, nest)
             if self._show_copies:
@@ -210,6 +275,11 @@ class FileSection(QWidget):
 
         self._count_label.setText(f"{len(self._files)} plików")
         self._scroll.setVisible(len(self._files) > 0)
+        # Rozszerz scroll area gdy sa issue (wiecej miejsca na liscie)
+        has_any_issue = any(
+            bool(issue) for _, issue in self._file_status.values()
+        )
+        self._scroll.setMaximumHeight(160 if has_any_issue else 100)
 
     def _on_copies_change(self, filepath: str, text: str):
         try:

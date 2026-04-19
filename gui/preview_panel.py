@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QGraphicsEllipseItem, QGraphicsRectItem,
-    QSizePolicy,
+    QSizePolicy, QGridLayout,
 )
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QObject, QThread, pyqtSlot
 from PyQt6.QtGui import (
@@ -59,6 +59,40 @@ class _RenderWorker(QObject):
             self.pixmap_ready.emit(request_id, path, None)
 
 from gui.theme import PREVIEW_CUTCONTOUR, PREVIEW_FLEXCUT, PREVIEW_MARK
+
+
+class MetadataGrid(QWidget):
+    """KV-grid metadanych PDF: wymiary, spad, TrimBox/BleedBox, OutputIntent."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setProperty("class", "kv-grid")
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(10, 6, 10, 6)
+        self._grid.setHorizontalSpacing(14)
+        self._grid.setVerticalSpacing(2)
+        self._rows: list[tuple[QLabel, QLabel]] = []
+
+    def clear(self):
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._rows.clear()
+
+    def set_data(self, items: list[tuple[str, str]]):
+        """items = [(key, value), ...]. Klucze w lewej kolumnie, wartosci w prawej."""
+        self.clear()
+        for row, (k, v) in enumerate(items):
+            key = QLabel(k)
+            key.setProperty("class", "kv-key")
+            val = QLabel(v)
+            val.setProperty("class", "kv-value")
+            val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self._grid.addWidget(key, row, 0)
+            self._grid.addWidget(val, row, 1)
+            self._rows.append((key, val))
 
 log = logging.getLogger(__name__)
 
@@ -260,6 +294,11 @@ class PreviewPanel(QWidget):
         self._view.crop_drag.connect(self._on_crop_drag)
         layout.addWidget(self._view, stretch=1)
 
+        # Metadata grid (TrimBox/BleedBox/OutputIntent) — wypelniana po renderze
+        self._meta_grid = MetadataGrid()
+        self._meta_grid.setVisible(False)
+        layout.addWidget(self._meta_grid)
+
         # Placeholder (overlay na view — center)
         default_placeholder = (
             "Przeciągnij pliki i kliknij\n\"Generuj bleed\" aby zobaczyć podgląd"
@@ -404,6 +443,7 @@ class PreviewPanel(QWidget):
             self._split_btn.setVisible(False)
             self._split_btn.setChecked(False)
         self._split_view = False
+        self._meta_grid.setVisible(False)
         self._active_async_requests.clear()
         self._async_ticket += 1  # invalidate pending async
         self._update_nav()
@@ -465,6 +505,7 @@ class PreviewPanel(QWidget):
         """Renderuje aktualny PDF do sceny."""
         self._scene.clear()
         self._view.set_crop_mode(False)
+        self._meta_grid.setVisible(False)
         has_content = bool(self._results) or bool(self._job and self._job.sheets)
         self._view.setVisible(has_content)
         self._placeholder.setVisible(not has_content)
@@ -474,10 +515,65 @@ class PreviewPanel(QWidget):
 
         if self._results and idx < len(self._results):
             self._render_bleed(idx)
+            self._update_metadata(self._results[idx]["path"])
         elif self._job and self._sheet_pdfs and idx < len(self._sheet_pdfs):
             self._render_sheet(idx)
 
         self._view.fit_content()
+
+    def _update_metadata(self, pdf_path: str):
+        """Wczytaj TrimBox/BleedBox/CropBox + OutputIntent z PDF i pokaz w KV-grid."""
+        try:
+            import fitz
+            doc = fitz.open(pdf_path)
+            page = doc[0]
+
+            def _box_str(rect) -> str:
+                if rect is None:
+                    return "—"
+                w_mm = (rect.x1 - rect.x0) * 25.4 / 72.0
+                h_mm = (rect.y1 - rect.y0) * 25.4 / 72.0
+                return f"{w_mm:.1f} × {h_mm:.1f} mm"
+
+            media = page.mediabox
+            trim = page.trimbox if page.trimbox else None
+            bleed_b = page.bleedbox if page.bleedbox else None
+
+            # Wylicz spad z roznicy MediaBox - TrimBox (wszystkie cztery boki)
+            bleed_mm_str = "—"
+            if trim is not None and media is not None:
+                dx = (trim.x0 - media.x0) * 25.4 / 72.0
+                bleed_mm_str = f"{abs(dx):.1f} mm"
+
+            # OutputIntent — sprawdz katalog PDF pod /OutputIntents
+            output_intent = "—"
+            try:
+                cat_xref = doc.pdf_catalog()
+                oi = doc.xref_get_key(cat_xref, "OutputIntents")
+                if oi and oi[0] != "null":
+                    # Spróbuj wyciągnąć identyfikator profilu (FOGRA39 itp.)
+                    raw = oi[1] if len(oi) > 1 else ""
+                    if "FOGRA39" in raw or "FOGRA39" in str(oi):
+                        output_intent = "FOGRA39 (PDF/X-4)"
+                    else:
+                        output_intent = "obecny"
+            except Exception:
+                pass
+
+            doc.close()
+
+            items = [
+                ("Rozmiar",     _box_str(media)),
+                ("TrimBox",     _box_str(trim)),
+                ("BleedBox",    _box_str(bleed_b)),
+                ("Spad",        bleed_mm_str),
+                ("OutputIntent", output_intent),
+            ]
+            self._meta_grid.set_data(items)
+            self._meta_grid.setVisible(True)
+        except Exception as e:
+            log.warning(f"Metadata read failed: {pdf_path}: {e}")
+            self._meta_grid.setVisible(False)
 
     def _render_bleed(self, idx: int):
         result = self._results[idx]

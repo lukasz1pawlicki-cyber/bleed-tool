@@ -18,6 +18,8 @@ class BleedWorker(QThread):
 
     progress = pyqtSignal(int, int)       # (current, total)
     log_message = pyqtSignal(str)         # linia logu
+    # file_status: (path, status, issue) gdzie status ∈ {wait,ok,warn,err,proc}
+    file_status = pyqtSignal(str, str, str)
     # finished: (output_paths, input_infos) gdzie input_infos = [(src_path, page_idx), ...]
     # parallel do output_paths (po 1 pozycji na wygenerowany output)
     finished = pyqtSignal(list, list)
@@ -71,6 +73,7 @@ class BleedWorker(QThread):
 
         for i, pdf in enumerate(self._files):
             self.progress.emit(i, total)
+            self.file_status.emit(pdf, "proc", "")
             name = os.path.basename(pdf)
             try:
                 actual_path = pdf
@@ -116,8 +119,10 @@ class BleedWorker(QThread):
                 # Zamknij pdf_doc po wszystkich stronach (współdzielony)
                 if stickers and stickers[0].pdf_doc is not None:
                     stickers[0].pdf_doc.close()
+                self.file_status.emit(pdf, "ok", "")
             except Exception as e:
                 self.log_message.emit(f"  [ERR] {name}: {e}")
+                self.file_status.emit(pdf, "err", str(e))
                 err += 1
 
         # Cleanup temp z crop
@@ -142,6 +147,8 @@ class NestWorker(QThread):
 
     progress = pyqtSignal(int, int)
     log_message = pyqtSignal(str)
+    # file_status: (path, status, issue) gdzie status ∈ {wait,ok,warn,err,proc}
+    file_status = pyqtSignal(str, str, str)
     finished = pyqtSignal(object, list)   # (job, sheet_pdf_paths)
     error = pyqtSignal(str)
 
@@ -225,6 +232,7 @@ class NestWorker(QThread):
 
         for i, pdf in enumerate(self._files):
             self.progress.emit(i, total)
+            self.file_status.emit(pdf, "proc", "")
             name = os.path.basename(pdf)
             file_copies = self._file_copies.get(pdf, 1)
             copies = self._copies if self._copies > 1 else file_copies
@@ -347,8 +355,10 @@ class NestWorker(QThread):
                 sticker_copies_list.append((s, copies))
                 tag = "bleed" if is_bleed_output else "surowy"
                 self.log_message.emit(f"  {name} ({tag}): {pw_mm:.1f}x{ph_mm:.1f}mm x{copies}")
+                self.file_status.emit(pdf, "ok", "")
             except Exception as e:
                 self.log_message.emit(f"  [ERR] {name}: {e}")
+                self.file_status.emit(pdf, "err", str(e))
 
         if not sticker_copies_list:
             self.log_message.emit("\nBrak naklejek do nestowania.")

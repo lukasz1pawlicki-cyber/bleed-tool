@@ -274,6 +274,62 @@ QScrollArea > QWidget#qt_scrollarea_viewport { background: #ffffff; }
 QWidget[class="file-item"] { background: #ffffff; border-radius: 6px; }
 QWidget[class="file-item"]:hover { background: #f5f5f7; }
 
+/* Status dot (w liscie plikow) */
+QLabel[class="status-dot"] {
+    border-radius: 6px;
+    background: #e5e5ea;
+    border: 1px solid #c4c7cc;
+    min-width: 12px; min-height: 12px;
+}
+QLabel[class="status-dot"][status="wait"] { background: #e5e5ea; border-color: #c4c7cc; }
+QLabel[class="status-dot"][status="proc"] { background: #1a73e8; border-color: #1a73e8; }
+QLabel[class="status-dot"][status="ok"]   { background: #34a853; border-color: #34a853; }
+QLabel[class="status-dot"][status="warn"] { background: #f59e0b; border-color: #f59e0b; }
+QLabel[class="status-dot"][status="err"]  { background: #d93025; border-color: #d93025; }
+
+/* Komunikat issue pod nazwa pliku */
+QLabel[class="file-issue"] { font-size: 11px; color: #86868b; }
+QLabel[class="file-issue"][severity="warn"] { color: #b45309; }
+QLabel[class="file-issue"][severity="err"]  { color: #d93025; }
+
+/* =============================================================
+   UTIL CARD — utylizacja arkusza
+   ============================================================= */
+QWidget[class="util-card"] {
+    background: #ffffff;
+    border: 1px solid #e2e2e7;
+    border-radius: 12px;
+}
+QLabel[class="util-pct"] {
+    font-size: 32px; font-weight: 700; color: #1d1d1f;
+}
+QLabel[class="util-pct"][grade="good"] { color: #34a853; }
+QLabel[class="util-pct"][grade="ok"]   { color: #1a73e8; }
+QLabel[class="util-pct"][grade="low"]  { color: #b45309; }
+QLabel[class="util-sub"] { font-size: 12px; color: #86868b; }
+QLabel[class="util-caption"] { font-size: 11px; color: #86868b; font-weight: 500; }
+QProgressBar[class="util-bar"] {
+    background: #eef0f3; border: none; border-radius: 4px;
+    height: 8px; font-size: 0px;
+}
+QProgressBar[class="util-bar"]::chunk { background: #1a73e8; border-radius: 4px; }
+QProgressBar[class="util-bar"][grade="good"]::chunk { background: #34a853; }
+QProgressBar[class="util-bar"][grade="low"]::chunk  { background: #f59e0b; }
+
+/* =============================================================
+   KV-GRID — metadane PDF (TrimBox, BleedBox, OutputIntent)
+   ============================================================= */
+QWidget[class="kv-grid"] {
+    background: #fafafa;
+    border: 1px solid #e5e5ea;
+    border-radius: 8px;
+}
+QLabel[class="kv-key"]   { font-size: 11px; color: #86868b; font-weight: 500; }
+QLabel[class="kv-value"] {
+    font-size: 12px; color: #1d1d1f;
+    font-family: "Cascadia Code", "Consolas", monospace;
+}
+
 /* Scrollbars */
 QScrollBar:vertical {
     background: transparent; width: 6px; margin: 4px 0;

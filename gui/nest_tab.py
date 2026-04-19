@@ -20,6 +20,7 @@ from config import (
     PT_TO_MM,
 )
 from gui.file_section import FileSection
+from gui.util_card import UtilCard
 
 
 class SegmentedButton(QWidget):
@@ -257,6 +258,11 @@ class NestTab(QWidget):
 
         layout.addWidget(params_card)
 
+        # === Utylizacja (UtilCard) ===
+        self._util_card = UtilCard()
+        self._util_card.setVisible(False)
+        layout.addWidget(self._util_card)
+
         # === Action bar ===
         bar = QHBoxLayout()
         bar.setSpacing(8)
@@ -293,6 +299,8 @@ class NestTab(QWidget):
         self._status_label.setText("")
         self._last_job = None
         self._last_pdfs = []
+        self._util_card.clear()
+        self._util_card.setVisible(False)
 
     @property
     def files(self) -> list[str]:
@@ -557,6 +565,7 @@ class NestTab(QWidget):
         self._nest_btn.setText("Rozmieszczam...")
         self._progress.setVisible(True)
         self._progress.setValue(0)
+        self._file_section.reset_statuses()
 
         sheet_w, sheet_h = self._get_sheet_size()
         mode = self._mode_seg.value()
@@ -578,6 +587,7 @@ class NestTab(QWidget):
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)
+        self._worker.file_status.connect(self._file_section.set_status)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
         self._worker.start()
@@ -617,10 +627,20 @@ class NestTab(QWidget):
                     "  ⚠ Niska utylizacja — rozwaz zwiekszenie liczby powtorzen "
                     "lub mniejszy format arkusza."
                 )
+            self._util_card.set_data(
+                util_sheet_pct=util_sheet,
+                util_print_pct=util_print,
+                used_mm2=used,
+                sheet_total_mm2=sheet_total,
+                sheets_count=len(job.sheets),
+                placements_count=total,
+            )
+            self._util_card.setVisible(True)
         else:
             self._status_label.setText(
                 f"Gotowe — {total} naklejek na {len(job.sheets)} arkusz(ach)"
             )
+            self._util_card.setVisible(False)
 
         self._last_job = job
         self._last_pdfs = sheet_pdfs

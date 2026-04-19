@@ -20,7 +20,7 @@ URUCHOMIENIE
     (jesli nie dziala: Terminal → cd do folderu → bash uruchom.command)
 
   Przy pierwszym uruchomieniu program automatycznie zainstaluje
-  brakujace biblioteki (PyQt6, PyMuPDF, NumPy, Pillow, cairosvg).
+  brakujace biblioteki (PyQt6, PyMuPDF, NumPy, Pillow, cairosvg, opencv-python).
   Wymaga polaczenia z internetem.
 
   Opcjonalnie: Ghostscript (dla plikow .eps/.ai zapisanych jako PostScript)
@@ -42,6 +42,11 @@ UZYCIE
     python bleed_cli.py plik.pdf
     python bleed_cli.py folder/ -o output/ --bleed 3.0
     python bleed_cli.py --batch ./wszystkie -o ./out --recursive
+    python bleed_cli.py --batch ./wszystkie -o ./out -j 0        (rownolegle, auto CPU)
+    python bleed_cli.py --project sesja.bleedproj                 (wczytaj projekt)
+    python bleed_cli.py plik.pdf --save-project sesja.bleedproj   (zapisz projekt)
+    python bleed_cli.py plik.pdf --preflight strict               (blokuj blady+ostrzezenia)
+    python bleed_cli.py --clear-cache                             (wyczysc cache konturow)
     python bleed_cli.py --help
 
   Nazwa pliku wyjsciowego: {stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
@@ -72,10 +77,12 @@ ZAWARTOSC
   bleed_cli.py        — Interfejs linii polecen (single + --batch)
   config.py           — Konfiguracja (DEFAULT_BLEED, SPOT_COLORS, PLOTTERS)
   models.py           — Struktury danych (Sticker, Placement, Sheet)
-  gui/                — Moduly GUI: main_window, workers, widgets, theme
+  gui/                — Moduly GUI: main_window, bleed_tab, nest_tab,
+                        file_section, preview_panel, log_panel,
+                        flexcut_dialog, workers, theme, resources/style.qss
   modules/            — Pipeline: contour, bleed, export, nesting, panelize,
                         marks, crop, preflight, svg_convert, pdf_metadata,
-                        ghostscript_bridge
+                        ghostscript_bridge, file_loader, profiles, project, cache
   profiles/           — ICC profile (opcjonalnie CoatedFOGRA39.icc)
   uruchom.bat         — Launcher Windows
   uruchom.command     — Launcher macOS/Linux
