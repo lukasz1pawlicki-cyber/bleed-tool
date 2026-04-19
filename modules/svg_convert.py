@@ -26,7 +26,10 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Zapewnij dostęp do biblioteki cairo (Homebrew na macOS)
+# Zapewnij dostęp do biblioteki cairo:
+#   macOS: Homebrew (/opt/homebrew/lib)
+#   Windows: GTK3-Runtime / MSYS2 / conda (typowe lokalizacje)
+#   Linux: PATH systemowy (zwykle dziala out-of-the-box)
 # ---------------------------------------------------------------------------
 _HOMEBREW_LIB = "/opt/homebrew/lib"
 if os.path.isdir(_HOMEBREW_LIB):
@@ -36,18 +39,64 @@ if os.path.isdir(_HOMEBREW_LIB):
             f"{_HOMEBREW_LIB}:{_dyld}" if _dyld else _HOMEBREW_LIB
         )
 
-# Monkey-patch ctypes.util.find_library żeby znalazło cairo z Homebrew
+# Windows: typowe lokalizacje cairo DLL. cairocffi wymaga zeby bin z
+# libcairo-2.dll byl w PATH _przed_ wywolaniem dlopen. Na Python 3.8+
+# dodatkowo uzywamy os.add_dll_directory (pewniejsze niz PATH w niektorych
+# srodowiskach).
+_WIN_CAIRO_DIRS: list[str] = []
+if os.name == "nt":
+    _candidates = [
+        r"C:\Program Files\GTK3-Runtime Win64\bin",
+        r"C:\Program Files (x86)\GTK3-Runtime Win32\bin",
+        r"C:\msys64\mingw64\bin",
+        r"C:\msys64\ucrt64\bin",
+        r"C:\tools\msys64\mingw64\bin",
+    ]
+    # Conda envs: Python.exe jest w env root, biblioteki w Library/bin
+    _py_prefix = os.path.dirname(os.path.dirname(os.__file__))
+    _candidates.append(os.path.join(_py_prefix, "Library", "bin"))
+    # scoop
+    _scoop = os.environ.get("SCOOP") or os.path.expanduser(r"~\scoop")
+    if _scoop:
+        _candidates.append(os.path.join(_scoop, "apps", "gtk-runtime", "current", "bin"))
+    for _d in _candidates:
+        _dll = os.path.join(_d, "libcairo-2.dll")
+        if os.path.isfile(_dll) and _d not in _WIN_CAIRO_DIRS:
+            _WIN_CAIRO_DIRS.append(_d)
+    # Dodaj wszystkie znalezione do PATH + add_dll_directory
+    if _WIN_CAIRO_DIRS:
+        _path_env = os.environ.get("PATH", "")
+        for _d in _WIN_CAIRO_DIRS:
+            if _d not in _path_env:
+                os.environ["PATH"] = _d + os.pathsep + _path_env
+                _path_env = os.environ["PATH"]
+            # Python 3.8+: wymagane na Windows przy PATH + DLL isolation
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(_d)
+                except OSError:
+                    pass
+
+# Monkey-patch ctypes.util.find_library żeby znalazło cairo gdy find_library
+# samo go nie widzi (Homebrew macOS + fallback Windows)
 _orig_find_library = ctypes.util.find_library
 
 def _patched_find_library(name: str) -> str | None:
     result = _orig_find_library(name)
-    if result is None and name in ("cairo", "cairo-2"):
-        # Szukaj w /opt/homebrew/lib
+    if result:
+        return result
+    if name in ("cairo", "cairo-2"):
+        # macOS
         for candidate in ("libcairo.2.dylib", "libcairo.dylib"):
             full = os.path.join(_HOMEBREW_LIB, candidate)
             if os.path.isfile(full):
                 return full
-    return result
+        # Windows
+        for d in _WIN_CAIRO_DIRS:
+            full = os.path.join(d, "libcairo-2.dll")
+            if os.path.isfile(full):
+                return full
+    return None
 
 ctypes.util.find_library = _patched_find_library
 
@@ -139,25 +188,29 @@ def _svg_to_pdf_cairosvg(svg_path: str, target_w_mm: float | None,
     kwargs: dict = {"url": svg_path, "write_to": tmp.name}
 
     if target_w_mm and target_h_mm:
-        # Oblicz skalę na podstawie viewBox SVG
+        # cairosvg: scale/output_width/parent_width nieprawidlowo obsluguja
+        # SVG bez jednostek (width="600" = 600px). Tylko dpi= daje
+        # przewidywalny rozmiar: output_mm = px_w * 25.4 / dpi.
+        # Wiec: dpi = px_w * 25.4 / target_mm.
         vb_w, vb_h = _get_viewbox_size(svg_path)
+        # Preferujemy viewBox (jeden source of truth); inaczej intrinsic.
         if vb_w and vb_h:
-            target_w_pt = target_w_mm * _MM_TO_PT
-            target_h_pt = target_h_mm * _MM_TO_PT
-            # cairosvg domyślnie renderuje viewBox 1:1 (viewBox units = pt)
-            # scale = target / viewbox daje nam poprawny rozmiar
-            scale_x = target_w_pt / vb_w
-            scale_y = target_h_pt / vb_h
-            scale = min(scale_x, scale_y)  # zachowaj proporcje
-            kwargs["scale"] = scale
-            log.info(
-                f"SVG→PDF (cairosvg): viewBox={vb_w:.1f}×{vb_h:.1f}, "
-                f"target={target_w_mm:.1f}×{target_h_mm:.1f}mm, scale={scale:.4f}"
-            )
+            src_w, src_h = vb_w, vb_h
         else:
-            # Brak viewBox — użyj output_width/height
-            kwargs["output_width"] = str(target_w_mm * _MM_TO_PT)
-            kwargs["output_height"] = str(target_h_mm * _MM_TO_PT)
+            src_w = src_h = 600.0  # reasonable default
+        aspect_src = src_w / src_h
+        aspect_target = target_w_mm / target_h_mm
+        # Preserve aspect — mniejszy z wymiarow determinuje dpi
+        if aspect_src > aspect_target:
+            # SVG szersze — width limiting
+            dpi = src_w * 25.4 / target_w_mm
+        else:
+            dpi = src_h * 25.4 / target_h_mm
+        kwargs["dpi"] = dpi
+        log.info(
+            f"SVG→PDF (cairosvg): viewBox={src_w:.1f}×{src_h:.1f}, "
+            f"target={target_w_mm:.1f}×{target_h_mm:.1f}mm, dpi={dpi:.2f}"
+        )
 
     cairosvg.svg2pdf(**kwargs)
 
