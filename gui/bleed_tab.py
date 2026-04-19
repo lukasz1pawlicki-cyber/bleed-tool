@@ -130,6 +130,7 @@ class BleedTab(QWidget):
         _cl_saved = _saved.get("cutline_mode", "kiss-cut")
         self._cutline_seg = Segmented(
             ["Kiss-Cut", "FlexCut", "Brak"],
+            accent=True,
             default=_cl_map.get(_cl_saved, "Kiss-Cut"),
         )
         row_cut.addWidget(self._cutline_seg)
