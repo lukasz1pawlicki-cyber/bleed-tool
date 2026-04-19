@@ -234,6 +234,19 @@ class FileSection(QWidget):
         ext_lbl.setObjectName("FileExtTag")
         hl.addWidget(ext_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
 
+        # Kopie (Nest) — PRZED nazwa (po lewej)
+        if self._show_copies:
+            spin = QSpinBox()
+            spin.setObjectName("CopiesSpin")
+            spin.setMinimum(1)
+            spin.setMaximum(9999)
+            spin.setValue(self._file_copies.get(filepath, 1))
+            spin.setToolTip("Liczba kopii")
+            spin.valueChanged.connect(
+                lambda v, p=filepath: self._on_copies_change(p, v)
+            )
+            hl.addWidget(spin, alignment=Qt.AlignmentFlag.AlignVCenter)
+
         # Nazwa + meta/issue stack
         name_stack = QWidget()
         ns = QVBoxLayout(name_stack)
@@ -252,26 +265,12 @@ class FileSection(QWidget):
             issue_lbl.setToolTip(issue)
             ns.addWidget(issue_lbl)
         else:
-            # meta linia — placeholder (rozmiar / strony) ma byc dynamicznie
-            # ustawiony z zewnatrz; na razie stub z sciezka.
             meta_lbl = QLabel(os.path.dirname(filepath) or "")
             meta_lbl.setObjectName("FileMeta")
             meta_lbl.setToolTip(filepath)
             ns.addWidget(meta_lbl)
 
         hl.addWidget(name_stack, stretch=1)
-
-        # Kopie (Nest)
-        if self._show_copies:
-            spin = QSpinBox()
-            spin.setObjectName("CopiesSpin")
-            spin.setMinimum(1)
-            spin.setMaximum(9999)
-            spin.setValue(self._file_copies.get(filepath, 1))
-            spin.valueChanged.connect(
-                lambda v, p=filepath: self._on_copies_change(p, v)
-            )
-            hl.addWidget(spin, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # Remove button
         rm = QPushButton("×")
