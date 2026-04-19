@@ -701,8 +701,22 @@ def _detect_raster_alpha_contour(
         alpha_small = alpha
         hs, ws = h, w
 
-    # Threshold: alpha > 50 (widoczna treść + biała obwódka)
-    mask = (alpha_small > 50).astype(np.uint8)
+    # Adaptive threshold: domyślnie alpha > 50 (widoczna treść + biała obwódka).
+    # Dla plików z soft-fade / drop-shadow (Canva bez obwódki białej) alpha > 50
+    # obcina widoczny kontur (treść zanika gradientowo bez solidnej krawędzi).
+    # Heurystyka: gdy gradient zone (5 < alpha < 250) > 5% pikseli, plik ma
+    # miękkie krawędzie i używamy threshold > 5 żeby zachować pełny widoczny
+    # kształt. Inaczej (hard edge, tylko antialiasing) używamy 50.
+    gradient_ratio = float(((alpha_small > 5) & (alpha_small < 250)).sum()) / alpha_small.size
+    if gradient_ratio > 0.05:
+        alpha_threshold = 5
+        log.info(
+            f"Raster alpha: soft-fade edge detected (gradient zone "
+            f"{gradient_ratio*100:.1f}% > 5%) — threshold alpha > {alpha_threshold}"
+        )
+    else:
+        alpha_threshold = 50
+    mask = (alpha_small > alpha_threshold).astype(np.uint8)
 
     # Przelicznik px (skalowany) → pt
     px_to_pt_x = w_pt / ws
