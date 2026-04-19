@@ -7,7 +7,7 @@ Zakladka Bleed: DropZone, Card(Parametry), ActionBar. Technikadruku QSS.
 import os
 import logging
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
     QProgressBar, QFileDialog, QSizePolicy, QMessageBox, QSpinBox,
     QDoubleSpinBox, QScrollArea,
@@ -84,48 +84,47 @@ class BleedTab(QWidget):
         files_card.body.addWidget(self._file_section)
         layout.addWidget(files_card)
 
-        # === Parametry card ===
+        # === Parametry card (QGridLayout) ===
         params_card = CardSection(
             "Parametry bleeda",
             aux="pipeline: detect → offset → refit",
         )
+        # Grid kolumny: 0=label(110) | 1=primary | 2=unit | 3=secondary | 4=stretch
+        pg = QGridLayout()
+        pg.setContentsMargins(0, 0, 0, 0)
+        pg.setHorizontalSpacing(8)
+        pg.setVerticalSpacing(6)
+        pg.setColumnMinimumWidth(0, 110)
+        pg.setColumnStretch(4, 1)
+        AV = Qt.AlignmentFlag.AlignVCenter
 
-        # Row: Spad
-        row_spad = QHBoxLayout()
-        row_spad.setSpacing(8)
-        row_spad.addWidget(self._field_label("Spad"))
+        # Row 0: Spad
+        pg.addWidget(self._grid_label("Spad"), 0, 0, AV)
         self._bleed_spin = QDoubleSpinBox()
         self._bleed_spin.setRange(0.0, 50.0)
         self._bleed_spin.setSingleStep(0.5)
         self._bleed_spin.setDecimals(2)
         self._bleed_spin.setValue(float(_saved.get("bleed_mm", DEFAULT_BLEED_MM)))
-        self._bleed_spin.setFixedWidth(80)
+        self._bleed_spin.setFixedSize(80, 26)
         self._bleed_spin.setProperty("variant", "mono")
-        row_spad.addWidget(self._bleed_spin)
-        row_spad.addWidget(UnitLabel("mm"))
-        row_spad.addStretch(1)
+        pg.addWidget(self._bleed_spin, 0, 1, AV)
+        pg.addWidget(self._unit_cell("mm"), 0, 2, AV)
         self._black_100k_cb = QCheckBox("Czarny → 100% K")
         self._black_100k_cb.setEnabled(False)
-        row_spad.addWidget(self._black_100k_cb)
-        params_card.body.addLayout(row_spad)
+        self._black_100k_cb.setFixedHeight(26)
+        pg.addWidget(self._black_100k_cb, 0, 3, AV)
 
-        # Row: Wysokosc
-        row_h = QHBoxLayout()
-        row_h.setSpacing(8)
-        row_h.addWidget(self._field_label("Wysokość"))
+        # Row 1: Wysokosc
+        pg.addWidget(self._grid_label("Wysokość"), 1, 0, AV)
         self._height_edit = QLineEdit()
-        self._height_edit.setFixedWidth(80)
+        self._height_edit.setFixedSize(80, 26)
         self._height_edit.setPlaceholderText("auto")
         self._height_edit.setProperty("variant", "mono")
-        row_h.addWidget(self._height_edit)
-        row_h.addWidget(UnitLabel("cm"))
-        row_h.addStretch(1)
-        params_card.body.addLayout(row_h)
+        pg.addWidget(self._height_edit, 1, 1, AV)
+        pg.addWidget(self._unit_cell("cm"), 1, 2, AV)
 
-        # Row: Linia ciecia (Segmented)
-        row_cut = QHBoxLayout()
-        row_cut.setSpacing(8)
-        row_cut.addWidget(self._field_label("Linia cięcia"))
+        # Row 2: Linia ciecia (Segmented, span 1-3)
+        pg.addWidget(self._grid_label("Linia cięcia"), 2, 0, AV)
         _cl_map = {"kiss-cut": "Kiss-Cut", "flexcut": "FlexCut", "none": "Brak"}
         _cl_saved = _saved.get("cutline_mode", "kiss-cut")
         self._cutline_seg = Segmented(
@@ -133,14 +132,11 @@ class BleedTab(QWidget):
             accent=True,
             default=_cl_map.get(_cl_saved, "Kiss-Cut"),
         )
-        row_cut.addWidget(self._cutline_seg)
-        row_cut.addStretch(1)
-        params_card.body.addLayout(row_cut)
+        self._cutline_seg.setFixedHeight(30)
+        pg.addWidget(self._cutline_seg, 2, 1, 1, 3, AV)
 
-        # Row: Silnik konturu + Bialy poddruk
-        row_eng = QHBoxLayout()
-        row_eng.setSpacing(8)
-        row_eng.addWidget(self._field_label("Silnik konturu"))
+        # Row 3: Silnik konturu + Bialy poddruk
+        pg.addWidget(self._grid_label("Silnik konturu"), 3, 0, AV)
         self._engine_combo = QComboBox()
         self._engine_combo.setProperty("variant", "mono")
         self._engine_combo.addItem("Auto (Moore + OpenCV)", "auto")
@@ -155,23 +151,23 @@ class BleedTab(QWidget):
                     break
         except Exception as e:
             log.debug(f"BleedTab: engine default restore failed: {e}")
-        self._engine_combo.setFixedWidth(200)
-        row_eng.addWidget(self._engine_combo)
-        row_eng.addStretch(1)
+        self._engine_combo.setFixedSize(220, 26)
+        pg.addWidget(self._engine_combo, 3, 1, 1, 2, AV)
         self._white_cb = QCheckBox("Biały poddruk")
         self._white_cb.setChecked(bool(_saved.get("white", False)))
-        row_eng.addWidget(self._white_cb)
-        params_card.body.addLayout(row_eng)
+        self._white_cb.setFixedHeight(26)
+        pg.addWidget(self._white_cb, 3, 3, AV)
 
-        # Row: Crop (advanced — ukryty przy braku wysokosci)
-        row_crop = QHBoxLayout()
-        row_crop.setSpacing(8)
-        row_crop.addWidget(self._field_label("Crop"))
+        # Row 4: Crop (pojedynczy rzad z wieloma widgetami — wewnetrzny HBox, span 1-3)
+        pg.addWidget(self._grid_label("Crop"), 4, 0, AV)
+        crop_row = QHBoxLayout()
+        crop_row.setContentsMargins(0, 0, 0, 0)
+        crop_row.setSpacing(8)
         self._crop_cb = QCheckBox("Przytnij do wysokości")
         self._crop_cb.setEnabled(False)
+        self._crop_cb.setFixedHeight(26)
         self._crop_cb.toggled.connect(self._on_crop_toggled)
-        row_crop.addWidget(self._crop_cb)
-        row_crop.addStretch(1)
+        crop_row.addWidget(self._crop_cb)
 
         self._crop_shape_group = QButtonGroup(self)
         self._rb_square = QRadioButton("Kwadrat")
@@ -182,57 +178,64 @@ class BleedTab(QWidget):
         self._crop_shape_group.addButton(self._rb_rounded, 1)
         self._crop_shape_group.addButton(self._rb_circle, 2)
         for rb in (self._rb_square, self._rb_rounded, self._rb_circle):
-            row_crop.addWidget(rb)
+            rb.setFixedHeight(26)
+            crop_row.addWidget(rb)
             rb.setVisible(False)
 
         self._radius_label = QLabel("R 9%")
         self._radius_label.setObjectName("FieldSubLabel")
+        self._radius_label.setFixedHeight(26)
         self._radius_label.setVisible(False)
-        row_crop.addWidget(self._radius_label)
+        crop_row.addWidget(self._radius_label)
         self._radius_dec_btn = IconButton("−")
+        self._radius_dec_btn.setFixedSize(26, 26)
         self._radius_dec_btn.setVisible(False)
         self._radius_dec_btn.clicked.connect(self._crop_radius_dec)
-        row_crop.addWidget(self._radius_dec_btn)
+        crop_row.addWidget(self._radius_dec_btn)
         self._radius_inc_btn = IconButton("+")
+        self._radius_inc_btn.setFixedSize(26, 26)
         self._radius_inc_btn.setVisible(False)
         self._radius_inc_btn.clicked.connect(self._crop_radius_inc)
-        row_crop.addWidget(self._radius_inc_btn)
+        crop_row.addWidget(self._radius_inc_btn)
+        crop_row.addStretch(1)
         self._radius_pct = 9
         self._crop_shape_group.idToggled.connect(self._on_crop_shape_changed)
+        pg.addLayout(crop_row, 4, 1, 1, 3)
 
-        params_card.body.addLayout(row_crop)
-
-        # Row: Output
-        row_out = QHBoxLayout()
-        row_out.setSpacing(8)
-        row_out.addWidget(self._field_label("Output"))
+        # Row 5: Output (LineEdit span 1-2, IconButton w 3)
+        pg.addWidget(self._grid_label("Output"), 5, 0, AV)
         self._output_edit = QLineEdit()
         self._output_edit.setPlaceholderText("Katalog pliku wejściowego")
-        self._output_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row_out.addWidget(self._output_edit, stretch=1)
+        self._output_edit.setFixedHeight(26)
+        pg.addWidget(self._output_edit, 5, 1, 1, 2, AV)
         browse_btn = IconButton("…", tip="Wybierz folder")
+        browse_btn.setFixedSize(30, 26)
         browse_btn.clicked.connect(self._browse_output)
-        row_out.addWidget(browse_btn)
-        params_card.body.addLayout(row_out)
+        pg.addWidget(browse_btn, 5, 3, AV)
 
+        params_card.body.addLayout(pg)
         layout.addWidget(params_card)
 
-        # === Preflight gate card ===
+        # === Preflight gate card (QGridLayout) ===
         pg_card = CardSection("Preflight gate")
-        row_pg = QHBoxLayout()
-        row_pg.setSpacing(10)
+        pgg = QGridLayout()
+        pgg.setContentsMargins(0, 0, 0, 0)
+        pgg.setHorizontalSpacing(10)
+        pgg.setVerticalSpacing(0)
+        pgg.setColumnStretch(1, 1)
         _gate_map = {"off": "Off", "lenient": "Lenient", "strict": "Strict"}
         _gate_default = _saved.get("preflight_gate", "off")
         self._preflight_gate_seg = Segmented(
             ["Off", "Lenient", "Strict"],
             default=_gate_map.get(_gate_default, "Off"),
         )
-        row_pg.addWidget(self._preflight_gate_seg)
-        row_pg.addStretch(1)
+        self._preflight_gate_seg.setFixedHeight(30)
+        pgg.addWidget(self._preflight_gate_seg, 0, 0, AV)
         self._preflight_btn = make_button("Preflight", variant="secondary", size="sm")
+        self._preflight_btn.setFixedHeight(30)
         self._preflight_btn.clicked.connect(self._on_preflight)
-        row_pg.addWidget(self._preflight_btn)
-        pg_card.body.addLayout(row_pg)
+        pgg.addWidget(self._preflight_btn, 0, 2, AV)
+        pg_card.body.addLayout(pgg)
         layout.addWidget(pg_card)
 
         layout.addStretch(1)
@@ -264,6 +267,19 @@ class BleedTab(QWidget):
         lbl = QLabel(text)
         lbl.setObjectName("FieldLabel")
         lbl.setFixedWidth(110)
+        return lbl
+
+    def _grid_label(self, text: str) -> QLabel:
+        """Label do QGridLayout — fixed height 26 + AlignVCenter."""
+        lbl = QLabel(text)
+        lbl.setObjectName("FieldLabel")
+        lbl.setFixedHeight(26)
+        return lbl
+
+    def _unit_cell(self, text: str) -> QLabel:
+        """Unit label (mm/cm) — fixed height + fixed width dla gridu."""
+        lbl = UnitLabel(text)
+        lbl.setFixedSize(28, 26)
         return lbl
 
     # --- Public API ---
