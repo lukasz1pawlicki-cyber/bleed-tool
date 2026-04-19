@@ -107,6 +107,17 @@ class BleedTab(QWidget):
         self._black_100k_cb = QCheckBox("Czarny → 100% K")
         self._black_100k_cb.setEnabled(False)
         row_spad.addWidget(self._black_100k_cb)
+        # Sharp edges (ostre narozy) — widoczny tylko gdy sa pliki rastrowe
+        self._sharp_edges_cb = QCheckBox("Ostre krawędzie (raster)")
+        self._sharp_edges_cb.setToolTip(
+            "Dla geometrycznych ksztaltow z ostrymi kątami (gwiazdki, strzalki, "
+            "diamenty). Zachowuje kontur 1:1 z input bez wygladzania krzywymi.\n\n"
+            "Domyslnie wylaczone — uzywamy wygladzonych krzywych Bezier (lepsze "
+            "dla logotypow, ilustracji, okraglych naklejek)."
+        )
+        self._sharp_edges_cb.setVisible(False)
+        self._sharp_edges_cb.setChecked(bool(_saved.get("sharp_edges", False)))
+        row_spad.addWidget(self._sharp_edges_cb)
         params_card.body.addLayout(row_spad)
 
         # Row: Wysokosc
@@ -314,6 +325,12 @@ class BleedTab(QWidget):
         self._black_100k_cb.setEnabled(has_pdf)
         if not has_pdf:
             self._black_100k_cb.setChecked(False)
+        # Sharp edges — widoczny tylko gdy dodano plik rastrowy
+        _RASTER_EXT = ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')
+        has_raster = any(p.lower().endswith(_RASTER_EXT) for p in self.files)
+        self._sharp_edges_cb.setVisible(has_raster)
+        if not has_raster:
+            self._sharp_edges_cb.setChecked(False)
         has_height = bool(self._height_edit.text().strip())
         self._crop_cb.setEnabled(bool(self.files) and has_height)
         if not self._crop_cb.isEnabled():
@@ -429,6 +446,7 @@ class BleedTab(QWidget):
             "cutline_mode": self.cutline_mode,
             "white": self._white_cb.isChecked(),
             "engine": self._engine_combo.currentData(),
+            "sharp_edges": self._sharp_edges_cb.isChecked(),
             "preflight_gate": gate,
         }})
 
@@ -454,6 +472,7 @@ class BleedTab(QWidget):
             crop_offsets=dict(self._crop_offsets),
             radius_pct=self._radius_pct,
             contour_engine=self._engine_combo.currentData(),
+            raster_mode=("sharp" if self._sharp_edges_cb.isChecked() else "smooth"),
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)
