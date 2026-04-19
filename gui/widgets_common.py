@@ -27,8 +27,8 @@ class PageTitleBar(QFrame):
         super().__init__(parent)
         self.setObjectName("PageTitleBar")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 14, 22, 16)
-        lay.setSpacing(4)
+        lay.setContentsMargins(22, 10, 22, 12)
+        lay.setSpacing(2)
 
         # Crumb row
         crumb_row = QHBoxLayout()
@@ -67,8 +67,8 @@ class CardSection(QFrame):
         self.setObjectName("Card")
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 14)
-        root.setSpacing(8)
+        root.setContentsMargins(14, 8, 14, 10)
+        root.setSpacing(6)
 
         # Header row
         hdr = QHBoxLayout()
@@ -94,7 +94,7 @@ class CardSection(QFrame):
         # Body container (public)
         self.body = QVBoxLayout()
         self.body.setContentsMargins(0, 0, 0, 0)
-        self.body.setSpacing(10)
+        self.body.setSpacing(6)
         root.addLayout(self.body)
 
 

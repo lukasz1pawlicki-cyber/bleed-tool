@@ -165,7 +165,7 @@ QLineEdit, QSpinBox, QDoubleSpinBox {
     border: 1.5px solid #E2E5ED;
     border-radius: 7px;
     padding: 0 10px;
-    min-height: 30px;
+    min-height: 26px;
     font-family: "JetBrains Mono", monospace;
     font-size: 12px;
     color: #0F172A;
@@ -191,7 +191,7 @@ QComboBox {
     border: 1.5px solid #E2E5ED;
     border-radius: 7px;
     padding: 0 28px 0 10px;
-    min-height: 30px;
+    min-height: 26px;
     font-size: 12px;
     color: #0F172A;
 }
@@ -655,14 +655,14 @@ QFrame#UtilCard {
 QLabel#UtilValue {
     color: #059669;
     font-family: "JetBrains Mono", monospace;
-    font-size: 46px;
+    font-size: 34px;
     font-weight: 600;
     letter-spacing: -1px;
 }
 QLabel#UtilSuffix {
     color: #6B7280;
     font-family: "JetBrains Mono", monospace;
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 500;
 }
 QLabel#UtilLabel {

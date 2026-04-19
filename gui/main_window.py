@@ -61,15 +61,10 @@ class Sidebar(QFrame):
         lay.addWidget(self.btn_bleed)
         lay.addWidget(self.btn_nest)
 
-        # === Narzedzia ===
-        lay.addWidget(self._section_label("Narzędzia"))
-        self.btn_flex = self._nav("FlexCut", key="flexcut")
-        lay.addWidget(self.btn_flex)
-
         # Grupa ekskluzywna
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
-        for b in (self.btn_bleed, self.btn_nest, self.btn_flex):
+        for b in (self.btn_bleed, self.btn_nest):
             self._nav_group.addButton(b)
             b.clicked.connect(
                 lambda _=False, k=b.property("navKey"): self.navigated.emit(k)
@@ -138,7 +133,6 @@ class Sidebar(QFrame):
         mapping = {
             "bleed": self.btn_bleed,
             "nest": self.btn_nest,
-            "flexcut": self.btn_flex,
         }
         btn = mapping.get(key)
         if btn:
@@ -239,13 +233,6 @@ class MainWindow(QMainWindow):
 
     def _activate_tab(self, key: str):
         self._active_tab = key
-        if key == "flexcut":
-            # FlexCut to dialog modalny — otworz nad obecnym widokiem
-            if self._nest_tab:
-                self._nest_tab._open_flexcut()
-            # Nie zmieniamy stack — zostawiamy aktywny widok
-            self._sidebar.set_active("nest" if self._stack.currentIndex() == 1 else "bleed")
-            return
         idx = 0 if key == "bleed" else 1
         self._stack.setCurrentIndex(idx)
         self._preview_stack.setCurrentIndex(idx)

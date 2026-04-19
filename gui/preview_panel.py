@@ -145,7 +145,8 @@ class _PDFGraphicsView(QGraphicsView):
         self._crop_dim = crop_dim
 
     def wheelEvent(self, event: QWheelEvent):
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        # Lagodny zoom — 1.05 per tick (starsze 1.15 bylo za agresywne).
+        factor = 1.05 if event.angleDelta().y() > 0 else 1 / 1.05
         self.scale(factor, factor)
 
     def mousePressEvent(self, event: QMouseEvent):

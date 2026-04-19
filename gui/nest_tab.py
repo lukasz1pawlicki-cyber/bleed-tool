@@ -63,8 +63,8 @@ class NestTab(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
         layout = QVBoxLayout(inner)
-        layout.setContentsMargins(22, 16, 22, 16)
-        layout.setSpacing(16)
+        layout.setContentsMargins(22, 10, 22, 10)
+        layout.setSpacing(8)
         scroll.setWidget(inner)
         root.addWidget(scroll, stretch=1)
 

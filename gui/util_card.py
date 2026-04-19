@@ -23,8 +23,8 @@ class UtilCard(QFrame):
         self.setObjectName("UtilCard")
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(22, 18, 22, 18)
-        root.setSpacing(22)
+        root.setContentsMargins(16, 10, 16, 10)
+        root.setSpacing(18)
 
         # === Lewa kolumna: giant % + label ===
         left = QVBoxLayout()
