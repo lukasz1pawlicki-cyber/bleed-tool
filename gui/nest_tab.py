@@ -94,30 +94,28 @@ class NestTab(QWidget):
         files_card.body.addWidget(self._file_section)
         layout.addWidget(files_card)
 
-        # === Sheet / Roll card (QGridLayout) ===
+        # === Sheet / Roll card ===
         sheet_card = CardSection("Arkusz / Rola")
-        sg = QGridLayout()
-        sg.setContentsMargins(0, 0, 0, 0)
-        sg.setHorizontalSpacing(8)
-        sg.setVerticalSpacing(6)
-        sg.setColumnMinimumWidth(0, 110)
-        sg.setColumnStretch(4, 1)
-        AV = Qt.AlignmentFlag.AlignVCenter
 
-        # Row 0: Tryb
-        sg.addWidget(self._grid_label("Tryb"), 0, 0, AV)
+        # Tryb (Segmented)
+        row_mode = QHBoxLayout()
+        row_mode.setSpacing(8)
+        row_mode.addWidget(self._field_label("Tryb"))
         self._mode_seg = Segmented(
             ["Arkusze", "Rola"],
             default=_saved.get("mode", "Arkusze"),
         )
-        self._mode_seg.setFixedHeight(30)
         self._mode_seg.currentTextChanged.connect(self._on_mode_change)
-        sg.addWidget(self._mode_seg, 0, 1, 1, 3, AV)
+        row_mode.addWidget(self._mode_seg)
+        row_mode.addStretch(1)
+        sheet_card.body.addLayout(row_mode)
 
-        # Row 1: Format (sheet_frame lub roll_frame, oba 26px)
-        sg.addWidget(self._grid_label("Format"), 1, 0, AV)
+        # Format
+        row_fmt = QHBoxLayout()
+        row_fmt.setSpacing(8)
+        row_fmt.addWidget(self._field_label("Format"))
 
-        # Sheet frame (combo)
+        # Sheet frame
         self._sheet_frame = QWidget()
         sf = QHBoxLayout(self._sheet_frame)
         sf.setContentsMargins(0, 0, 0, 0)
@@ -126,16 +124,15 @@ class NestTab(QWidget):
         self._sheet_combo = QComboBox()
         self._sheet_combo.setProperty("variant", "mono")
         self._sheet_combo.addItems(sheet_names)
-        self._sheet_combo.setFixedSize(160, 26)
+        self._sheet_combo.setFixedWidth(160)
         _sp = _saved.get("sheet_preset")
         if _sp and _sp in sheet_names:
             self._sheet_combo.setCurrentText(_sp)
         self._sheet_combo.currentTextChanged.connect(self._on_sheet_changed)
         sf.addWidget(self._sheet_combo)
-        sf.addStretch(1)
-        sg.addWidget(self._sheet_frame, 1, 1, 1, 3, AV)
+        row_fmt.addWidget(self._sheet_frame)
 
-        # Roll frame (combo + + / - / max)
+        # Roll frame
         self._roll_frame = QWidget()
         rf = QHBoxLayout(self._roll_frame)
         rf.setContentsMargins(0, 0, 0, 0)
@@ -144,31 +141,28 @@ class NestTab(QWidget):
         self._roll_combo.setProperty("variant", "mono")
         self._roll_combo.setEditable(True)
         self._roll_combo.addItems([str(w) for w in self._roll_widths])
-        self._roll_combo.setFixedSize(110, 26)
+        self._roll_combo.setFixedWidth(110)
         rf.addWidget(self._roll_combo)
         add_btn = IconButton("+", tip="Dodaj szerokość")
-        add_btn.setFixedSize(26, 26)
         add_btn.clicked.connect(self._roll_add)
         rf.addWidget(add_btn)
         rm_btn = IconButton("−", tip="Usuń szerokość")
-        rm_btn.setFixedSize(26, 26)
         rm_btn.clicked.connect(self._roll_remove)
         rf.addWidget(rm_btn)
-        max_lbl = UnitLabel("max")
-        max_lbl.setFixedHeight(26)
-        rf.addWidget(max_lbl)
+        rf.addWidget(UnitLabel("max"))
         self._roll_max_edit = QLineEdit(str(DEFAULT_ROLL_MAX_LENGTH_MM))
-        self._roll_max_edit.setFixedSize(90, 26)
+        self._roll_max_edit.setFixedWidth(90)
         self._roll_max_edit.setProperty("variant", "mono")
         rf.addWidget(self._roll_max_edit)
-        rf.addStretch(1)
-        # Roll frame zajmuje to samo miejsce co sheet_frame — wiersz 1 span 1-3
-        # Oba sa dodane do tego samego wiersza; toggle setVisible.
-        sg.addWidget(self._roll_frame, 1, 1, 1, 3, AV)
+        row_fmt.addWidget(self._roll_frame)
         self._roll_frame.setVisible(False)
+        row_fmt.addStretch(1)
+        sheet_card.body.addLayout(row_fmt)
 
-        # Row 2: Ploter
-        sg.addWidget(self._grid_label("Ploter"), 2, 0, AV)
+        # Ploter
+        row_plot = QHBoxLayout()
+        row_plot.setSpacing(8)
+        row_plot.addWidget(self._field_label("Ploter"))
         self._plotter_combo = QComboBox()
         self._plotter_combo.setProperty("variant", "mono")
         self._plotter_combo.addItems(list(PLOTTERS.keys()))
@@ -177,35 +171,36 @@ class NestTab(QWidget):
             self._plotter_combo.setCurrentText(_pl)
         else:
             self._plotter_combo.setCurrentText("jwei")
-        self._plotter_combo.setFixedSize(160, 26)
-        sg.addWidget(self._plotter_combo, 2, 1, 1, 3, AV)
+        self._plotter_combo.setFixedWidth(160)
+        row_plot.addWidget(self._plotter_combo)
+        row_plot.addStretch(1)
+        sheet_card.body.addLayout(row_plot)
 
-        sheet_card.body.addLayout(sg)
         layout.addWidget(sheet_card)
 
-        # === Rozklad card (QGridLayout) ===
+        # === Rozklad card ===
         params_card = CardSection(
             "Rozkład",
             aux="shelf nesting + backfill",
         )
-        rg = QGridLayout()
-        rg.setContentsMargins(0, 0, 0, 0)
-        rg.setHorizontalSpacing(8)
-        rg.setVerticalSpacing(6)
-        rg.setColumnMinimumWidth(0, 110)
-        rg.setColumnStretch(4, 1)
 
-        # Row 0: Kopie + spin + Max + (gap) + Gap label + spin + mm
-        rg.addWidget(self._grid_label("Kopie"), 0, 0, AV)
-        cg_inner = QHBoxLayout()
-        cg_inner.setContentsMargins(0, 0, 0, 0)
-        cg_inner.setSpacing(8)
+        # Kopie + Max + Gap — QGridLayout dla idealnego wyrownania wierszy
+        grid_cg = QGridLayout()
+        grid_cg.setContentsMargins(0, 0, 0, 0)
+        grid_cg.setHorizontalSpacing(8)
+        grid_cg.setVerticalSpacing(0)
+
+        # Wiersz: [Kopie | spin | Max] [gap 12px] [Gap | spin | mm] [stretch]
+        lbl_copies = self._field_label("Kopie")
+        lbl_copies.setFixedHeight(26)
+        grid_cg.addWidget(lbl_copies, 0, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self._copies_spin = QSpinBox()
         self._copies_spin.setMinimum(1)
         self._copies_spin.setMaximum(9999)
         self._copies_spin.setValue(1)
         self._copies_spin.setFixedSize(80, 26)
-        cg_inner.addWidget(self._copies_spin)
+        grid_cg.addWidget(self._copies_spin, 0, 1, Qt.AlignmentFlag.AlignVCenter)
 
         max_btn = make_button("Max", variant="ghost", size="sm")
         max_btn.setFixedSize(56, 26)
@@ -214,13 +209,15 @@ class NestTab(QWidget):
             "font-size:11px;}"
         )
         max_btn.clicked.connect(self._calc_max_copies)
-        cg_inner.addWidget(max_btn)
-        cg_inner.addSpacing(16)
+        grid_cg.addWidget(max_btn, 0, 2, Qt.AlignmentFlag.AlignVCenter)
+
+        # 12px gap miedzy Kopie-sekcja a Gap-sekcja
+        grid_cg.setColumnMinimumWidth(3, 12)
 
         gap_lbl = QLabel("Gap")
         gap_lbl.setObjectName("FieldLabel")
         gap_lbl.setFixedHeight(26)
-        cg_inner.addWidget(gap_lbl)
+        grid_cg.addWidget(gap_lbl, 0, 4, Qt.AlignmentFlag.AlignVCenter)
 
         self._gap_spin = QDoubleSpinBox()
         self._gap_spin.setRange(0.0, 100.0)
@@ -228,47 +225,54 @@ class NestTab(QWidget):
         self._gap_spin.setDecimals(1)
         self._gap_spin.setValue(float(_saved.get("gap_mm", DEFAULT_GAP_MM)))
         self._gap_spin.setFixedSize(80, 26)
-        cg_inner.addWidget(self._gap_spin)
+        grid_cg.addWidget(self._gap_spin, 0, 5, Qt.AlignmentFlag.AlignVCenter)
 
         mm_lbl = UnitLabel("mm")
-        mm_lbl.setFixedSize(28, 26)
-        cg_inner.addWidget(mm_lbl)
-        cg_inner.addStretch(1)
-        rg.addLayout(cg_inner, 0, 1, 1, 3)
+        mm_lbl.setFixedHeight(26)
+        grid_cg.addWidget(mm_lbl, 0, 6, Qt.AlignmentFlag.AlignVCenter)
 
-        # Row 1: Wzory (Segmented) + biały checkbox w kol 3 lub 4
-        rg.addWidget(self._grid_label("Wzory"), 1, 0, AV)
+        # stretch
+        grid_cg.setColumnStretch(7, 1)
+        params_card.body.addLayout(grid_cg)
+
+        # Grupowanie (accent Segmented)
+        row_group = QHBoxLayout()
+        row_group.setSpacing(8)
+        row_group.addWidget(self._field_label("Wzory"))
         self._grouping_seg = Segmented(
             ["Grupuj", "Osobne", "Mieszaj"],
             accent=True,
             default=_saved.get("grouping", "Grupuj"),
         )
-        self._grouping_seg.setFixedHeight(30)
-        rg.addWidget(self._grouping_seg, 1, 1, 1, 2, AV)
+        row_group.addWidget(self._grouping_seg)
+        row_group.addStretch(1)
         self._white_cb = QCheckBox("Biały poddruk")
         self._white_cb.setChecked(bool(_saved.get("white", False)))
-        self._white_cb.setFixedHeight(26)
-        rg.addWidget(self._white_cb, 1, 3, AV)
+        row_group.addWidget(self._white_cb)
+        params_card.body.addLayout(row_group)
 
-        # Row 2: Narzedzia — FlexCut button
-        rg.addWidget(self._grid_label("Narzędzia"), 2, 0, AV)
+        # FlexCut + Output
+        row_tools = QHBoxLayout()
+        row_tools.setSpacing(8)
+        row_tools.addWidget(self._field_label("Narzędzia"))
         self._flexcut_btn = make_button("FlexCut…", variant="secondary", size="sm")
-        self._flexcut_btn.setFixedHeight(28)
         self._flexcut_btn.clicked.connect(self._open_flexcut)
-        rg.addWidget(self._flexcut_btn, 2, 1, AV)
+        row_tools.addWidget(self._flexcut_btn)
+        row_tools.addStretch(1)
+        params_card.body.addLayout(row_tools)
 
-        # Row 3: Output
-        rg.addWidget(self._grid_label("Output"), 3, 0, AV)
+        row_out = QHBoxLayout()
+        row_out.setSpacing(8)
+        row_out.addWidget(self._field_label("Output"))
         self._output_edit = QLineEdit()
         self._output_edit.setPlaceholderText("Katalog pliku wejściowego")
-        self._output_edit.setFixedHeight(26)
-        rg.addWidget(self._output_edit, 3, 1, 1, 2, AV)
+        self._output_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        row_out.addWidget(self._output_edit, stretch=1)
         browse_btn = IconButton("…", tip="Wybierz folder")
-        browse_btn.setFixedSize(30, 26)
         browse_btn.clicked.connect(self._browse_output)
-        rg.addWidget(browse_btn, 3, 3, AV)
+        row_out.addWidget(browse_btn)
+        params_card.body.addLayout(row_out)
 
-        params_card.body.addLayout(rg)
         layout.addWidget(params_card)
 
         # === UtilCard (widoczny po gotowym job) ===
@@ -308,13 +312,6 @@ class NestTab(QWidget):
         lbl = QLabel(text)
         lbl.setObjectName("FieldLabel")
         lbl.setFixedWidth(110)
-        return lbl
-
-    def _grid_label(self, text: str) -> QLabel:
-        """Label dla QGridLayout — fixed height 26 zeby sie wyrownywal z inputami."""
-        lbl = QLabel(text)
-        lbl.setObjectName("FieldLabel")
-        lbl.setFixedHeight(26)
         return lbl
 
     # --- Public API ---
