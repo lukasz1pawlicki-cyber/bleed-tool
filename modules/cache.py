@@ -146,12 +146,22 @@ def load(file_path: str, engine: str) -> list | None:
         log.debug(f"Cache miss (corrupt {cf.name}): {e}")
         return None
 
+    # Sanity: payload musi byc dictem (chroni przed spreparowanymi plikami)
+    if not isinstance(payload, dict):
+        log.debug(f"Cache miss (not a dict {cf.name})")
+        return None
+
     if payload.get("version") != _CACHE_VERSION:
         log.debug(f"Cache miss (old version {payload.get('version')})")
         return None
 
+    raw_stickers = payload.get("stickers")
+    if not isinstance(raw_stickers, list):
+        log.debug(f"Cache miss (stickers not a list {cf.name})")
+        return None
+
     try:
-        stickers = [_deserialize_sticker(d) for d in payload["stickers"]]
+        stickers = [_deserialize_sticker(d) for d in raw_stickers]
     except (KeyError, TypeError) as e:
         log.debug(f"Cache miss (bad payload {cf.name}): {e}")
         return None

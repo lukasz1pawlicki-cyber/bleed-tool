@@ -5,6 +5,7 @@ Zakładka Bleed: drop zone, parametry, generowanie bleed + CutContour.
 """
 
 import os
+import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
@@ -14,6 +15,9 @@ from PyQt6.QtCore import pyqtSignal, Qt
 
 from config import DEFAULT_BLEED_MM
 from gui.file_section import FileSection
+from gui import settings as _settings
+
+log = logging.getLogger(__name__)
 
 
 class BleedTab(QWidget):
@@ -28,6 +32,7 @@ class BleedTab(QWidget):
         super().__init__(parent)
         self._log = log_fn or (lambda msg: None)
         self._processing = False
+        _saved = _settings.load().get("bleed", {})
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -65,7 +70,7 @@ class BleedTab(QWidget):
         lbl1 = QLabel("Bleed (mm)")
         lbl1.setProperty("class", "field-label")
         row1.addWidget(lbl1)
-        self._bleed_edit = QLineEdit(str(DEFAULT_BLEED_MM))
+        self._bleed_edit = QLineEdit(str(_saved.get("bleed_mm", DEFAULT_BLEED_MM)))
         self._bleed_edit.setFixedWidth(70)
         row1.addWidget(self._bleed_edit)
         row1.addStretch()
@@ -99,7 +104,13 @@ class BleedTab(QWidget):
         self._rb_kisscut = QRadioButton("Kiss-Cut")
         self._rb_flexcut = QRadioButton("FlexCut")
         self._rb_nocut = QRadioButton("Brak")
-        self._rb_kisscut.setChecked(True)
+        _cl = _saved.get("cutline_mode", "kiss-cut")
+        if _cl == "flexcut":
+            self._rb_flexcut.setChecked(True)
+        elif _cl == "none":
+            self._rb_nocut.setChecked(True)
+        else:
+            self._rb_kisscut.setChecked(True)
         self._cutline_group.addButton(self._rb_kisscut, 0)
         self._cutline_group.addButton(self._rb_flexcut, 1)
         self._cutline_group.addButton(self._rb_nocut, 2)
@@ -111,6 +122,7 @@ class BleedTab(QWidget):
 
         # Checkbox: Biały poddruk
         self._white_cb = QCheckBox("Biały poddruk (White)")
+        self._white_cb.setChecked(bool(_saved.get("white", False)))
         card_layout.addWidget(self._white_cb)
 
         # Row: Silnik konturu (raster) — Moore / OpenCV
@@ -123,16 +135,17 @@ class BleedTab(QWidget):
         self._engine_combo.addItem("Moore (Python)", "moore")
         self._engine_combo.addItem("OpenCV (szybki)", "opencv")
         self._engine_combo.addItem("Auto", "auto")
-        # Wartość domyślna z config
+        # Wartość domyślna — zapisana z poprzedniej sesji, fallback na config
         try:
             import config as _cfg
-            default_eng = (_cfg.CONTOUR_ENGINE or "moore").lower()
+            default_eng = _saved.get("engine") or (_cfg.CONTOUR_ENGINE or "auto")
+            default_eng = default_eng.lower()
             for i in range(self._engine_combo.count()):
                 if self._engine_combo.itemData(i) == default_eng:
                     self._engine_combo.setCurrentIndex(i)
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"BleedTab: engine default restore failed: {e}")
         self._engine_combo.setFixedWidth(180)
         eng_row.addWidget(self._engine_combo)
         eng_row.addStretch()
@@ -211,6 +224,27 @@ class BleedTab(QWidget):
         self._preflight_btn.setObjectName("outline")
         self._preflight_btn.clicked.connect(self._on_preflight)
         bar.addWidget(self._preflight_btn)
+
+        # Preflight gate: off/lenient/strict (analogicznie do CLI --preflight)
+        gate_lbl = QLabel("Gate:")
+        gate_lbl.setProperty("class", "field-label")
+        bar.addWidget(gate_lbl)
+        self._preflight_gate = QComboBox()
+        self._preflight_gate.addItem("Off",     "off")
+        self._preflight_gate.addItem("Lenient", "lenient")
+        self._preflight_gate.addItem("Strict",  "strict")
+        _gate_default = _saved.get("preflight_gate", "off")
+        for i in range(self._preflight_gate.count()):
+            if self._preflight_gate.itemData(i) == _gate_default:
+                self._preflight_gate.setCurrentIndex(i)
+                break
+        self._preflight_gate.setFixedWidth(90)
+        self._preflight_gate.setToolTip(
+            "Off — przetwarzaj bez walidacji\n"
+            "Lenient — blokuj gdy błędy (braki krytyczne)\n"
+            "Strict — blokuj gdy błędy lub ostrzeżenia"
+        )
+        bar.addWidget(self._preflight_gate)
 
         self._progress = QProgressBar()
         self._progress.setFixedWidth(150)
@@ -357,9 +391,60 @@ class BleedTab(QWidget):
             for line in text.strip().split('\n'):
                 self._log(f"    {line}")
 
+    def _preflight_gate_passes(self, gate: str) -> bool:
+        """Uruchamia preflight_gate dla wszystkich plikow. Zwraca True gdy OK.
+
+        gate ∈ {"lenient", "strict"} (off nigdy nie wola tej metody).
+        Przy bloku pokazuje popup + loguje issue, i ustawia status err na pliku.
+        """
+        try:
+            from modules.preflight import preflight_gate, preflight_summary
+        except Exception as e:
+            self._log(f"[preflight] import failed: {e}")
+            return True  # nie blokuj gdy moduł nieosiagalny
+        blockers: list[tuple[str, str]] = []
+        for path in self.files:
+            try:
+                can_export, pf = preflight_gate(path, strict=(gate == "strict"))
+            except Exception as e:
+                self._log(f"[preflight] {os.path.basename(path)}: crash ({e}) — kontynuuje")
+                continue
+            if not can_export:
+                reason = preflight_summary(pf)
+                blockers.append((path, reason))
+                self._file_section.set_status(path, "err", reason)
+                self._log(f"[preflight BLOCK] {os.path.basename(path)}: {reason}")
+        if not blockers:
+            return True
+        msg = "\n".join(f"• {os.path.basename(p)}: {r}" for p, r in blockers[:5])
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(f"Preflight {gate} — zablokowano")
+        box.setText(f"Preflight gate '{gate}' zablokował {len(blockers)} z {len(self.files)} plików.")
+        box.setInformativeText(msg)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+        return False
+
     def _on_run(self):
         if self._processing or not self.files:
             return
+
+        # Preflight gate (off|lenient|strict) — analogicznie do CLI
+        gate = self._preflight_gate.currentData()
+        if gate != "off":
+            if not self._preflight_gate_passes(gate):
+                return
+
+        # Persist ustawienia dla następnej sesji
+        _settings.update({"bleed": {
+            "bleed_mm": self.bleed_mm,
+            "cutline_mode": self.cutline_mode,
+            "white": self._white_cb.isChecked(),
+            "engine": self._engine_combo.currentData(),
+            "preflight_gate": gate,
+        }})
+
         self._processing = True
         self._run_btn.setEnabled(False)
         self._run_btn.setText("Przetwarzam...")

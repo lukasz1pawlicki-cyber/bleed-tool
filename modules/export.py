@@ -1350,8 +1350,8 @@ def _fix_content_stream_newlines(doc: fitz.Document, page: fitz.Page) -> None:
             stream = doc.xref_stream(xr)
             if stream and not stream.endswith(b"\n"):
                 doc.update_stream(xr, stream + b"\n")
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"_fix_content_stream_newlines: xref {xr} skip ({e})")
 
 
 def inject_content_stream(
@@ -1942,8 +1942,8 @@ def export_single_sticker(
         try:
             from modules.pdf_metadata import apply_pdfx4
             apply_pdfx4(white_doc, bleed_mm=bleed_mm)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"PDF/X-4 metadata (white layer) failed: {e}")
         white_doc.save(white_path, deflate=True, garbage=3)
         white_doc.close()
         log.info(f"White PDF zapisany: {white_path}")
@@ -1986,7 +1986,8 @@ def _strip_cutcontour_streams(doc: fitz.Document, page: fitz.Page) -> None:
                     filtered.append(xref)
                 else:
                     log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (cutline)")
-            except Exception:
+            except Exception as e:
+                log.debug(f"_strip_cutcontour_streams: xref {xref} not readable ({e}), zachowuje")
                 filtered.append(xref)
         if len(filtered) < len(xrefs):
             if filtered:
@@ -2004,8 +2005,8 @@ def _strip_cutcontour_streams(doc: fitz.Document, page: fitz.Page) -> None:
                 if sd and _is_cutline_stream(sd):
                     doc.xref_set_key(page.xref, "Contents", "null")
                     log.debug(f"_strip_cutcontour_streams: usunięto xref {xref} (cutline)")
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"_strip_cutcontour_streams: xref {xref} not readable ({e})")
 
 
 def _prepare_source_for_embedding(sticker: Sticker, bleed_mm: float) -> fitz.Document:
@@ -2898,6 +2899,16 @@ def export_sheet_print(
 
     doc_out.save(output_path, deflate=True, garbage=3)
     doc_out.close()
+
+    # Cleanup: zamknij wszystkie przygotowane źródłowe dokumenty z cache
+    # (inaczej fd leakuje — 100 naklejek = 100 otwartych fitz.Document)
+    for prepared_doc in _prepared_cache.values():
+        try:
+            prepared_doc.close()
+        except Exception:
+            pass
+    _prepared_cache.clear()
+
     log.info(f"Print PDF zapisany: {output_path}")
     return output_path
 

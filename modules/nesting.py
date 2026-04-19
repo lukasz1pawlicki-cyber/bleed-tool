@@ -1066,7 +1066,7 @@ def _center_placements(sheet: Sheet, center_y: bool = False, bleed2: float = 0.0
         cc_y = (content_bottom + content_top) / 2
         dy = pa_cy - cc_y
 
-    if abs(dx) < 0.01 and abs(dy) < 0.01:
+    if abs(dx) < FLOAT_TOLERANCE_MM and abs(dy) < FLOAT_TOLERANCE_MM:
         return
 
     for p in sheet.placements:

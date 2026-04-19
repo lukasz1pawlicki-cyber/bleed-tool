@@ -38,8 +38,10 @@ class _RenderWorker(QObject):
     @pyqtSlot(int, str, int, bool)
     def render_request(self, request_id: int, path: str, dpi: int, alpha: bool):
         """Renderuje strone PDF. Emit pixmap_ready niezaleznie od sukcesu."""
+        import fitz
+        doc = None
+        qpix = None
         try:
-            import fitz
             doc = fitz.open(path)
             page = doc[0]
             mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
@@ -52,11 +54,16 @@ class _RenderWorker(QObject):
                               pix.stride, QImage.Format.Format_RGB888)
             # copy() — odklej dane od pix.samples (zwolni sie gdy doc.close)
             qpix = QPixmap.fromImage(qimg.copy())
-            doc.close()
-            self.pixmap_ready.emit(request_id, path, qpix)
         except Exception as e:
             log.warning(f"Async render failed: {path}: {e}")
-            self.pixmap_ready.emit(request_id, path, None)
+            qpix = None
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+        self.pixmap_ready.emit(request_id, path, qpix)
 
 from gui.theme import PREVIEW_CUTCONTOUR, PREVIEW_FLEXCUT, PREVIEW_MARK
 
@@ -336,11 +343,6 @@ class PreviewPanel(QWidget):
                 self._render_thread.wait(2000)
         except RuntimeError:
             pass
-        self._placeholder.setObjectName("preview-placeholder")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(self._placeholder, stretch=1)
-        self._view.setVisible(False)
 
     # --- Public API ---
 

@@ -21,6 +21,7 @@ from config import (
 )
 from gui.file_section import FileSection
 from gui.util_card import UtilCard
+from gui import settings as _settings
 
 
 class SegmentedButton(QWidget):
@@ -75,6 +76,7 @@ class NestTab(QWidget):
         self._last_pdfs = []
         self._last_bleed = 0.0
         self._roll_widths = list(ROLL_PRESETS)
+        _saved = _settings.load().get("nest", {})
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -108,7 +110,7 @@ class NestTab(QWidget):
         lbl_mode = QLabel("Tryb")
         lbl_mode.setProperty("class", "field-label")
         row_mode.addWidget(lbl_mode)
-        self._mode_seg = SegmentedButton(["Arkusze", "Rola"], default="Arkusze")
+        self._mode_seg = SegmentedButton(["Arkusze", "Rola"], default=_saved.get("mode", "Arkusze"))
         self._mode_seg.value_changed.connect(self._on_mode_change)
         row_mode.addWidget(self._mode_seg)
         row_mode.addStretch()
@@ -130,6 +132,9 @@ class NestTab(QWidget):
         self._sheet_combo = QComboBox()
         self._sheet_combo.addItems(sheet_names)
         self._sheet_combo.setFixedWidth(100)
+        _sp = _saved.get("sheet_preset")
+        if _sp and _sp in sheet_names:
+            self._sheet_combo.setCurrentText(_sp)
         self._sheet_combo.currentTextChanged.connect(self._on_sheet_changed)
         sf_layout.addWidget(self._sheet_combo)
         row_format.addWidget(self._sheet_frame)
@@ -172,7 +177,11 @@ class NestTab(QWidget):
         row_plotter.addWidget(lbl_plotter)
         self._plotter_combo = QComboBox()
         self._plotter_combo.addItems(list(PLOTTERS.keys()))
-        self._plotter_combo.setCurrentText("jwei")
+        _pl = _saved.get("plotter", "jwei")
+        if _pl in PLOTTERS:
+            self._plotter_combo.setCurrentText(_pl)
+        else:
+            self._plotter_combo.setCurrentText("jwei")
         self._plotter_combo.setFixedWidth(120)
         row_plotter.addWidget(self._plotter_combo)
         row_plotter.addStretch()
@@ -205,7 +214,7 @@ class NestTab(QWidget):
         lbl_gap.setStyleSheet("min-width: 0; font-size: 13px; font-weight: 500; color: #6e6e73;")
         lbl_gap.setFixedWidth(28)
         row_cg.addWidget(lbl_gap)
-        self._gap_edit = QLineEdit(str(DEFAULT_GAP_MM))
+        self._gap_edit = QLineEdit(str(_saved.get("gap_mm", DEFAULT_GAP_MM)))
         self._gap_edit.setFixedWidth(55)
         row_cg.addWidget(self._gap_edit)
         row_cg.addWidget(QLabel("mm"))
@@ -218,7 +227,10 @@ class NestTab(QWidget):
         lbl_group = QLabel("Wzory")
         lbl_group.setProperty("class", "field-label")
         row_group.addWidget(lbl_group)
-        self._grouping_seg = SegmentedButton(["Grupuj", "Osobne", "Mieszaj"], default="Grupuj")
+        self._grouping_seg = SegmentedButton(
+            ["Grupuj", "Osobne", "Mieszaj"],
+            default=_saved.get("grouping", "Grupuj"),
+        )
         row_group.addWidget(self._grouping_seg)
         row_group.addStretch()
         pc_layout.addLayout(row_group)
@@ -238,6 +250,7 @@ class NestTab(QWidget):
 
         # Checkbox: Biały poddruk
         self._white_cb = QCheckBox("Biały poddruk (White)")
+        self._white_cb.setChecked(bool(_saved.get("white", False)))
         pc_layout.addWidget(self._white_cb)
 
         # Row: Output
@@ -289,6 +302,11 @@ class NestTab(QWidget):
 
         # Aktualizuj output po dodaniu plików
         self._file_section.files_changed.connect(self._on_files_changed)
+
+        # Odtworz widocznosc sheet/roll frame zgodnie z trybem (po przywroceniu)
+        if self._mode_seg.value() == "Rola":
+            self._sheet_frame.setVisible(False)
+            self._roll_frame.setVisible(True)
 
     # --- Public API ---
 
@@ -560,6 +578,15 @@ class NestTab(QWidget):
     def _on_run(self):
         if self._processing or not self.files:
             return
+        # Persist ustawienia (best-effort)
+        _settings.update({"nest": {
+            "plotter": self.plotter,
+            "gap_mm": self.gap_mm,
+            "grouping": self._grouping_seg.value(),
+            "white": self._white_cb.isChecked(),
+            "sheet_preset": self._sheet_combo.currentText(),
+            "mode": self._mode_seg.value(),
+        }})
         self._processing = True
         self._nest_btn.setEnabled(False)
         self._nest_btn.setText("Rozmieszczam...")
