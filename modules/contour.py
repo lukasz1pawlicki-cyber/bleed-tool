@@ -1174,6 +1174,38 @@ def _dp_recursive(pts: np.ndarray, epsilon: float) -> np.ndarray:
         return pts[[0, -1]]
 
 
+def _count_sharp_corners(pts: np.ndarray, angle_threshold_deg: float = 120.0) -> int:
+    """Zlicza ostre narozniki w polygonie (interior angle < threshold).
+
+    Dla kazdego punktu P[i] oblicza kat wewnetrzny miedzy wektorami
+    (P[i-1] - P[i]) i (P[i+1] - P[i]). Jesli < threshold, to naroznik
+    jest "ostry" (np. wierzcholek gwiazdki ~36°, grot strzalki ~30°).
+
+    Uzywane do wykrywania ksztaltow pointy (gwiazdki, strzalki) — dla nich
+    Chaikin corner cutting byloby destrukcyjne.
+    """
+    n = len(pts)
+    if n < 3:
+        return 0
+    sharp = 0
+    threshold_rad = np.radians(angle_threshold_deg)
+    for i in range(n):
+        p_prev = pts[(i - 1) % n]
+        p_curr = pts[i]
+        p_next = pts[(i + 1) % n]
+        v1 = p_prev - p_curr
+        v2 = p_next - p_curr
+        n1 = np.linalg.norm(v1)
+        n2 = np.linalg.norm(v2)
+        if n1 < 1e-6 or n2 < 1e-6:
+            continue
+        cos_a = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
+        angle = np.arccos(cos_a)
+        if angle < threshold_rad:
+            sharp += 1
+    return sharp
+
+
 def _polygon_to_smooth_bezier(pts: np.ndarray, min_dist_pt: float = 18.0) -> list:
     """Konwertuje zamknięty polygon na gładkie krzywe Bézier (Catmull-Rom → cubic).
 
@@ -1203,7 +1235,18 @@ def _polygon_to_smooth_bezier(pts: np.ndarray, min_dist_pt: float = 18.0) -> lis
     # Chaikin's corner cutting — wygładza narożniki polygonu.
     # 2 iteracje: każdy punkt zastąpiony parą 75%/25% z sąsiadem.
     # Potem min_dist filter redukuje nadmiar punktów.
-    if len(pts) > 4:
+    # UWAGA: Chaikin zaokrągla ostre narożniki — pomijamy go gdy polygon
+    # ma >= 3 ostre kąty (<120°), np. gwiazdki, strzałki. Inaczej Chaikin
+    # zmieni gwiazde w klekson bez punktow.
+    sharp_corners = _count_sharp_corners(pts, angle_threshold_deg=120.0)
+    apply_chaikin = len(pts) > 4 and sharp_corners < 3
+    if not apply_chaikin and sharp_corners >= 3:
+        log.info(
+            f"Polygon ma {sharp_corners} ostrych naroznikow — pomijam Chaikin "
+            f"(zachowuje ostre ksztaly jak gwiazdki/strzalki)"
+        )
+
+    if apply_chaikin:
         for _ in range(2):
             n_ch = len(pts)
             new_pts = []
