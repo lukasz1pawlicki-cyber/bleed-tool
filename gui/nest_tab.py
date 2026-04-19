@@ -195,7 +195,13 @@ class NestTab(QWidget):
         self._copies_spin.setFixedSize(80, 26)
         row_cg.addWidget(self._copies_spin)
         max_btn = make_button("Max", variant="ghost", size="sm")
-        max_btn.setFixedHeight(26)
+        # Wymus identyczna wysokosc 26 jak QSpinBox (QSS min-height moze byc
+        # wyzszy — inline stylesheet przebija QSS).
+        max_btn.setFixedSize(56, 26)
+        max_btn.setStyleSheet(
+            "QPushButton{min-height:26px;max-height:26px;padding:0 10px;"
+            "font-size:11px;}"
+        )
         max_btn.clicked.connect(self._calc_max_copies)
         row_cg.addWidget(max_btn)
         row_cg.addSpacing(12)
