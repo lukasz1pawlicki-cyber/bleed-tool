@@ -31,7 +31,38 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_CACHE_VERSION = 2  # zmien gdy zmienia sie format Sticker serialization
+_CACHE_VERSION = 3  # zmien gdy zmienia sie format Sticker serialization
+
+# Mtime zrodel algorytmu konturu — uzywane do auto-invalidacji cache'a
+# gdy operator zmienia kod algorytmu. Liczymy mtime WSZYSTKICH modulow
+# ktore wplywaja na detect_contour/generate_bleed output.
+_ALGORITHM_SOURCES = (
+    "modules/contour.py",
+    "modules/bleed.py",
+    "modules/crop_marks.py",
+    "modules/file_loader.py",
+    "modules/svg_convert.py",
+)
+
+
+def _algorithm_signature() -> str:
+    """Zwraca hash mtime+size plikow algorytmu konturu/bleed.
+
+    Gdy operator lub deweloper zmienia kod (np. fix zaokraglania gwiazdek),
+    ta sygnatura zmienia sie automatycznie -> wszystkie cache entries zostaja
+    uniewaznione przy nastepnym wywolaniu. Szybkie (tylko stat, nie czytamy).
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    parts: list[str] = []
+    for rel in _ALGORITHM_SOURCES:
+        p = repo_root / rel
+        try:
+            st = p.stat()
+            parts.append(f"{rel}:{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            # Plik moze byc brakujacy (np. nowa instalacja bez crop_marks.py)
+            parts.append(f"{rel}:missing")
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
 def _default_cache_dir() -> Path:
@@ -56,18 +87,23 @@ def is_cache_enabled() -> bool:
 
 
 def _compute_key(file_path: str, engine: str) -> str:
-    """sha1(realpath + mtime_ns + size + engine + cache_version).
+    """sha1(realpath + mtime_ns + size + engine + cache_version + algo_sig).
 
-    Uzywamy mtime_ns + size (szybkie, nie czytamy zawartosci).
-    Dla plikow <1MB mozna by liczyc hash zawartosci, ale na typowych
-    naklejkach >5MB stat() jest o 2 rzedy szybszy.
+    Uzywamy mtime_ns + size pliku wejsciowego (szybkie, nie czytamy zawartosci).
+    Dodatkowo wlaczamy algorithm signature (hash mtime+size plikow algorytmu),
+    zeby zmiana kodu auto-invalidowala cache — inaczej fix typu "Chaikin psuje
+    gwiazdki" nie byl widoczny dla operatora az do recznego clear_all.
     """
     try:
         st = os.stat(file_path)
     except OSError:
         return ""
     canonical = os.path.realpath(file_path)
-    raw = f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}|v{_CACHE_VERSION}"
+    algo_sig = _algorithm_signature()
+    raw = (
+        f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}"
+        f"|v{_CACHE_VERSION}|algo:{algo_sig}"
+    )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
