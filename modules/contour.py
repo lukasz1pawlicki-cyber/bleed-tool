@@ -37,6 +37,7 @@ import config
 from config import PT_TO_MM, MM_TO_PT
 from modules.file_loader import FileType, detect_type, to_pdf, svg_dimensions_from_name
 from modules.svg_convert import extract_svg_contour, parse_size_from_filename
+from modules.crop_marks import apply_crop_marks_cropping
 
 log = logging.getLogger(__name__)
 
@@ -1846,6 +1847,10 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
 
     # TrimBox ≠ MediaBox → plik ze spadami, przycinamy do TrimBox
     cropped_pages = _crop_to_trimbox(doc)
+
+    # Crop marks w zewnętrznym obszarze strony (gdy TrimBox == MediaBox):
+    # wykrywamy L-kształtne znaczniki Illustratora i przycinamy do trim.
+    cropped_pages |= apply_crop_marks_cropping(doc, skip_pages=cropped_pages)
 
     stickers: list[Sticker] = []
 

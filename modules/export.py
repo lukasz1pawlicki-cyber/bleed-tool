@@ -605,16 +605,27 @@ def expand_clip_paths(
 def expand_page_fills(
     doc: fitz.Document, page: fitz.Page, bleed_pts: float,
     page_w_pt: float, page_h_pt: float,
+    edge_x0: float = 0.0, edge_y0: float = 0.0,
+    edge_x1: float | None = None, edge_y1: float | None = None,
 ) -> None:
     """Rozszerza prostokątne fill-e tła o bleed_pts w content stream strony.
 
-    Szuka `re f` lub `re f*` gdzie prostokąt odpowiada wymiarom strony
+    Szuka `re f` lub `re f*` gdzie prostokąt odpowiada wymiarom trim
     (uwzględniając aktywną macierz skalowania). Gdy znajdzie — rozszerza
     o bleed_pts w tej samej przestrzeni koordynatów.
 
     Rozwiązuje problem Canva-style PDF gdzie tło (white + color fill)
     pokrywa dokładnie stronę, ale nie rozciąga się na bleed zone.
+
+    Parametry edge_* opisują pozycję trim w oryginalnych page-coords
+    (gdy CropBox jest offset od MediaBox). Domyślnie: origin (0,0)
+    + (page_w_pt, page_h_pt) — dla stron bez offsetu CropBox.
     """
+    if edge_x1 is None:
+        edge_x1 = page_w_pt
+    if edge_y1 is None:
+        edge_y1 = page_h_pt
+
     page_xref = page.xref
     contents_info = doc.xref_get_key(page_xref, "Contents")
     xref_str = contents_info[1]
@@ -629,7 +640,9 @@ def expand_page_fills(
         if not stream:
             continue
         text = stream.decode('latin-1', errors='replace')
-        new_text = _expand_fills_in_stream(text, bleed_pts, page_w_pt, page_h_pt)
+        new_text = _expand_fills_in_stream(
+            text, bleed_pts, edge_x0, edge_y0, edge_x1, edge_y1
+        )
         if new_text != text:
             doc.update_stream(xr, new_text.encode('latin-1'))
             modified = True
@@ -639,7 +652,8 @@ def expand_page_fills(
 
 
 def _expand_fills_in_stream(
-    text: str, bleed_pts: float, page_w_pt: float, page_h_pt: float,
+    text: str, bleed_pts: float,
+    edge_x0: float, edge_y0: float, edge_x1: float, edge_y1: float,
 ) -> str:
     """Rozszerza `re f` tła w content stream.
 
@@ -702,15 +716,17 @@ def _expand_fills_in_stream(
                         tol = 2.0  # tolerance in pt
 
                         # Które krawędzie dotyka fill?
-                        touches_left = abs(eff_x) < tol
-                        touches_bottom = abs(eff_y) < tol
-                        touches_right = abs(eff_x1 - page_w_pt) < tol
-                        touches_top = abs(eff_y1 - page_h_pt) < tol
+                        touches_left = abs(eff_x - edge_x0) < tol
+                        touches_bottom = abs(eff_y - edge_y0) < tol
+                        touches_right = abs(eff_x1 - edge_x1) < tol
+                        touches_top = abs(eff_y1 - edge_y1) < tol
 
                         # Fill musi mieć pełną szerokość LUB pełną wysokość
                         # i dotykać przynajmniej jednej krawędzi
-                        full_width = abs(eff_w - page_w_pt) < tol and touches_left
-                        full_height = abs(eff_h - page_h_pt) < tol and touches_bottom
+                        trim_w = edge_x1 - edge_x0
+                        trim_h = edge_y1 - edge_y0
+                        full_width = abs(eff_w - trim_w) < tol and touches_left
+                        full_height = abs(eff_h - trim_h) < tol and touches_bottom
 
                         if full_width or full_height:
                             dx = bleed_pts / current_sx
@@ -748,16 +764,32 @@ def _expand_fills_in_stream(
 def expand_edge_paths(
     doc: fitz.Document, page: fitz.Page, bleed_pts: float,
     page_w_pt: float, page_h_pt: float,
+    edge_x0: float = 0.0, edge_y0: float = 0.0,
+    edge_x1: float | None = None, edge_y1: float | None = None,
 ) -> None:
-    """Rozszerza wektorowe ścieżki dotykające krawędzi strony o bleed_pts.
+    """Rozszerza wektorowe ścieżki dotykające krawędzi trimu o bleed_pts.
 
-    Dla każdego punktu ścieżki (m/l/c) leżącego na krawędzi strony
-    (x ≈ 0, x ≈ page_w, y ≈ 0, y ≈ page_h) przesuwa go na zewnątrz
-    o bleed_pts. Śledzi macierz transformacji (cm) żeby poprawnie
-    mapować lokalne współrzędne na współrzędne strony.
+    Dla każdego punktu ścieżki (m/l/c) leżącego na krawędzi trimu
+    (x ≈ edge_x0, x ≈ edge_x1, y ≈ edge_y0, y ≈ edge_y1) przesuwa go
+    o bleed_pts na zewnątrz. Śledzi macierz transformacji (cm) żeby poprawnie
+    mapować lokalne współrzędne na współrzędne page-native.
+
+    UWAGA: content stream używa współrzędnych MediaBox (oryginalnych).
+    Gdy CropBox/TrimBox jest offset od (0,0), należy podać edge_x0/y0/x1/y1
+    w oryginalnych współrzędnych, bo inaczej funkcja wykryje fałszywe
+    "krawędzie" na wewnętrznych pozycjach grafiki i skorumpuje content.
+
+    Domyślnie (edge_x1=None) używa page_w_pt/page_h_pt jako krawędzi
+    prawej/górnej z origin (0,0) — wsteczna kompatybilność dla wywołań
+    na stronach bez offset CropBox.
 
     Obsługuje nieregularne kształty (strzałki, grafiki) dotykające brzegu.
     """
+    if edge_x1 is None:
+        edge_x1 = page_w_pt
+    if edge_y1 is None:
+        edge_y1 = page_h_pt
+
     page_xref = page.xref
     contents_info = doc.xref_get_key(page_xref, "Contents")
     xref_str = contents_info[1]
@@ -773,7 +805,7 @@ def expand_edge_paths(
             continue
         text = stream.decode('latin-1', errors='replace')
         new_text = _expand_edge_paths_in_stream(
-            text, bleed_pts, page_w_pt, page_h_pt
+            text, bleed_pts, edge_x0, edge_y0, edge_x1, edge_y1
         )
         if new_text != text:
             doc.update_stream(xr, new_text.encode('latin-1'))
@@ -784,12 +816,13 @@ def expand_edge_paths(
 
 
 def _expand_edge_paths_in_stream(
-    text: str, bleed_pts: float, page_w_pt: float, page_h_pt: float,
+    text: str, bleed_pts: float,
+    edge_x0: float, edge_y0: float, edge_x1: float, edge_y1: float,
 ) -> str:
-    """Rozszerza współrzędne ścieżek na krawędziach strony w content stream.
+    """Rozszerza współrzędne ścieżek na krawędziach trimu w content stream.
 
     Śledzi macierz transformacji (cm) i stos q/Q. Dla operatorów m, l, c
-    przesuwa współrzędne leżące na krawędzi strony o bleed_pts na zewnątrz.
+    przesuwa współrzędne leżące na krawędzi trimu o bleed_pts na zewnątrz.
 
     Obsługuje multi-operator lines (np. 'q 1 0 0 1 tx ty cm').
     """
@@ -814,17 +847,17 @@ def _expand_edge_paths_in_stream(
         return (py - ty) / sy if abs(sy) > 1e-8 else py
 
     def extend_coord(lx: float, ly: float) -> tuple[float, float]:
-        """Przesuwa punkt na zewnątrz jeśli leży na krawędzi strony."""
+        """Przesuwa punkt na zewnątrz jeśli leży na krawędzi trimu."""
         px, py = to_page(lx, ly)
         new_lx, new_ly = lx, ly
-        if abs(px) < tol:
-            new_lx = from_page_x(-bleed_pts)
-        elif abs(px - page_w_pt) < tol:
-            new_lx = from_page_x(page_w_pt + bleed_pts)
-        if abs(py) < tol:
-            new_ly = from_page_y(-bleed_pts)
-        elif abs(py - page_h_pt) < tol:
-            new_ly = from_page_y(page_h_pt + bleed_pts)
+        if abs(px - edge_x0) < tol:
+            new_lx = from_page_x(edge_x0 - bleed_pts)
+        elif abs(px - edge_x1) < tol:
+            new_lx = from_page_x(edge_x1 + bleed_pts)
+        if abs(py - edge_y0) < tol:
+            new_ly = from_page_y(edge_y0 - bleed_pts)
+        elif abs(py - edge_y1) < tol:
+            new_ly = from_page_y(edge_y1 + bleed_pts)
         return (new_lx, new_ly)
 
     def fmt(v: float) -> str:
@@ -1866,14 +1899,25 @@ def export_single_sticker(
                 expand_clip_paths(doc_src, src_page, bleed_pts, rect_only=True)
 
             # Rozszerz fill-e tła (re f) które pokrywają dokładnie stronę
-            # (Canva: white + color fill nie wychodzą poza page)
-            expand_page_fills(doc_src, src_page, bleed_pts,
-                              src_cropbox.width, src_cropbox.height)
+            # (Canva: white + color fill nie wychodzą poza page).
+            # Przekazujemy cropbox edges — content stream używa współrzędnych
+            # MediaBox, więc dla offset CropBox musimy sprawdzać pozycję trim
+            # (nie wymiar), inaczej fałszywie trafiamy wewnętrzne elementy.
+            expand_page_fills(
+                doc_src, src_page, bleed_pts,
+                src_cropbox.width, src_cropbox.height,
+                src_cropbox.x0, src_cropbox.y0,
+                src_cropbox.x1, src_cropbox.y1,
+            )
 
-            # Rozszerz wektorowe ścieżki dotykające krawędzi strony
+            # Rozszerz wektorowe ścieżki dotykające krawędzi trim
             # (strzałki, grafiki — dowolne kształty, nie tylko prostokąty)
-            expand_edge_paths(doc_src, src_page, bleed_pts,
-                              src_cropbox.width, src_cropbox.height)
+            expand_edge_paths(
+                doc_src, src_page, bleed_pts,
+                src_cropbox.width, src_cropbox.height,
+                src_cropbox.x0, src_cropbox.y0,
+                src_cropbox.x1, src_cropbox.y1,
+            )
 
             # Usuń CropBox/TrimBox/ArtBox/BleedBox PRZED set_mediabox
             src_xref = src_page.xref

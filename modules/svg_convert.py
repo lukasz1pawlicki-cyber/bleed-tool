@@ -54,8 +54,18 @@ ctypes.util.find_library = _patched_find_library
 try:
     import cairosvg  # noqa: E402  — musi być po ustawieniu DYLD
     HAS_CAIROSVG = True
-except ImportError:
+except (ImportError, OSError):
+    # ImportError: cairosvg nie zainstalowany
+    # OSError: cairosvg zainstalowany, ale natywna biblioteka cairo nie jest dostępna
+    #   (typowe na Windows bez GTK+/MSYS2). Wtedy używamy fallbacku svglib.
     HAS_CAIROSVG = False
+
+try:
+    from svglib.svglib import svg2rlg  # noqa: E402
+    from reportlab.graphics import renderPDF  # noqa: E402
+    HAS_SVGLIB = True
+except ImportError:
+    HAS_SVGLIB = False
 
 # ---------------------------------------------------------------------------
 # SVG namespace
@@ -92,18 +102,34 @@ from config import MM_TO_PT as _MM_TO_PT
 
 def svg_to_pdf(svg_path: str, target_w_mm: float | None = None,
                target_h_mm: float | None = None) -> str:
-    """Convert an SVG file to a temporary PDF file using cairosvg.
+    """Convert an SVG file to a temporary PDF file.
+
+    Preferuje cairosvg (lepsza jakość). Jeśli cairo (natywna biblioteka)
+    niedostępna — fallback na svglib (pure Python, wystarczy dla większości
+    SVG, ale słabiej radzi sobie z gradientami/filtrami).
 
     Dimensions are set from target_w_mm/target_h_mm (from filename).
     Falls back to SVG intrinsic size if no target given.
 
     Returns the path to the generated temp PDF.
     """
-    if not HAS_CAIROSVG:
-        raise ImportError("cairosvg is required for SVG conversion. Install with: pip install cairosvg")
     if not os.path.isfile(svg_path):
         raise FileNotFoundError(f"SVG file not found: {svg_path}")
+    if not HAS_CAIROSVG and not HAS_SVGLIB:
+        raise ImportError(
+            "SVG conversion requires cairosvg or svglib. "
+            "Install one: `pip install cairosvg` (wymaga natywnej cairo — na Windows "
+            "zainstaluj GTK+ runtime) lub `pip install svglib reportlab` (pure Python)."
+        )
 
+    if HAS_CAIROSVG:
+        return _svg_to_pdf_cairosvg(svg_path, target_w_mm, target_h_mm)
+    return _svg_to_pdf_svglib(svg_path, target_w_mm, target_h_mm)
+
+
+def _svg_to_pdf_cairosvg(svg_path: str, target_w_mm: float | None,
+                         target_h_mm: float | None) -> str:
+    """Konwertuje SVG→PDF przez cairosvg (preferowane — lepsza jakość)."""
     base = os.path.splitext(os.path.basename(svg_path))[0]
     tmp = tempfile.NamedTemporaryFile(
         prefix=f"stk_{base}_", suffix=".pdf", delete=False,
@@ -125,7 +151,7 @@ def svg_to_pdf(svg_path: str, target_w_mm: float | None = None,
             scale = min(scale_x, scale_y)  # zachowaj proporcje
             kwargs["scale"] = scale
             log.info(
-                f"SVG→PDF: viewBox={vb_w:.1f}×{vb_h:.1f}, "
+                f"SVG→PDF (cairosvg): viewBox={vb_w:.1f}×{vb_h:.1f}, "
                 f"target={target_w_mm:.1f}×{target_h_mm:.1f}mm, scale={scale:.4f}"
             )
         else:
@@ -135,7 +161,42 @@ def svg_to_pdf(svg_path: str, target_w_mm: float | None = None,
 
     cairosvg.svg2pdf(**kwargs)
 
-    log.info(f"SVG→PDF: {svg_path} → {tmp.name} ({os.path.getsize(tmp.name)} bytes)")
+    log.info(f"SVG→PDF (cairosvg): {svg_path} → {tmp.name} ({os.path.getsize(tmp.name)} bytes)")
+    return tmp.name
+
+
+def _svg_to_pdf_svglib(svg_path: str, target_w_mm: float | None,
+                       target_h_mm: float | None) -> str:
+    """Fallback: konwertuje SVG→PDF przez svglib (pure Python, bez natywnej cairo)."""
+    base = os.path.splitext(os.path.basename(svg_path))[0]
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=f"stk_{base}_", suffix=".pdf", delete=False,
+    )
+    tmp.close()
+
+    drawing = svg2rlg(svg_path)
+    if drawing is None:
+        raise ValueError(f"svglib nie mógł sparsować SVG: {svg_path}")
+
+    # Przeskaluj drawing do docelowych wymiarów
+    if target_w_mm and target_h_mm:
+        target_w_pt = target_w_mm * _MM_TO_PT
+        target_h_pt = target_h_mm * _MM_TO_PT
+        orig_w = drawing.width or target_w_pt
+        orig_h = drawing.height or target_h_pt
+        scale_x = target_w_pt / orig_w
+        scale_y = target_h_pt / orig_h
+        scale = min(scale_x, scale_y)
+        drawing.width = orig_w * scale
+        drawing.height = orig_h * scale
+        drawing.scale(scale, scale)
+        log.info(
+            f"SVG→PDF (svglib): intrinsic={orig_w:.1f}×{orig_h:.1f}, "
+            f"target={target_w_mm:.1f}×{target_h_mm:.1f}mm, scale={scale:.4f}"
+        )
+
+    renderPDF.drawToFile(drawing, tmp.name)
+    log.info(f"SVG→PDF (svglib): {svg_path} → {tmp.name} ({os.path.getsize(tmp.name)} bytes)")
     return tmp.name
 
 

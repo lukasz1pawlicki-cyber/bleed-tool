@@ -68,12 +68,25 @@ def test_to_pdf_raster_raises(tmp_path):
         to_pdf(str(raster))
 
 
-def test_to_pdf_svg_no_dimensions_raises(tmp_path):
-    """SVG bez wymiarów w nazwie → ValueError."""
+def test_to_pdf_svg_no_dimensions_uses_default(tmp_path):
+    """SVG bez wymiarów w nazwie → domyślny rozmiar (nie raise).
+
+    Operator zmienia rozmiar w panelu ustawień. Testujemy tylko że
+    funkcja nie rzuca ValueError — faktyczna konwersja może się nie
+    udać bez cairo/svglib i to OK (inny błąd niż brak wymiarów).
+    """
     svg = tmp_path / "logo.svg"
-    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
-    with pytest.raises(ValueError, match="wymiarów"):
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"/>'
+    )
+    try:
         to_pdf(str(svg))
+    except ValueError as e:
+        # ValueError o braku wymiarów byłby regresem
+        assert "wymiarów" not in str(e), f"regres: {e}"
+    except (ImportError, OSError):
+        # cairo/svglib niedostępne w środowisku testowym — OK
+        pass
 
 
 def test_to_pdf_pdf_passthrough(tmp_path):

@@ -31,7 +31,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_CACHE_VERSION = 1  # zmien gdy zmienia sie format Sticker serialization
+_CACHE_VERSION = 2  # zmien gdy zmienia sie format Sticker serialization
 
 
 def _default_cache_dir() -> Path:

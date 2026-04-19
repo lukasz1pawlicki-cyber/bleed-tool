@@ -532,30 +532,46 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
 
         edge_rgb = extract_edge_color(outermost_drawing)
 
-        # Jeśli outermost drawing jest biały (np. białe tło z Canva) →
-        # sprawdź następny drawing (wizualne tło), lub sampluj z renderingu
+        # Jeśli outermost drawing jest biały — może to być:
+        # (a) Canva-style: biały overlay NA białym tle, a właściwe wizualne
+        #     tło jest kolorowe ale też pokrywa całą stronę (kolejny drawing)
+        # (b) SVG z białym tłem i kolorową grafiką w środku — edge faktycznie
+        #     jest biały
+        # Odróżniamy po bbox: jeśli drugi drawing też pokrywa całą stronę
+        # to Canva (a), inaczej (b) i używamy renderingu.
         if all(c > 0.95 for c in edge_rgb):
-            # Szukaj pierwszego nie-białego drawingu (wizualne tło pod spodem)
-            found_color = False
+            outer_rect = drawings[sticker.outermost_drawing_idx]['rect']
+            full_page_area = outer_rect.width * outer_rect.height
+            found_canva_bg = False
+
             for di in range(sticker.outermost_drawing_idx + 1, len(drawings)):
-                d_fill = drawings[di].get('fill')
-                if d_fill is not None and not all(c > 0.95 for c in d_fill[:3]):
-                    edge_rgb = tuple(d_fill[:3])
-                    log.info(
-                        f"Outermost drawing biały → drawing[{di}] fill: "
-                        f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
-                    )
-                    found_color = True
-                    break
-            # Fallback: sampluj z renderowanej strony
-            if not found_color:
+                d = drawings[di]
+                d_fill = d.get('fill')
+                if d_fill is None or all(c > 0.95 for c in d_fill[:3]):
+                    continue
+                # Sprawdź czy ten drawing też pokrywa prawie całą stronę
+                d_rect = d['rect']
+                d_area = d_rect.width * d_rect.height
+                if d_area < full_page_area * 0.85:
+                    # Drawing mniejszy niż strona — to zawartość, nie tło
+                    continue
+                edge_rgb = tuple(d_fill[:3])
+                log.info(
+                    f"Outermost drawing biały, tło Canva-style → drawing[{di}] fill: "
+                    f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                )
+                found_canva_bg = True
+                break
+
+            if not found_canva_bg:
+                # Brak pełnostronicowego tła — sampluj z renderowanej strony
+                # (typowy SVG/grafika: biała strona + grafika w środku)
                 rendered_rgb = _sample_page_edge_color(page)
-                if not all(c > 0.95 for c in rendered_rgb):
-                    edge_rgb = rendered_rgb
-                    log.info(
-                        f"Outermost drawing biały — kolor z renderingu: "
-                        f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
-                    )
+                edge_rgb = rendered_rgb
+                log.info(
+                    f"Outermost drawing biały — kolor z renderingu krawędzi: "
+                    f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                )
 
         sticker.edge_color_rgb = edge_rgb
         log.info(f"Kolor krawędzi RGB: ({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})")
@@ -566,7 +582,13 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
         log.warning(f"Brak źródła koloru krawędzi, fallback biały: {sticker.source_path}")
 
     # 3. Kolor CMYK — natywny z content stream (CMYK PDF) lub konwersja RGB→CMYK
-    if sticker.is_cmyk and sticker.pdf_doc is not None:
+    # UWAGA: extract_native_cmyk zwraca PIERWSZY nie-biały k-fill, co MOŻE nie być
+    # rzeczywistym kolorem tła (np. czarny tekst w białej naklejce). Używamy go
+    # tylko gdy wykryty RGB krawędzi jest wyraźnie nie-biały — wtedy zachowanie
+    # natywnej fidelity CMYK ma sens. Dla białych/jasnych krawędzi preferujemy
+    # konwersję z edge_rgb, bo gwarantuje zgodność z rzeczywistym kolorem tła.
+    edge_is_near_white = all(c > 0.95 for c in edge_rgb)
+    if sticker.is_cmyk and sticker.pdf_doc is not None and not edge_is_near_white:
         native_cmyk = extract_native_cmyk(sticker.pdf_doc, sticker.pdf_doc[sticker.page_index])
         if native_cmyk is not None:
             edge_cmyk = native_cmyk
