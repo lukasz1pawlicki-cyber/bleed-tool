@@ -28,7 +28,8 @@ class BleedWorker(QThread):
     def __init__(self, files, output_dir, bleed_mm=2.0, black_100k=False,
                  cutline_mode="kiss-cut", target_height_mm=None, white=False,
                  crop_enabled=False, crop_shape="square", crop_offsets=None,
-                 radius_pct=9, contour_engine=None, parent=None):
+                 radius_pct=9, contour_engine=None, raster_mode=None,
+                 parent=None):
         super().__init__(parent)
         self._files = files
         self._output_dir = output_dir
@@ -42,6 +43,7 @@ class BleedWorker(QThread):
         self._crop_offsets = crop_offsets or {}
         self._radius_pct = radius_pct
         self._contour_engine = contour_engine  # "moore" | "opencv" | "auto" | None
+        self._raster_mode = raster_mode  # "smooth" | "sharp" | None (= config default)
 
     def run(self):
         try:
@@ -59,6 +61,11 @@ class BleedWorker(QThread):
         if self._contour_engine:
             config.CONTOUR_ENGINE = self._contour_engine
             self.log_message.emit(f"  Silnik konturu: {self._contour_engine}")
+
+        # Ustaw tryb rastrow (smooth / sharp) dla tej sesji
+        if self._raster_mode in ("smooth", "sharp"):
+            config.RASTER_MODE = self._raster_mode
+            self.log_message.emit(f"  Tryb rastrow: {self._raster_mode}")
 
         os.makedirs(self._output_dir, exist_ok=True)
         t0 = time.time()

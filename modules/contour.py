@@ -754,10 +754,19 @@ def _detect_raster_alpha_contour(
         contour_simplified[:, 0] * px_to_pt_x,
         contour_simplified[:, 1] * px_to_pt_y,
     ])
-    segments = _polygon_to_smooth_bezier(pts_pt)
+
+    # Tryb konturu: smooth (Bezier) vs sharp (linie proste).
+    # smooth: Catmull-Rom + Chaikin → wygladzone krzywe dla logotypow/ilustracji
+    # sharp: DP polygon → proste linie dla gwiazdek/strzalek z ostrymi kątami
+    if config.RASTER_MODE == "sharp":
+        segments = _polygon_to_line_segments(pts_pt)
+        seg_label = "linii prostych (sharp)"
+    else:
+        segments = _polygon_to_smooth_bezier(pts_pt)
+        seg_label = "Bézier (smooth)"
 
     log.info(
-        f"Raster alpha kontur: Moore trace → {len(segments)} Bézier segmentów, "
+        f"Raster alpha kontur: Moore trace → {len(segments)} {seg_label}, "
         f"dp_eps={dp_epsilon:.1f}px, raw={len(contour_px)}pts, "
         f"edge RGB=({edge_rgb[0]:.2f}, {edge_rgb[1]:.2f}, {edge_rgb[2]:.2f})"
     )
@@ -1172,6 +1181,41 @@ def _dp_recursive(pts: np.ndarray, epsilon: float) -> np.ndarray:
         return np.vstack([left[:-1], right])
     else:
         return pts[[0, -1]]
+
+
+def _polygon_to_line_segments(pts: np.ndarray, min_dist_pt: float = 4.0) -> list:
+    """Konwertuje zamkniety polygon na proste linie (bez wygladzania).
+
+    Uzywane w RASTER_MODE=sharp dla ksztaltow z ostrymi narozami (gwiazdki,
+    strzalki, diamenty). Zachowuje geometrie 1:1 z Douglas-Peucker wynikiem —
+    bez Chaikin corner cutting, bez Catmull-Rom Bezier.
+
+    Args:
+        pts: punkty polygonu w pt (N x 2) — wynik Douglas-Peucker
+        min_dist_pt: minimalna odleglosc miedzy punktami (pt) — filtruje
+            mikro-segmenty z antialiasingu. Domyslnie 4pt (≈1.4mm) — mniejsze
+            niz smooth (18pt) bo nie zaokraglamy i chcemy zachowac detale.
+
+    Returns:
+        lista segmentow ('l', p0, p1) tworzących zamknięty polygon.
+    """
+    if len(pts) > 3:
+        filtered = [pts[0]]
+        for i in range(1, len(pts)):
+            dist = np.linalg.norm(pts[i] - filtered[-1])
+            if dist >= min_dist_pt:
+                filtered.append(pts[i])
+        if len(filtered) > 2 and np.linalg.norm(filtered[-1] - filtered[0]) < min_dist_pt:
+            filtered.pop()
+        pts = np.array(filtered)
+
+    n = len(pts)
+    segments = []
+    for i in range(n):
+        p0 = pts[i]
+        p1 = pts[(i + 1) % n]
+        segments.append(('l', np.array(p0), np.array(p1)))
+    return segments
 
 
 def _polygon_to_smooth_bezier(pts: np.ndarray, min_dist_pt: float = 18.0) -> list:

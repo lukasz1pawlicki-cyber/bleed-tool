@@ -156,6 +156,23 @@ CONTOUR_ENGINE = _os.environ.get("BLEED_CONTOUR_ENGINE", "auto").lower()
 
 
 # =============================================================================
+# RASTER MODE — tryb detekcji konturu dla plików rastrowych (PNG/JPG/TIFF)
+# =============================================================================
+# "smooth" — DP + Chaikin + Catmull-Rom Bezier (DEFAULT)
+#            Dla organicznych kształtów (logotypy, ilustracje Canva-style,
+#            okrągłe naklejki) — wygładza krawędzie do przyjemnych krzywych.
+# "sharp"  — DP + linie proste (bez Chaikin, bez Bezier)
+#            Dla geometrycznych kształtów (gwiazdki, strzałki, zygzaki,
+#            diamenty, logo z ostrymi kątami) — zachowuje ostre narożniki
+#            1:1 z input.
+#
+# Operator wybiera tryb per-zadanie: smooth dla bunnyego, sharp dla gwiazdki.
+# Zmienna srodowiskowa BLEED_RASTER_MODE nadpisuje tę wartosc.
+# GUI i CLI maja przełączniki (CLI: --sharp-edges flag).
+RASTER_MODE = _os.environ.get("BLEED_RASTER_MODE", "smooth").lower()
+
+
+# =============================================================================
 # PDF METADATA ENGINE — silnik zapisu PDF/X-4 OutputIntent
 # =============================================================================
 # "pymupdf" — PyMuPDF xref manipulation (default, zero extra deps)

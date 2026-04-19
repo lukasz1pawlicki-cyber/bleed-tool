@@ -366,6 +366,13 @@ def main():
              "strict=blokuj bledy+ostrzezenia",
     )
     parser.add_argument(
+        "--sharp-edges",
+        action="store_true",
+        help="Sharp-edge mode dla rastrow: zachowuje ostre narozniki (gwiazdki, "
+             "strzalki, diamenty). Domyslnie: smooth (wygladzone krzywe Bezier). "
+             "Uzyj dla geometrycznych ksztaltow z ostrymi kątami.",
+    )
+    parser.add_argument(
         "--no-cache",
         action="store_true",
         help="Wylacz cache detect_contour (zawsze od nowa)",
@@ -396,6 +403,13 @@ def main():
     # --no-cache: ustaw zmienna srodowiskowa dla wszystkich workerow
     if args.no_cache:
         os.environ["BLEED_NO_CACHE"] = "1"
+
+    # --sharp-edges: przelacz tryb rastrow na sharp (ostre narozniki)
+    if args.sharp_edges:
+        os.environ["BLEED_RASTER_MODE"] = "sharp"
+        # Przeladuj config zeby workery subprocess widzialy zmiane
+        import config as _config
+        _config.RASTER_MODE = "sharp"
 
     # --project: zaladuj plik projektu i zastap flagi CLI
     project_files: list[str] | None = None
