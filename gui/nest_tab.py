@@ -7,7 +7,7 @@ Zakladka Nest: rozmieszczanie naklejek na arkuszu. Technikadruku QSS.
 import os
 import math
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QComboBox, QProgressBar, QFileDialog,
     QSizePolicy, QMessageBox, QSpinBox, QDoubleSpinBox, QScrollArea,
 )
@@ -184,40 +184,56 @@ class NestTab(QWidget):
             aux="shelf nesting + backfill",
         )
 
-        # Kopie + Max + Gap
-        row_cg = QHBoxLayout()
-        row_cg.setSpacing(8)
-        row_cg.addWidget(self._field_label("Kopie"))
+        # Kopie + Max + Gap — QGridLayout dla idealnego wyrownania wierszy
+        grid_cg = QGridLayout()
+        grid_cg.setContentsMargins(0, 0, 0, 0)
+        grid_cg.setHorizontalSpacing(8)
+        grid_cg.setVerticalSpacing(0)
+
+        # Wiersz: [Kopie | spin | Max] [gap 12px] [Gap | spin | mm] [stretch]
+        lbl_copies = self._field_label("Kopie")
+        lbl_copies.setFixedHeight(26)
+        grid_cg.addWidget(lbl_copies, 0, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self._copies_spin = QSpinBox()
         self._copies_spin.setMinimum(1)
         self._copies_spin.setMaximum(9999)
         self._copies_spin.setValue(1)
         self._copies_spin.setFixedSize(80, 26)
-        row_cg.addWidget(self._copies_spin)
+        grid_cg.addWidget(self._copies_spin, 0, 1, Qt.AlignmentFlag.AlignVCenter)
+
         max_btn = make_button("Max", variant="ghost", size="sm")
-        # Wymus identyczna wysokosc 26 jak QSpinBox (QSS min-height moze byc
-        # wyzszy — inline stylesheet przebija QSS).
         max_btn.setFixedSize(56, 26)
         max_btn.setStyleSheet(
             "QPushButton{min-height:26px;max-height:26px;padding:0 10px;"
             "font-size:11px;}"
         )
         max_btn.clicked.connect(self._calc_max_copies)
-        row_cg.addWidget(max_btn)
-        row_cg.addSpacing(12)
+        grid_cg.addWidget(max_btn, 0, 2, Qt.AlignmentFlag.AlignVCenter)
+
+        # 12px gap miedzy Kopie-sekcja a Gap-sekcja
+        grid_cg.setColumnMinimumWidth(3, 12)
+
         gap_lbl = QLabel("Gap")
         gap_lbl.setObjectName("FieldLabel")
-        row_cg.addWidget(gap_lbl)
+        gap_lbl.setFixedHeight(26)
+        grid_cg.addWidget(gap_lbl, 0, 4, Qt.AlignmentFlag.AlignVCenter)
+
         self._gap_spin = QDoubleSpinBox()
         self._gap_spin.setRange(0.0, 100.0)
         self._gap_spin.setSingleStep(0.5)
         self._gap_spin.setDecimals(1)
         self._gap_spin.setValue(float(_saved.get("gap_mm", DEFAULT_GAP_MM)))
         self._gap_spin.setFixedSize(80, 26)
-        row_cg.addWidget(self._gap_spin)
-        row_cg.addWidget(UnitLabel("mm"))
-        row_cg.addStretch(1)
-        params_card.body.addLayout(row_cg)
+        grid_cg.addWidget(self._gap_spin, 0, 5, Qt.AlignmentFlag.AlignVCenter)
+
+        mm_lbl = UnitLabel("mm")
+        mm_lbl.setFixedHeight(26)
+        grid_cg.addWidget(mm_lbl, 0, 6, Qt.AlignmentFlag.AlignVCenter)
+
+        # stretch
+        grid_cg.setColumnStretch(7, 1)
+        params_card.body.addLayout(grid_cg)
 
         # Grupowanie (accent Segmented)
         row_group = QHBoxLayout()
