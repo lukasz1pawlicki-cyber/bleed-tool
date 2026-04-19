@@ -128,20 +128,26 @@ class FlexCutDialog(QDialog):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
 
-        self._prev_btn = QPushButton("<")
-        self._prev_btn.setFixedSize(28, 26)
+        self._prev_btn = QPushButton("\u25C0")  # ◀ black left-pointing triangle
+        self._prev_btn.setFixedSize(32, 28)
+        self._prev_btn.setToolTip("Poprzedni arkusz")
+        self._prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._prev_btn.clicked.connect(self._prev_sheet)
         toolbar.addWidget(self._prev_btn)
 
         self._title = QLabel("Arkusz 1/1")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title.setMinimumWidth(90)
         font = self._title.font()
         font.setPointSize(12)
         font.setBold(True)
         self._title.setFont(font)
         toolbar.addWidget(self._title)
 
-        self._next_btn = QPushButton(">")
-        self._next_btn.setFixedSize(28, 26)
+        self._next_btn = QPushButton("\u25B6")  # ▶ black right-pointing triangle
+        self._next_btn.setFixedSize(32, 28)
+        self._next_btn.setToolTip("Nastepny arkusz")
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._next_btn.clicked.connect(self._next_sheet)
         toolbar.addWidget(self._next_btn)
 
