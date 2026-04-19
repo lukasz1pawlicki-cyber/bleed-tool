@@ -357,9 +357,11 @@ def _detect_raster(image_path: str) -> Sticker:
                 dpi_x = _DEFAULT_DPI
             if dpi_y < 10 or dpi_y > 10000:
                 dpi_y = _DEFAULT_DPI
-            if dpi_x in (72, 96) and dpi_y in (72, 96):
+            # Tolerancja na DPI typu 96.012 (Canva), 71.999 itp. — screen DPI bywa float
+            _is_screen_dpi = lambda d: abs(d - 72) < 1.0 or abs(d - 96) < 1.0
+            if _is_screen_dpi(dpi_x) and _is_screen_dpi(dpi_y):
                 log.info(
-                    f"Raster DPI={dpi_x:.0f} (domyślne ekranowe), "
+                    f"Raster DPI={dpi_x:.1f} (domyślne ekranowe), "
                     f"fallback na {_DEFAULT_DPI} DPI"
                 )
                 dpi_x = dpi_y = _DEFAULT_DPI
