@@ -97,6 +97,7 @@ class FlexCutDialog(QDialog):
                  reexport_fast_fn=None,
                  log_fn=None, parent=None):
         super().__init__(parent)
+        self.setObjectName("FlexCutDialog")
         self.setWindowTitle("FlexCut")
         self.resize(1280, 780)
         self.setMinimumSize(1000, 600)
@@ -156,20 +157,19 @@ class FlexCutDialog(QDialog):
 
         toolbar.addStretch()
 
-        # Buttons (right)
-        for text, slot, style in [
-            ("Dodaj spad (S)", self._on_add_bleed, "toolbar-purple"),
-            ("Obr\u00f3\u0107 180\u00b0 (R)", self._on_rotate_180, "toolbar-btn"),
-            ("Dodaj FlexCut (Z)", self._on_add_flexcut, "toolbar-btn"),
+        # Buttons (right) — mapowane na QSS variants
+        for text, slot, variant in [
+            ("Dodaj spad (S)", self._on_add_bleed, "secondary"),
+            ("Obr\u00f3\u0107 180\u00b0 (R)", self._on_rotate_180, "ghost"),
+            ("Dodaj FlexCut (Z)", self._on_add_flexcut, "ghost"),
             ("Zastosuj", self._on_apply, "success"),
             ("Wyczy\u015b\u0107", self._on_clear, "danger"),
             ("Zamknij", self.close, "ghost"),
         ]:
             btn = QPushButton(text)
-            if style in ("success", "danger", "ghost"):
-                btn.setObjectName(style)
-            else:
-                btn.setProperty("class", style)
+            btn.setProperty("variant", variant)
+            btn.setProperty("size", "sm")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(slot)
             toolbar.addWidget(btn)
 

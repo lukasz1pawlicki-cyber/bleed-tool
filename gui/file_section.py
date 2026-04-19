@@ -1,16 +1,22 @@
 """
 Bleed Tool — file_section.py
 ===============================
-Drop zone + lista plików (reusable w Bleed i Nest tab).
+DropZone + lista plikow (reusable Bleed + Nest). Technikadruku QSS.
+
+Sygnaly:
+  files_changed()        — gdy lista plikow sie zmieni
+  clear_requested()      — gdy kliknieto "Wyczyść"
 """
 
 import os
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFileDialog, QLineEdit, QSizePolicy,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QScrollArea, QFileDialog, QSpinBox, QSizePolicy,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QMimeData
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+
+from gui.atoms import StatusDot, set_prop, make_button
 
 
 _SUPPORTED_EXT = (
@@ -19,19 +25,52 @@ _SUPPORTED_EXT = (
 )
 
 
-class DropZone(QLabel):
-    """Strefa drag-and-drop + kliknięcie do wyboru plików."""
+class DropZone(QFrame):
+    """Strefa drag-and-drop (#DropZone) z blueprint look.
+
+    Klikniecie otwiera QFileDialog. Stan [active="true"] podczas dragover.
+    """
 
     files_dropped = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("drop-zone")
-        self.setText("Przeciągnij pliki lub kliknij aby wybrać")
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setObjectName("DropZone")
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(54)
+        self.setMinimumHeight(84)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(14)
+
+        # Ikona tile 46x46
+        icon = QLabel("↑")
+        icon.setFixedSize(46, 46)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet(
+            "background:#FFFFFF;border:1px solid #E2E5ED;border-radius:10px;"
+            "color:#2563EB;font-size:22px;font-weight:700;"
+        )
+        lay.addWidget(icon)
+
+        # Teksty
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+        self._title = QLabel("Przeciągnij pliki lub kliknij aby wybrać")
+        self._title.setObjectName("DropZoneTitle")
+        text_col.addWidget(self._title)
+        sub = QLabel("PDF · AI · SVG · EPS · PNG · JPG · TIFF")
+        sub.setObjectName("DropZoneSub")
+        text_col.addWidget(sub)
+        lay.addLayout(text_col, stretch=1)
+
+        # Hotkey pill
+        pill = QLabel("⌘O")
+        pill.setObjectName("DropZoneHotkey")
+        pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(pill, alignment=Qt.AlignmentFlag.AlignVCenter)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -49,19 +88,13 @@ class DropZone(QLabel):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self.setProperty("dragOver", True)
-            self.style().unpolish(self)
-            self.style().polish(self)
+            set_prop(self, "active", "true")
 
     def dragLeaveEvent(self, event):
-        self.setProperty("dragOver", False)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        set_prop(self, "active", "false")
 
     def dropEvent(self, event: QDropEvent):
-        self.setProperty("dragOver", False)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        set_prop(self, "active", "false")
         paths = []
         for url in event.mimeData().urls():
             p = url.toLocalFile()
@@ -71,31 +104,11 @@ class DropZone(QLabel):
             self.files_dropped.emit(paths)
 
 
-_STATUS_VALUES = ("wait", "ok", "warn", "err", "proc")
-
-
-class StatusDot(QLabel):
-    """Mala kropka stanu pliku: wait/ok/warn/err/proc (CSS-driven)."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(12, 12)
-        self.setProperty("class", "status-dot")
-        self.set_status("wait")
-
-    def set_status(self, status: str):
-        if status not in _STATUS_VALUES:
-            status = "wait"
-        self.setProperty("status", status)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-
 class FileSection(QWidget):
-    """Drop zone + lista plików z opcjonalnym polem kopii per plik."""
+    """DropZone + file list + filebar (count + preflight + clear)."""
 
-    files_changed = pyqtSignal()  # emitowany gdy lista się zmieni
-    clear_requested = pyqtSignal()  # emitowany gdy kliknięto "Wyczyść"
+    files_changed = pyqtSignal()
+    clear_requested = pyqtSignal()
 
     def __init__(self, show_copies: bool = False, parent=None):
         super().__init__(parent)
@@ -107,36 +120,41 @@ class FileSection(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(10)
 
-        # Drop zone
+        # === DropZone ===
         self._drop = DropZone()
         self._drop.files_dropped.connect(self._add_files)
         layout.addWidget(self._drop)
 
-        # Lista plików (scroll)
+        # === Lista plikow (scroll) ===
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("FileListScroll")
         self._scroll.setWidgetResizable(True)
-        self._scroll.setMaximumHeight(100)
+        self._scroll.setMaximumHeight(196)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet(
+            "QScrollArea{background:#FFFFFF;border:1px solid #E2E5ED;border-radius:8px;}"
+        )
         self._list_widget = QWidget()
+        self._list_widget.setStyleSheet("background:#FFFFFF;")
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(1)
+        self._list_layout.setSpacing(0)
         self._list_layout.addStretch()
         self._scroll.setWidget(self._list_widget)
-        self._scroll.setVisible(False)  # ukryta gdy brak plików
+        self._scroll.setVisible(False)
         layout.addWidget(self._scroll)
 
-        # Pasek: licznik + wyczyść
+        # === Filebar: licznik + Wyczysc ===
         bar = QHBoxLayout()
         bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(8)
         self._count_label = QLabel("0 plików")
-        self._count_label.setProperty("class", "count")
+        self._count_label.setObjectName("FileBarCount")
         bar.addWidget(self._count_label)
-        bar.addStretch()
-        clear_btn = QPushButton("Wyczyść")
-        clear_btn.setObjectName("danger")
+        bar.addStretch(1)
+        clear_btn = make_button("Wyczyść", variant="danger", size="sm")
         clear_btn.clicked.connect(self._on_clear_clicked)
         bar.addWidget(clear_btn)
         layout.addLayout(bar)
@@ -159,19 +177,16 @@ class FileSection(QWidget):
         self.files_changed.emit()
 
     def set_status(self, path: str, status: str, issue: str | None = None):
-        """Ustaw status (wait/ok/warn/err/proc) + opcjonalnie komunikat issue."""
         if path not in self._files:
             return
         self._file_status[path] = (status, issue)
         self._rebuild_list()
 
     def reset_statuses(self):
-        """Zresetuj statusy wszystkich plikow do wait (przed nowym runem)."""
         self._file_status.clear()
         self._rebuild_list()
 
     def _on_clear_clicked(self):
-        """Kliknięcie Wyczyść → emituje clear_requested (globalny clear)."""
         self.clear_requested.emit()
 
     # --- Internal ---
@@ -193,8 +208,83 @@ class FileSection(QWidget):
         self._rebuild_list()
         self.files_changed.emit()
 
+    def _build_row(self, filepath: str) -> QWidget:
+        status, issue = self._file_status.get(filepath, ("wait", None))
+        has_issue = bool(issue)
+
+        row = QFrame()
+        row.setObjectName("FileRow")
+        row.setStyleSheet(
+            "QFrame#FileRow{background:" + ("#FEF4F4" if status == "err" else "#FFFFFF") + ";"
+            "border-bottom:1px solid #E2E5ED;}"
+        )
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(12, 9, 12, 9)
+        hl.setSpacing(10)
+
+        # Status dot
+        dot = StatusDot(state=status)
+        if issue:
+            dot.setToolTip(issue)
+        hl.addWidget(dot, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        # Ext tag
+        ext = os.path.splitext(filepath)[1].lstrip('.').upper() or "FILE"
+        ext_lbl = QLabel(ext)
+        ext_lbl.setObjectName("FileExtTag")
+        hl.addWidget(ext_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        # Nazwa + meta/issue stack
+        name_stack = QWidget()
+        ns = QVBoxLayout(name_stack)
+        ns.setContentsMargins(0, 0, 0, 0)
+        ns.setSpacing(1)
+
+        name = os.path.basename(filepath)
+        name_lbl = QLabel(name)
+        name_lbl.setObjectName("FileNameStrong")
+        name_lbl.setToolTip(filepath)
+        ns.addWidget(name_lbl)
+
+        if has_issue:
+            issue_lbl = QLabel(issue)
+            issue_lbl.setObjectName("FileIssueErr" if status == "err" else "FileIssueWarn")
+            issue_lbl.setToolTip(issue)
+            ns.addWidget(issue_lbl)
+        else:
+            # meta linia — placeholder (rozmiar / strony) ma byc dynamicznie
+            # ustawiony z zewnatrz; na razie stub z sciezka.
+            meta_lbl = QLabel(os.path.dirname(filepath) or "")
+            meta_lbl.setObjectName("FileMeta")
+            meta_lbl.setToolTip(filepath)
+            ns.addWidget(meta_lbl)
+
+        hl.addWidget(name_stack, stretch=1)
+
+        # Kopie (Nest)
+        if self._show_copies:
+            spin = QSpinBox()
+            spin.setObjectName("CopiesSpin")
+            spin.setMinimum(1)
+            spin.setMaximum(9999)
+            spin.setValue(self._file_copies.get(filepath, 1))
+            spin.valueChanged.connect(
+                lambda v, p=filepath: self._on_copies_change(p, v)
+            )
+            hl.addWidget(spin, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        # Remove button
+        rm = QPushButton("×")
+        rm.setObjectName("RemoveRowBtn")
+        rm.setToolTip("Usuń")
+        rm.clicked.connect(lambda _=False, p=filepath: self._remove_file(p))
+        rm.setCursor(Qt.CursorShape.PointingHandCursor)
+        hl.addWidget(rm, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        return row
+
     def _rebuild_list(self):
-        # Usuń stare widgety (poza stretch)
+        # Usun stare rzedy (poza stretch na koncu)
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
             w = item.widget()
@@ -202,88 +292,23 @@ class FileSection(QWidget):
                 w.deleteLater()
 
         for filepath in self._files:
-            status, issue = self._file_status.get(filepath, ("wait", None))
-            has_issue = bool(issue)
-
-            row = QWidget()
-            row.setProperty("class", "file-item")
-            # Wyzszy wiersz gdy jest issue (dwie linie)
-            base_h = 24 if self._show_copies else 20
-            row.setFixedHeight(base_h + (18 if has_issue else 0))
-            hl = QHBoxLayout(row)
-            hl.setContentsMargins(4, 0, 4, 0)
-            hl.setSpacing(4)
-
-            # Status dot
-            dot = StatusDot()
-            dot.set_status(status)
-            if issue:
-                dot.setToolTip(issue)
-            hl.addWidget(dot)
-
-            # Przycisk usuwania
-            rm = QPushButton("x")
-            rm.setProperty("class", "ghost")
-            rm.setFixedSize(18, 18)
-            rm.setToolTip("Usuń")
-            rm.clicked.connect(lambda checked, p=filepath: self._remove_file(p))
-            hl.addWidget(rm)
-
-            # Nazwa + opcjonalnie linia issue (pionowy stack)
-            name_stack = QWidget()
-            ns_layout = QVBoxLayout(name_stack)
-            ns_layout.setContentsMargins(0, 0, 0, 0)
-            ns_layout.setSpacing(0)
-
-            name = os.path.basename(filepath)
-            lbl = QLabel(name)
-            lbl.setToolTip(filepath)
-            lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            font = lbl.font()
-            font.setPointSize(9)
-            lbl.setFont(font)
-            ns_layout.addWidget(lbl)
-
-            if has_issue:
-                issue_lbl = QLabel(issue)
-                issue_lbl.setProperty("class", "file-issue")
-                issue_lbl.setProperty("severity", status)  # warn | err
-                issue_lbl.setToolTip(issue)
-                font_i = issue_lbl.font()
-                font_i.setPointSize(8)
-                issue_lbl.setFont(font_i)
-                ns_layout.addWidget(issue_lbl)
-
-            hl.addWidget(name_stack, stretch=1)
-
-            # Kopie (opcjonalnie, nest)
-            if self._show_copies:
-                copies_edit = QLineEdit(str(self._file_copies.get(filepath, 1)))
-                copies_edit.setFixedWidth(48)
-                copies_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                copies_edit.setStyleSheet("padding: 0 4px; min-height: 24px; max-height: 24px;")
-                font2 = copies_edit.font()
-                font2.setPointSize(9)
-                copies_edit.setFont(font2)
-                copies_edit.textChanged.connect(
-                    lambda text, p=filepath: self._on_copies_change(p, text)
-                )
-                hl.addWidget(copies_edit)
-
-            # Wstaw PRZED stretch
+            row = self._build_row(filepath)
             self._list_layout.insertWidget(self._list_layout.count() - 1, row)
 
-        self._count_label.setText(f"{len(self._files)} plików")
-        self._scroll.setVisible(len(self._files) > 0)
-        # Rozszerz scroll area gdy sa issue (wiecej miejsca na liscie)
-        has_any_issue = any(
-            bool(issue) for _, issue in self._file_status.values()
-        )
-        self._scroll.setMaximumHeight(160 if has_any_issue else 100)
+        # Licznik ze statusami (np. "5 plików · 3 OK · 1 błąd")
+        n = len(self._files)
+        ok = sum(1 for p in self._files if self._file_status.get(p, ("wait", None))[0] == "ok")
+        err = sum(1 for p in self._files if self._file_status.get(p, ("wait", None))[0] == "err")
+        proc = sum(1 for p in self._files if self._file_status.get(p, ("wait", None))[0] == "proc")
+        parts = [f"{n} plików"]
+        if ok:
+            parts.append(f"{ok} OK")
+        if proc:
+            parts.append(f"{proc} przetwarzanie")
+        if err:
+            parts.append(f"{err} błąd")
+        self._count_label.setText(" · ".join(parts))
+        self._scroll.setVisible(n > 0)
 
-    def _on_copies_change(self, filepath: str, text: str):
-        try:
-            val = max(1, int(text))
-            self._file_copies[filepath] = val
-        except (ValueError, TypeError):
-            pass
+    def _on_copies_change(self, filepath: str, value: int):
+        self._file_copies[filepath] = max(1, int(value))

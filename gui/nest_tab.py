@@ -1,7 +1,7 @@
 """
 Bleed Tool — nest_tab.py
 ===========================
-Zakładka Nest: rozmieszczanie naklejek na arkuszu.
+Zakladka Nest: rozmieszczanie naklejek na arkuszu. Technikadruku QSS.
 """
 
 import os
@@ -9,7 +9,7 @@ import math
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QComboBox, QProgressBar, QFileDialog,
-    QSizePolicy, QMessageBox,
+    QSizePolicy, QMessageBox, QSpinBox, QDoubleSpinBox, QScrollArea,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 
@@ -21,51 +21,17 @@ from config import (
 )
 from gui.file_section import FileSection
 from gui.util_card import UtilCard
+from gui.atoms import (
+    Segmented, IconButton, make_button, FieldLabel, UnitLabel,
+)
+from gui.widgets_common import PageTitleBar, CardSection, ActionBar
 from gui import settings as _settings
 
 
-class SegmentedButton(QWidget):
-    """Grupa przycisków segmentowanych (emulacja CTkSegmentedButton)."""
-
-    value_changed = pyqtSignal(str)
-
-    def __init__(self, values: list[str], default: str = "", parent=None):
-        super().__init__(parent)
-        self._buttons: dict[str, QPushButton] = {}
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        for i, val in enumerate(values):
-            btn = QPushButton(val)
-            btn.setCheckable(True)
-            if i == 0:
-                btn.setProperty("class", "segment-left")
-            elif i == len(values) - 1:
-                btn.setProperty("class", "segment-right")
-            else:
-                btn.setProperty("class", "segment")
-            btn.clicked.connect(lambda checked, v=val: self._on_click(v))
-            layout.addWidget(btn)
-            self._buttons[val] = btn
-        if default and default in self._buttons:
-            self._buttons[default].setChecked(True)
-
-    def value(self) -> str:
-        for val, btn in self._buttons.items():
-            if btn.isChecked():
-                return val
-        return ""
-
-    def _on_click(self, val: str):
-        for v, btn in self._buttons.items():
-            btn.setChecked(v == val)
-        self.value_changed.emit(val)
-
-
 class NestTab(QWidget):
-    """Zakładka Nest — rozmieszczanie naklejek na arkuszu."""
+    """Zakladka Nest."""
 
-    preview_ready = pyqtSignal(object, list, float)  # (job, sheet_pdfs, bleed_mm)
+    preview_ready = pyqtSignal(object, list, float)
 
     def __init__(self, log_fn=None, main_window=None, parent=None):
         super().__init__(parent)
@@ -78,240 +44,239 @@ class NestTab(QWidget):
         self._roll_widths = list(ROLL_PRESETS)
         _saved = _settings.load().get("nest", {})
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # === Header ===
-        hdr = QHBoxLayout()
-        title = QLabel("Nest")
-        title.setProperty("class", "page-title")
-        hdr.addWidget(title)
-        subtitle = QLabel("  Rozmieszczanie naklejek na arkuszu")
-        subtitle.setProperty("class", "page-subtitle")
-        hdr.addWidget(subtitle)
-        hdr.addStretch()
-        layout.addLayout(hdr)
+        # === Page title bar ===
+        self._title_bar = PageTitleBar(
+            crumb="Workflow · Krok 02",
+            title="Nest",
+            help_tip="Rozmieszczanie naklejek na arkuszu",
+        )
+        root.addWidget(self._title_bar)
 
-        # === File section (z kopiami) ===
+        # === Scroll ===
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(22, 16, 22, 16)
+        layout.setSpacing(16)
+        scroll.setWidget(inner)
+        root.addWidget(scroll, stretch=1)
+
+        # === Files card ===
+        files_card = CardSection(
+            "Pliki do arkusza",
+            aux="po bleedzie · kopie per plik",
+        )
         self._file_section = FileSection(show_copies=True)
-        layout.addWidget(self._file_section)
+        files_card.body.addWidget(self._file_section)
+        layout.addWidget(files_card)
 
-        # === Ustawienia arkusza (card) ===
-        sheet_card = QWidget()
-        sheet_card.setProperty("class", "card")
-        sc_layout = QVBoxLayout(sheet_card)
-        sc_layout.setContentsMargins(16, 12, 16, 12)
-        sc_layout.setSpacing(8)
+        # === Sheet / Roll card ===
+        sheet_card = CardSection("Arkusz / Rola")
 
-        # Row: Tryb (Arkusze / Rola)
+        # Tryb (Segmented)
         row_mode = QHBoxLayout()
         row_mode.setSpacing(8)
-        lbl_mode = QLabel("Tryb")
-        lbl_mode.setProperty("class", "field-label")
-        row_mode.addWidget(lbl_mode)
-        self._mode_seg = SegmentedButton(["Arkusze", "Rola"], default=_saved.get("mode", "Arkusze"))
-        self._mode_seg.value_changed.connect(self._on_mode_change)
+        row_mode.addWidget(self._field_label("Tryb"))
+        self._mode_seg = Segmented(
+            ["Arkusze", "Rola"],
+            default=_saved.get("mode", "Arkusze"),
+        )
+        self._mode_seg.currentTextChanged.connect(self._on_mode_change)
         row_mode.addWidget(self._mode_seg)
-        row_mode.addStretch()
-        sc_layout.addLayout(row_mode)
+        row_mode.addStretch(1)
+        sheet_card.body.addLayout(row_mode)
 
-        # Row: Format — container (sheet / roll frames)
-        row_format = QHBoxLayout()
-        row_format.setSpacing(8)
-        lbl_fmt = QLabel("Format")
-        lbl_fmt.setProperty("class", "field-label")
-        row_format.addWidget(lbl_fmt)
+        # Format
+        row_fmt = QHBoxLayout()
+        row_fmt.setSpacing(8)
+        row_fmt.addWidget(self._field_label("Format"))
 
         # Sheet frame
         self._sheet_frame = QWidget()
-        sf_layout = QHBoxLayout(self._sheet_frame)
-        sf_layout.setContentsMargins(0, 0, 0, 0)
-        sf_layout.setSpacing(4)
+        sf = QHBoxLayout(self._sheet_frame)
+        sf.setContentsMargins(0, 0, 0, 0)
+        sf.setSpacing(6)
         sheet_names = list(SHEET_PRESETS.keys())
         self._sheet_combo = QComboBox()
+        self._sheet_combo.setProperty("variant", "mono")
         self._sheet_combo.addItems(sheet_names)
-        self._sheet_combo.setFixedWidth(100)
+        self._sheet_combo.setFixedWidth(120)
         _sp = _saved.get("sheet_preset")
         if _sp and _sp in sheet_names:
             self._sheet_combo.setCurrentText(_sp)
         self._sheet_combo.currentTextChanged.connect(self._on_sheet_changed)
-        sf_layout.addWidget(self._sheet_combo)
-        row_format.addWidget(self._sheet_frame)
+        sf.addWidget(self._sheet_combo)
+        row_fmt.addWidget(self._sheet_frame)
 
         # Roll frame
         self._roll_frame = QWidget()
-        rf_layout = QHBoxLayout(self._roll_frame)
-        rf_layout.setContentsMargins(0, 0, 0, 0)
-        rf_layout.setSpacing(4)
+        rf = QHBoxLayout(self._roll_frame)
+        rf.setContentsMargins(0, 0, 0, 0)
+        rf.setSpacing(6)
         self._roll_combo = QComboBox()
+        self._roll_combo.setProperty("variant", "mono")
         self._roll_combo.setEditable(True)
         self._roll_combo.addItems([str(w) for w in self._roll_widths])
-        self._roll_combo.setFixedWidth(100)
-        rf_layout.addWidget(self._roll_combo)
-        add_btn = QPushButton("+")
-        add_btn.setProperty("class", "ghost")
-        add_btn.setFixedSize(24, 24)
+        self._roll_combo.setFixedWidth(110)
+        rf.addWidget(self._roll_combo)
+        add_btn = IconButton("+", tip="Dodaj szerokość")
         add_btn.clicked.connect(self._roll_add)
-        rf_layout.addWidget(add_btn)
-        rm_btn = QPushButton("-")
-        rm_btn.setProperty("class", "ghost")
-        rm_btn.setFixedSize(24, 24)
+        rf.addWidget(add_btn)
+        rm_btn = IconButton("−", tip="Usuń szerokość")
         rm_btn.clicked.connect(self._roll_remove)
-        rf_layout.addWidget(rm_btn)
-        rf_layout.addWidget(QLabel("Max"))
+        rf.addWidget(rm_btn)
+        rf.addWidget(UnitLabel("max"))
         self._roll_max_edit = QLineEdit(str(DEFAULT_ROLL_MAX_LENGTH_MM))
-        self._roll_max_edit.setFixedWidth(85)
-        rf_layout.addWidget(self._roll_max_edit)
-        row_format.addWidget(self._roll_frame)
+        self._roll_max_edit.setFixedWidth(90)
+        self._roll_max_edit.setProperty("variant", "mono")
+        rf.addWidget(self._roll_max_edit)
+        row_fmt.addWidget(self._roll_frame)
         self._roll_frame.setVisible(False)
+        row_fmt.addStretch(1)
+        sheet_card.body.addLayout(row_fmt)
 
-        row_format.addStretch()
-        sc_layout.addLayout(row_format)
-
-        # Row: Ploter
-        row_plotter = QHBoxLayout()
-        row_plotter.setSpacing(8)
-        lbl_plotter = QLabel("Ploter")
-        lbl_plotter.setProperty("class", "field-label")
-        row_plotter.addWidget(lbl_plotter)
+        # Ploter
+        row_plot = QHBoxLayout()
+        row_plot.setSpacing(8)
+        row_plot.addWidget(self._field_label("Ploter"))
         self._plotter_combo = QComboBox()
+        self._plotter_combo.setProperty("variant", "mono")
         self._plotter_combo.addItems(list(PLOTTERS.keys()))
         _pl = _saved.get("plotter", "jwei")
         if _pl in PLOTTERS:
             self._plotter_combo.setCurrentText(_pl)
         else:
             self._plotter_combo.setCurrentText("jwei")
-        self._plotter_combo.setFixedWidth(120)
-        row_plotter.addWidget(self._plotter_combo)
-        row_plotter.addStretch()
-        sc_layout.addLayout(row_plotter)
+        self._plotter_combo.setFixedWidth(140)
+        row_plot.addWidget(self._plotter_combo)
+        row_plot.addStretch(1)
+        sheet_card.body.addLayout(row_plot)
 
         layout.addWidget(sheet_card)
 
-        # === Parametry (card) ===
-        params_card = QWidget()
-        params_card.setProperty("class", "card")
-        pc_layout = QVBoxLayout(params_card)
-        pc_layout.setContentsMargins(16, 12, 16, 12)
-        pc_layout.setSpacing(8)
+        # === Rozklad card ===
+        params_card = CardSection(
+            "Rozkład",
+            aux="shelf nesting + backfill",
+        )
 
-        # Row: Kopie + Max + Gap
+        # Kopie + Max + Gap
         row_cg = QHBoxLayout()
         row_cg.setSpacing(8)
-        lbl_copies = QLabel("Kopie")
-        lbl_copies.setProperty("class", "field-label")
-        row_cg.addWidget(lbl_copies)
-        self._copies_edit = QLineEdit("1")
-        self._copies_edit.setFixedWidth(55)
-        row_cg.addWidget(self._copies_edit)
-        max_btn = QPushButton("Max")
-        max_btn.setProperty("class", "toolbar-btn")
+        row_cg.addWidget(self._field_label("Kopie"))
+        self._copies_spin = QSpinBox()
+        self._copies_spin.setMinimum(1)
+        self._copies_spin.setMaximum(9999)
+        self._copies_spin.setValue(1)
+        self._copies_spin.setFixedWidth(80)
+        row_cg.addWidget(self._copies_spin)
+        max_btn = make_button("Max", variant="ghost", size="sm")
         max_btn.clicked.connect(self._calc_max_copies)
         row_cg.addWidget(max_btn)
-        row_cg.addSpacing(4)
-        lbl_gap = QLabel("Gap")
-        lbl_gap.setStyleSheet("min-width: 0; font-size: 13px; font-weight: 500; color: #6e6e73;")
-        lbl_gap.setFixedWidth(28)
-        row_cg.addWidget(lbl_gap)
-        self._gap_edit = QLineEdit(str(_saved.get("gap_mm", DEFAULT_GAP_MM)))
-        self._gap_edit.setFixedWidth(55)
-        row_cg.addWidget(self._gap_edit)
-        row_cg.addWidget(QLabel("mm"))
-        row_cg.addStretch()
-        pc_layout.addLayout(row_cg)
+        row_cg.addSpacing(12)
+        gap_lbl = QLabel("Gap")
+        gap_lbl.setObjectName("FieldLabel")
+        row_cg.addWidget(gap_lbl)
+        self._gap_spin = QDoubleSpinBox()
+        self._gap_spin.setRange(0.0, 100.0)
+        self._gap_spin.setSingleStep(0.5)
+        self._gap_spin.setDecimals(1)
+        self._gap_spin.setValue(float(_saved.get("gap_mm", DEFAULT_GAP_MM)))
+        self._gap_spin.setFixedWidth(80)
+        row_cg.addWidget(self._gap_spin)
+        row_cg.addWidget(UnitLabel("mm"))
+        row_cg.addStretch(1)
+        params_card.body.addLayout(row_cg)
 
-        # Row: Wzory
+        # Grupowanie (accent Segmented)
         row_group = QHBoxLayout()
         row_group.setSpacing(8)
-        lbl_group = QLabel("Wzory")
-        lbl_group.setProperty("class", "field-label")
-        row_group.addWidget(lbl_group)
-        self._grouping_seg = SegmentedButton(
+        row_group.addWidget(self._field_label("Wzory"))
+        self._grouping_seg = Segmented(
             ["Grupuj", "Osobne", "Mieszaj"],
+            accent=True,
             default=_saved.get("grouping", "Grupuj"),
         )
         row_group.addWidget(self._grouping_seg)
-        row_group.addStretch()
-        pc_layout.addLayout(row_group)
-
-        # Row: FlexCut button
-        row_flex = QHBoxLayout()
-        row_flex.setSpacing(8)
-        lbl_flex = QLabel("FlexCut")
-        lbl_flex.setProperty("class", "field-label")
-        row_flex.addWidget(lbl_flex)
-        self._flexcut_btn = QPushButton("FlexCut...")
-        self._flexcut_btn.setObjectName("outline")
-        self._flexcut_btn.clicked.connect(self._open_flexcut)
-        row_flex.addWidget(self._flexcut_btn)
-        row_flex.addStretch()
-        pc_layout.addLayout(row_flex)
-
-        # Checkbox: Biały poddruk
-        self._white_cb = QCheckBox("Biały poddruk (White)")
+        row_group.addStretch(1)
+        self._white_cb = QCheckBox("Biały poddruk")
         self._white_cb.setChecked(bool(_saved.get("white", False)))
-        pc_layout.addWidget(self._white_cb)
+        row_group.addWidget(self._white_cb)
+        params_card.body.addLayout(row_group)
 
-        # Row: Output
-        out_row = QHBoxLayout()
-        out_row.setSpacing(8)
-        out_lbl = QLabel("Output")
-        out_lbl.setProperty("class", "field-label")
-        out_row.addWidget(out_lbl)
-        self._output_edit = QLineEdit("")
+        # FlexCut + Output
+        row_tools = QHBoxLayout()
+        row_tools.setSpacing(8)
+        row_tools.addWidget(self._field_label("Narzędzia"))
+        self._flexcut_btn = make_button("FlexCut…", variant="secondary", size="sm")
+        self._flexcut_btn.clicked.connect(self._open_flexcut)
+        row_tools.addWidget(self._flexcut_btn)
+        row_tools.addStretch(1)
+        params_card.body.addLayout(row_tools)
+
+        row_out = QHBoxLayout()
+        row_out.setSpacing(8)
+        row_out.addWidget(self._field_label("Output"))
+        self._output_edit = QLineEdit()
         self._output_edit.setPlaceholderText("Katalog pliku wejściowego")
         self._output_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        out_row.addWidget(self._output_edit)
-        browse_btn = QPushButton("...")
-        browse_btn.setFixedWidth(30)
+        row_out.addWidget(self._output_edit, stretch=1)
+        browse_btn = IconButton("…", tip="Wybierz folder")
         browse_btn.clicked.connect(self._browse_output)
-        out_row.addWidget(browse_btn)
-        pc_layout.addLayout(out_row)
+        row_out.addWidget(browse_btn)
+        params_card.body.addLayout(row_out)
 
         layout.addWidget(params_card)
 
-        # === Utylizacja (UtilCard) ===
+        # === UtilCard (widoczny po gotowym job) ===
         self._util_card = UtilCard()
         self._util_card.setVisible(False)
         layout.addWidget(self._util_card)
 
-        # === Action bar ===
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
+        layout.addStretch(1)
 
-        self._nest_btn = QPushButton("Generuj arkusze")
-        self._nest_btn.setObjectName("primary")
+        # === Action bar ===
+        self._action_bar = ActionBar()
+        self._nest_btn = make_button("▶ Generuj arkusze", size="lg")
         self._nest_btn.clicked.connect(self._on_run)
-        bar.addWidget(self._nest_btn)
+        self._action_bar.body.addWidget(self._nest_btn)
 
         self._progress = QProgressBar()
-        self._progress.setFixedWidth(150)
-        self._progress.setFixedHeight(8)
+        self._progress.setFixedWidth(160)
         self._progress.setValue(0)
         self._progress.setVisible(False)
-        bar.addWidget(self._progress)
+        self._action_bar.body.addWidget(self._progress)
 
         self._status_label = QLabel("")
-        self._status_label.setProperty("class", "subheader")
-        bar.addWidget(self._status_label)
-        bar.addStretch()
+        self._status_label.setObjectName("ProgressText")
+        self._action_bar.body.addWidget(self._status_label)
+        self._action_bar.body.addStretch(1)
+        root.addWidget(self._action_bar)
 
-        layout.addLayout(bar)
-        layout.addStretch()
-
-        # Aktualizuj output po dodaniu plików
+        # Sygnaly
         self._file_section.files_changed.connect(self._on_files_changed)
 
-        # Odtworz widocznosc sheet/roll frame zgodnie z trybem (po przywroceniu)
+        # Przywroc widocznosc sheet/roll po trybie
         if self._mode_seg.value() == "Rola":
             self._sheet_frame.setVisible(False)
             self._roll_frame.setVisible(True)
 
+    def _field_label(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setObjectName("FieldLabel")
+        lbl.setFixedWidth(110)
+        return lbl
+
     # --- Public API ---
 
     def clear(self):
-        """Wyczyść pliki i zresetuj output."""
         self._file_section.clear_files()
         self._output_edit.setText("")
         self._status_label.setText("")
@@ -330,17 +295,11 @@ class NestTab(QWidget):
 
     @property
     def gap_mm(self) -> float:
-        try:
-            return float(self._gap_edit.text())
-        except ValueError:
-            return DEFAULT_GAP_MM
+        return float(self._gap_spin.value())
 
     @property
     def copies(self) -> int:
-        try:
-            return max(1, int(self._copies_edit.text()))
-        except ValueError:
-            return 1
+        return max(1, int(self._copies_spin.value()))
 
     @property
     def output_dir(self) -> str:
@@ -352,12 +311,10 @@ class NestTab(QWidget):
         return os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
 
     def _on_files_changed(self):
-        """Ustaw output na katalog ostatnio dodanego pliku."""
         if self.files:
             self._output_edit.setText(os.path.dirname(self.files[-1]))
 
     def add_files(self, paths: list[str]):
-        """Dodaj pliki programowo (np. z bleed tab)."""
         self._file_section._add_files(paths)
 
     # --- Mode switching ---
@@ -369,7 +326,6 @@ class NestTab(QWidget):
         if is_sheet:
             self._on_sheet_changed(self._sheet_combo.currentText())
         else:
-            # Rola → automatycznie Summa S3
             self._plotter_combo.setCurrentText("summa_s3")
 
     def _on_sheet_changed(self, name: str):
@@ -407,11 +363,6 @@ class NestTab(QWidget):
     # --- Max copies ---
 
     def _calc_max_copies(self):
-        """Oblicza maks. liczbę kopii mieszczących się na JEDNYM arkuszu.
-
-        Używa prawdziwego nest_job (binary search) zamiast formuły grid —
-        zapewnia zgodność z faktycznym wynikiem nestowania.
-        """
         if not self.files:
             self._log("Max: brak plików")
             return
@@ -422,7 +373,6 @@ class NestTab(QWidget):
         mark_zone = plotter_cfg.get("mark_zone_mm", DEFAULT_MARK_ZONE_MM)
         leading_offset = plotter_cfg.get("leading_offset_mm", 0)
         side_offset = plotter_cfg.get("side_offset_mm", 0)
-        # Te same transformacje co w NestWorker._run_inner
         nest_w = sheet_w - 2 * side_offset
         nest_h = sheet_h
         gap = self.gap_mm
@@ -443,7 +393,6 @@ class NestTab(QWidget):
             self._log(f"Max: błąd — {e}")
             return
 
-        # Minimalny stub cut_segments (nesting potrzebuje tylko wymiarów)
         cut_segs = [
             ('l', (0, 0), (cw_pt, 0)),
             ('l', (cw_pt, 0), (cw_pt, ch_pt)),
@@ -475,7 +424,6 @@ class NestTab(QWidget):
             except Exception:
                 return False
 
-        # Binary search: górne oszacowanie z gridu, potem zawężamy
         upper = max(
             1,
             int(math.floor((nest_w - 2 * mark_zone - 10 + gap) / max(0.1, min(fw, fh) + gap)))
@@ -494,7 +442,7 @@ class NestTab(QWidget):
                 hi = mid - 1
 
         n_max = max(best, 1)
-        self._copies_edit.setText(str(n_max))
+        self._copies_spin.setValue(n_max)
         self._log(f"Max: {n_max} kopii ({fw:.0f}x{fh:.0f}mm na arkuszu {sheet_w:.0f}x{sheet_h:.0f}mm)")
 
     def _get_sheet_size(self) -> tuple[float, float]:
@@ -529,7 +477,6 @@ class NestTab(QWidget):
         dlg.exec()
 
     def _reexport_sheet(self, idx: int):
-        """Re-export jednego arkusza (print + cut + white)."""
         if not self._last_job or idx >= len(self._last_job.sheets):
             return
         from modules.marks import generate_marks
@@ -545,7 +492,6 @@ class NestTab(QWidget):
         self._log(f"  Re-export arkusz {idx + 1}: OK")
 
     def _reexport_cut_only(self, idx: int):
-        """Re-export TYLKO cut PDF jednego arkusza (szybki — bez print/white)."""
         if not self._last_job or idx >= len(self._last_job.sheets):
             return
         from modules.export import export_sheet_cut
@@ -554,10 +500,6 @@ class NestTab(QWidget):
         export_sheet_cut(sheet, cp, bleed_mm=0, plotter=self.plotter)
 
     def _reexport_fast(self, idx: int):
-        """Re-export print + cut (bez white, bez regeneracji markerów).
-
-        Szybszy od pełnego reexport — używany przy rotate/bleed w FlexCut.
-        """
         if not self._last_job or idx >= len(self._last_job.sheets):
             return
         from modules.export import export_sheet_print, export_sheet_cut
@@ -578,7 +520,6 @@ class NestTab(QWidget):
     def _on_run(self):
         if self._processing or not self.files:
             return
-        # Persist ustawienia (best-effort)
         _settings.update({"nest": {
             "plotter": self.plotter,
             "gap_mm": self.gap_mm,
@@ -589,7 +530,7 @@ class NestTab(QWidget):
         }})
         self._processing = True
         self._nest_btn.setEnabled(False)
-        self._nest_btn.setText("Rozmieszczam...")
+        self._nest_btn.setText("Rozmieszczam…")
         self._progress.setVisible(True)
         self._progress.setValue(0)
         self._file_section.reset_statuses()
@@ -622,28 +563,25 @@ class NestTab(QWidget):
     def _on_progress(self, current: int, total: int):
         if total > 0:
             self._progress.setValue(int(100 * current / total))
-        self._status_label.setText(f"Plik {current}/{total}...")
+        pct = int(100 * current / max(1, total))
+        self._status_label.setText(f"Plik {current} / {total} · {pct}%")
 
     def _on_done(self, job, sheet_pdfs):
         self._processing = False
         self._nest_btn.setEnabled(True)
-        self._nest_btn.setText("Generuj arkusze")
+        self._nest_btn.setText("▶ Generuj arkusze")
         self._progress.setVisible(False)
         total = sum(len(s.placements) for s in job.sheets)
 
-        # Utylizacja materialu — srednia wazona po arkuszach
-        # (printable_area uwzglednia marginesy + mark_zone).
         if job.sheets:
             used = sum(s.used_area_mm2 for s in job.sheets)
             printable = sum(s.printable_area_mm2 for s in job.sheets)
             sheet_total = sum(s.sheet_area_mm2 for s in job.sheets)
             util_print = 100.0 * used / printable if printable > 0 else 0.0
             util_sheet = 100.0 * used / sheet_total if sheet_total > 0 else 0.0
-            # Wlasna ocena (kolor w logu)
             emoji = "✓" if util_sheet >= 65 else ("·" if util_sheet >= 45 else "⚠")
             self._status_label.setText(
-                f"Gotowe — {total} naklejek na {len(job.sheets)} arkusz(ach) · "
-                f"utylizacja {util_sheet:.0f}% arkusza ({util_print:.0f}% obszaru druku)"
+                f"Gotowe — {total} naklejek · utylizacja {util_sheet:.0f}%"
             )
             self._log(
                 f"{emoji} Utylizacja materialu: {util_sheet:.1f}% arkusza "
@@ -677,7 +615,7 @@ class NestTab(QWidget):
     def _on_error(self, msg: str):
         self._processing = False
         self._nest_btn.setEnabled(True)
-        self._nest_btn.setText("Generuj arkusze")
+        self._nest_btn.setText("▶ Generuj arkusze")
         self._progress.setVisible(False)
         self._status_label.setText("BŁĄD")
         self._log(f"[BŁĄD KRYTYCZNY] {msg}")

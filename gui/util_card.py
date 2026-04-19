@@ -1,70 +1,96 @@
 """
 Bleed Tool — util_card.py
 ===========================
-Karta utylizacji materialu (duze %, pasek, podsumowanie).
+Karta utylizacji materialu (Technikadruku style).
+
+Layout: giant mono % po lewej + 6px progress bar + 3-col stat grid po prawej.
+Gradient top-border (green→blue) aplikowany przez QSS.
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QGridLayout, QWidget,
 )
 from PyQt6.QtCore import Qt
 
+from gui.atoms import set_prop
 
-class UtilCard(QWidget):
-    """Karta z dużym procentem utylizacji + paskiem + krótkim opisem."""
+
+class UtilCard(QFrame):
+    """Karta utylizacji: giant %, progress bar, 3-col stat grid."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setProperty("class", "util-card")
+        self.setObjectName("UtilCard")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(6)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(22)
 
-        # Header (caption)
-        self._caption = QLabel("Utylizacja materiału")
-        self._caption.setProperty("class", "util-caption")
-        layout.addWidget(self._caption)
+        # === Lewa kolumna: giant % + label ===
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(2)
 
-        # Wielki procent + sub
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(12)
+        pct_row = QHBoxLayout()
+        pct_row.setContentsMargins(0, 0, 0, 0)
+        pct_row.setSpacing(4)
         self._pct = QLabel("—")
-        self._pct.setProperty("class", "util-pct")
-        self._pct.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(self._pct)
+        self._pct.setObjectName("UtilValue")
+        self._pct.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        pct_row.addWidget(self._pct)
+        self._suffix = QLabel("%")
+        self._suffix.setObjectName("UtilSuffix")
+        self._suffix.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        pct_row.addWidget(self._suffix)
+        pct_row.addStretch(1)
+        left.addLayout(pct_row)
 
-        self._sub = QLabel("")
-        self._sub.setProperty("class", "util-sub")
-        self._sub.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._sub.setWordWrap(True)
-        row.addWidget(self._sub, stretch=1)
-        layout.addLayout(row)
+        self._caption = QLabel("UTYLIZACJA ARKUSZA")
+        self._caption.setObjectName("UtilLabel")
+        left.addWidget(self._caption)
 
-        # Pasek
+        root.addLayout(left)
+
+        # === Prawa kolumna: progress bar + stat grid ===
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(12)
+
         self._bar = QProgressBar()
-        self._bar.setProperty("class", "util-bar")
+        self._bar.setObjectName("UtilBar")
         self._bar.setTextVisible(False)
-        self._bar.setMinimum(0)
-        self._bar.setMaximum(100)
+        self._bar.setRange(0, 100)
         self._bar.setValue(0)
-        self._bar.setFixedHeight(8)
-        layout.addWidget(self._bar)
+        right.addWidget(self._bar)
 
-        # Dodatkowa linia (np. area)
-        self._detail = QLabel("")
-        self._detail.setProperty("class", "util-sub")
-        layout.addWidget(self._detail)
+        # Stat grid 3 cols
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(2)
 
-        self.clear()
+        def _stat(col: int, key_text: str) -> QLabel:
+            k = QLabel(key_text)
+            k.setObjectName("MetaKey")
+            grid.addWidget(k, 0, col)
+            v = QLabel("—")
+            v.setObjectName("MetaVal")
+            grid.addWidget(v, 1, col)
+            return v
+
+        self._v_stickers = _stat(0, "NAKLEJEK")
+        self._v_sheets = _stat(1, "ARKUSZY")
+        self._v_area = _stat(2, "POWIERZCHNIA")
+
+        right.addLayout(grid)
+        root.addLayout(right, stretch=1)
 
     def clear(self):
         self._pct.setText("—")
-        self._sub.setText("")
-        self._detail.setText("")
+        self._v_stickers.setText("—")
+        self._v_sheets.setText("—")
+        self._v_area.setText("—")
         self._bar.setValue(0)
-        self._set_grade("ok")
 
     def set_data(
         self,
@@ -75,26 +101,19 @@ class UtilCard(QWidget):
         sheets_count: int,
         placements_count: int,
     ):
-        """Ustaw wszystkie wartosci na karcie."""
         pct = max(0.0, min(100.0, util_sheet_pct))
-        self._pct.setText(f"{pct:.0f}%")
-        self._sub.setText(
-            f"{placements_count} naklejek · {sheets_count} arkusz(y)\n"
-            f"{util_print_pct:.0f}% obszaru drukowania"
-        )
+        self._pct.setText(f"{pct:.0f}")
+        self._bar.setValue(int(round(pct)))
+        self._v_stickers.setText(f"{placements_count} szt.")
+        self._v_sheets.setText(f"{sheets_count}")
         used_m2 = used_mm2 / 1_000_000.0
         total_m2 = sheet_total_mm2 / 1_000_000.0
-        self._detail.setText(f"Powierzchnia: {used_m2:.3f} / {total_m2:.3f} m²")
-        self._bar.setValue(int(round(pct)))
-        if pct >= 65:
-            self._set_grade("good")
-        elif pct >= 45:
-            self._set_grade("ok")
-        else:
-            self._set_grade("low")
+        self._v_area.setText(f"{used_m2:.3f} / {total_m2:.3f} m²")
 
-    def _set_grade(self, grade: str):
-        for w in (self._pct, self._bar):
-            w.setProperty("grade", grade)
-            w.style().unpolish(w)
-            w.style().polish(w)
+        # Auto-status na % value (kolor)
+        if pct >= 65:
+            set_prop(self._v_area, "status", "ok")
+        elif pct < 45:
+            set_prop(self._v_area, "status", "warn")
+        else:
+            set_prop(self._v_area, "status", "")

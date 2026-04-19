@@ -69,15 +69,20 @@ from gui.theme import PREVIEW_CUTCONTOUR, PREVIEW_FLEXCUT, PREVIEW_MARK
 
 
 class MetadataGrid(QWidget):
-    """KV-grid metadanych PDF: wymiary, spad, TrimBox/BleedBox, OutputIntent."""
+    """MetaPanel: KV-grid metadanych PDF (Technikadruku style).
+
+    5-kolumnowy layout: MediaBox | TrimBox | BleedBox | Spad | OutputIntent.
+    QSS: QFrame#MetaPanel + QLabel#MetaKey + QLabel#MetaVal (+status).
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setProperty("class", "kv-grid")
+        from PyQt6.QtWidgets import QFrame
+        self.setObjectName("MetaPanel")
         self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(10, 6, 10, 6)
-        self._grid.setHorizontalSpacing(14)
-        self._grid.setVerticalSpacing(2)
+        self._grid.setContentsMargins(18, 10, 18, 10)
+        self._grid.setHorizontalSpacing(24)
+        self._grid.setVerticalSpacing(4)
         self._rows: list[tuple[QLabel, QLabel]] = []
 
     def clear(self):
@@ -89,16 +94,22 @@ class MetadataGrid(QWidget):
         self._rows.clear()
 
     def set_data(self, items: list[tuple[str, str]]):
-        """items = [(key, value), ...]. Klucze w lewej kolumnie, wartosci w prawej."""
+        """items = [(key, value), ...]. Ukladany poziomo (max 5 kolumn).
+
+        Dla 'OutputIntent' z 'FOGRA39' — automatyczne status="ok" (zielony).
+        """
         self.clear()
-        for row, (k, v) in enumerate(items):
-            key = QLabel(k)
-            key.setProperty("class", "kv-key")
+        for col, (k, v) in enumerate(items):
+            key = QLabel(k.upper())
+            key.setObjectName("MetaKey")
             val = QLabel(v)
-            val.setProperty("class", "kv-value")
+            val.setObjectName("MetaVal")
             val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            self._grid.addWidget(key, row, 0)
-            self._grid.addWidget(val, row, 1)
+            # Auto-status: FOGRA39 → ok (zielony)
+            if "FOGRA" in v.upper() or v.upper() in ("OK", "PDF/X-4"):
+                val.setProperty("status", "ok")
+            self._grid.addWidget(key, 0, col)
+            self._grid.addWidget(val, 1, col)
             self._rows.append((key, val))
 
 log = logging.getLogger(__name__)
@@ -114,13 +125,14 @@ class _PDFGraphicsView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         from PyQt6.QtGui import QPainter
+        self.setObjectName("PreviewCanvas")
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setBackgroundBrush(QColor("#e9ecef"))
+        self.setBackgroundBrush(QColor("#E9ECEF"))
         self._panning = False
         self._pan_start = None
         self._crop_mode = False      # aktywny crop preview
@@ -208,6 +220,7 @@ class PreviewPanel(QWidget):
             placeholder_text: tekst placeholder gdy brak podglądu.
         """
         super().__init__(parent)
+        self.setObjectName("PreviewPane")
         self._split_enabled = split_enabled
         self._results: list[dict] = []
         self._job = None
@@ -215,84 +228,71 @@ class PreviewPanel(QWidget):
         self._bleed_mm: float = 0.0
         self._current_idx: int = 0
         self._cache: dict = {}
-        self._crop_data: dict = {}  # aktywny crop preview
-        self._split_view: bool = False  # True = podgląd przed/po side-by-side
+        self._crop_data: dict = {}
+        self._split_view: bool = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # Toolbar: nawigacja
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(4)
+        # === PreviewHead (navy style) ===
+        from PyQt6.QtWidgets import QFrame
+        head = QFrame()
+        head.setObjectName("PreviewHead")
+        head_lay = QHBoxLayout(head)
+        head_lay.setContentsMargins(18, 10, 18, 10)
+        head_lay.setSpacing(12)
 
-        self._prev_btn = QPushButton("<")
-        self._prev_btn.setFixedSize(28, 26)
+        # PreviewNav pill (prev | idx | next)
+        nav = QWidget()
+        nav.setObjectName("PreviewNav")
+        nav_lay = QHBoxLayout(nav)
+        nav_lay.setContentsMargins(3, 3, 3, 3)
+        nav_lay.setSpacing(0)
+        self._prev_btn = QPushButton("‹")
+        self._prev_btn.setProperty("role", "prev-next")
+        self._prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._prev_btn.clicked.connect(self._prev)
-        toolbar.addWidget(self._prev_btn)
-
-        self._title_label = QLabel("Podgląd")
-        self._title_label.setProperty("class", "header")
-        font = self._title_label.font()
-        font.setPointSize(12)
-        font.setBold(True)
-        self._title_label.setFont(font)
-        toolbar.addWidget(self._title_label)
-
-        self._next_btn = QPushButton(">")
-        self._next_btn.setFixedSize(28, 26)
+        nav_lay.addWidget(self._prev_btn)
+        self._idx_label = QLabel("—")
+        self._idx_label.setObjectName("PreviewIdx")
+        nav_lay.addWidget(self._idx_label)
+        self._next_btn = QPushButton("›")
+        self._next_btn.setProperty("role", "prev-next")
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._next_btn.clicked.connect(self._next)
-        toolbar.addWidget(self._next_btn)
+        nav_lay.addWidget(self._next_btn)
+        head_lay.addWidget(nav)
 
-        # Split view toggle — podgląd przed/po side-by-side (tylko bleed mode)
-        # W trybie nest ten przycisk nie powstaje w ogóle.
+        # Title + size
+        self._title_label = QLabel("Podgląd")
+        self._title_label.setObjectName("PreviewTitle")
+        head_lay.addWidget(self._title_label)
+        sep = QLabel("·")
+        sep.setObjectName("PreviewTitleSep")
+        head_lay.addWidget(sep)
+        self._info_label = QLabel("")
+        self._info_label.setObjectName("PreviewTitleSz")
+        head_lay.addWidget(self._info_label)
+
+        head_lay.addStretch(1)
+
+        # Split view toggle (tylko Bleed mode)
         if self._split_enabled:
-            self._split_btn = QPushButton("Przed/Po")
+            self._split_btn = QPushButton("▮▮ Przed / Po")
+            self._split_btn.setObjectName("SplitBtn")
             self._split_btn.setCheckable(True)
-            self._split_btn.setFixedHeight(26)
             self._split_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self._split_btn.setToolTip(
                 "Podgląd side-by-side: oryginał (lewo) vs wynik z bleedem (prawo)"
             )
             self._split_btn.clicked.connect(self._on_toggle_split)
-            self._split_btn.setVisible(False)  # widoczny tylko gdy _results
-            toolbar.addWidget(self._split_btn)
+            self._split_btn.setVisible(False)
+            head_lay.addWidget(self._split_btn)
         else:
             self._split_btn = None
 
-        toolbar.addStretch()
-
-        self._info_label = QLabel("")
-        self._info_label.setProperty("class", "subheader")
-        font2 = self._info_label.font()
-        font2.setPointSize(9)
-        self._info_label.setFont(font2)
-        toolbar.addWidget(self._info_label)
-
-        layout.addLayout(toolbar)
-
-        # Legenda
-        legend = QHBoxLayout()
-        legend.setSpacing(4)
-        legend.setContentsMargins(4, 0, 0, 0)
-        for color, label in [
-            (PREVIEW_CUTCONTOUR, "Cut"),
-            (PREVIEW_FLEXCUT, "Flex"),
-            (PREVIEW_MARK, "OPOS"),
-        ]:
-            dot = QLabel()
-            dot.setFixedSize(8, 8)
-            dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
-            legend.addWidget(dot)
-            lbl = QLabel(label)
-            lbl.setProperty("class", "legend-label")
-            font3 = lbl.font()
-            font3.setPointSize(8)
-            lbl.setFont(font3)
-            legend.addWidget(lbl)
-            legend.addSpacing(4)
-        legend.addStretch()
-        layout.addLayout(legend)
+        layout.addWidget(head)
 
         # Graphics View
         self._scene = QGraphicsScene()
@@ -485,19 +485,23 @@ class PreviewPanel(QWidget):
 
         if has:
             idx = self._current_idx
+            self._idx_label.setText(f"{idx + 1:02d} / {n:02d}")
             if self._results:
                 r = self._results[idx]
-                self._title_label.setText(f"Podgląd {idx + 1}/{n}")
+                path = r.get("output") or r.get("path") or ""
+                name = os.path.basename(path) if path else f"Podgląd {idx + 1}"
+                self._title_label.setText(name)
                 w, h = r["size_mm"]
-                self._info_label.setText(f"{w:.0f}x{h:.0f}mm")
+                self._info_label.setText(f"{w:.0f} × {h:.0f} mm · bleed {self._bleed_mm:.0f} mm")
             elif self._job:
                 sheet = self._job.sheets[idx]
                 placed = len(sheet.placements)
-                self._title_label.setText(f"Arkusz {idx + 1}/{n}")
+                self._title_label.setText(f"Arkusz {idx + 1}")
                 self._info_label.setText(
-                    f"{sheet.width_mm:.0f}x{sheet.height_mm:.0f}mm | {placed} szt"
+                    f"{sheet.width_mm:.0f} × {sheet.height_mm:.0f} mm · {placed} szt"
                 )
         else:
+            self._idx_label.setText("—")
             self._title_label.setText("Podgląd")
             self._info_label.setText("")
 
@@ -940,8 +944,9 @@ class PreviewPanel(QWidget):
             self._view.set_crop_mode(True, crop_dim)
 
             # Info
+            self._idx_label.setText("CROP")
             self._title_label.setText("Crop")
-            self._info_label.setText(f"{shape} | offset ({ox:.2f}, {oy:.2f})")
+            self._info_label.setText(f"{shape} · offset ({ox:.2f}, {oy:.2f})")
 
             self._view.fit_content()
         except Exception as e:

@@ -1,7 +1,7 @@
 """
 Bleed Tool — bleed_tab.py
 ============================
-Zakładka Bleed: drop zone, parametry, generowanie bleed + CutContour.
+Zakladka Bleed: DropZone, Card(Parametry), ActionBar. Technikadruku QSS.
 """
 
 import os
@@ -9,24 +9,27 @@ import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
-    QProgressBar, QFileDialog, QSizePolicy, QMessageBox,
+    QProgressBar, QFileDialog, QSizePolicy, QMessageBox, QSpinBox,
+    QDoubleSpinBox, QScrollArea,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 
 from config import DEFAULT_BLEED_MM
 from gui.file_section import FileSection
+from gui.atoms import (
+    Segmented, IconButton, make_button, FieldLabel, UnitLabel,
+)
+from gui.widgets_common import PageTitleBar, CardSection, ActionBar
 from gui import settings as _settings
 
 log = logging.getLogger(__name__)
 
 
 class BleedTab(QWidget):
-    """Zakładka Bleed — pełny formularz z generowaniem."""
+    """Zakladka Bleed — pelny formularz z generowaniem."""
 
-    # preview_ready: (input_infos, output_paths)
-    # input_infos = [(src_path, page_idx), ...] parallel do output_paths
     preview_ready = pyqtSignal(list, list)
-    crop_preview_requested = pyqtSignal(dict)  # {file, shape, offset, radius_pct} lub {} gdy off
+    crop_preview_requested = pyqtSignal(dict)
 
     def __init__(self, log_fn=None, parent=None):
         super().__init__(parent)
@@ -34,243 +37,223 @@ class BleedTab(QWidget):
         self._processing = False
         _saved = _settings.load().get("bleed", {})
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # === Header ===
-        hdr = QHBoxLayout()
-        title = QLabel("Bleed")
-        title.setProperty("class", "page-title")
-        hdr.addWidget(title)
-        subtitle = QLabel("  Generuj bleed i CutContour")
-        subtitle.setProperty("class", "page-subtitle")
-        hdr.addWidget(subtitle)
-        hdr.addStretch()
-        layout.addLayout(hdr)
+        # === Page title bar ===
+        self._title_bar = PageTitleBar(
+            crumb="Workflow · Krok 01",
+            title="Bleed",
+            help_tip="Generuj bleed i CutContour",
+        )
+        root.addWidget(self._title_bar)
 
-        # === File section ===
+        # === Scroll area dla cards ===
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(22, 16, 22, 16)
+        layout.setSpacing(16)
+        scroll.setWidget(inner)
+        root.addWidget(scroll, stretch=1)
+
+        # === Files card ===
+        files_card = CardSection(
+            "Pliki wejściowe",
+            aux="PDF · AI · SVG · EPS · PNG · JPG · TIFF",
+        )
         self._file_section = FileSection(show_copies=False)
-        layout.addWidget(self._file_section)
+        files_card.body.addWidget(self._file_section)
+        layout.addWidget(files_card)
 
-        # === Parametry (card) ===
-        card = QWidget()
-        card.setProperty("class", "card")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 12, 16, 12)
-        card_layout.setSpacing(8)
+        # === Parametry card ===
+        params_card = CardSection(
+            "Parametry bleeda",
+            aux="pipeline: detect → offset → refit",
+        )
 
-        params_title = QLabel("Parametry")
-        params_title.setProperty("class", "section-title")
-        card_layout.addWidget(params_title)
-
-        # Row: Bleed (mm)
-        row1 = QHBoxLayout()
-        row1.setSpacing(8)
-        lbl1 = QLabel("Bleed (mm)")
-        lbl1.setProperty("class", "field-label")
-        row1.addWidget(lbl1)
-        self._bleed_edit = QLineEdit(str(_saved.get("bleed_mm", DEFAULT_BLEED_MM)))
-        self._bleed_edit.setFixedWidth(70)
-        row1.addWidget(self._bleed_edit)
-        row1.addStretch()
-        card_layout.addLayout(row1)
-
-        # Row: Wysokość (cm)
-        row2 = QHBoxLayout()
-        row2.setSpacing(8)
-        lbl2 = QLabel("Wysokość (cm)")
-        lbl2.setProperty("class", "field-label")
-        row2.addWidget(lbl2)
-        self._height_edit = QLineEdit()
-        self._height_edit.setFixedWidth(70)
-        self._height_edit.setPlaceholderText("auto")
-        row2.addWidget(self._height_edit)
-        row2.addStretch()
-        card_layout.addLayout(row2)
-
-        # Checkbox: Czarny -> 100% K
-        self._black_100k_cb = QCheckBox("Czarny -> 100% K")
+        # Row: Spad
+        row_spad = QHBoxLayout()
+        row_spad.setSpacing(8)
+        row_spad.addWidget(self._field_label("Spad"))
+        self._bleed_spin = QDoubleSpinBox()
+        self._bleed_spin.setRange(0.0, 50.0)
+        self._bleed_spin.setSingleStep(0.5)
+        self._bleed_spin.setDecimals(2)
+        self._bleed_spin.setValue(float(_saved.get("bleed_mm", DEFAULT_BLEED_MM)))
+        self._bleed_spin.setFixedWidth(80)
+        self._bleed_spin.setProperty("variant", "mono")
+        row_spad.addWidget(self._bleed_spin)
+        row_spad.addWidget(UnitLabel("mm"))
+        row_spad.addStretch(1)
+        self._black_100k_cb = QCheckBox("Czarny → 100% K")
         self._black_100k_cb.setEnabled(False)
-        card_layout.addWidget(self._black_100k_cb)
+        row_spad.addWidget(self._black_100k_cb)
+        params_card.body.addLayout(row_spad)
 
-        # Radio: Linia cięcia
-        cut_row = QHBoxLayout()
-        cut_row.setSpacing(8)
-        cut_lbl = QLabel("Linia cięcia:")
-        cut_lbl.setProperty("class", "field-label")
-        cut_row.addWidget(cut_lbl)
-        self._cutline_group = QButtonGroup(self)
-        self._rb_kisscut = QRadioButton("Kiss-Cut")
-        self._rb_flexcut = QRadioButton("FlexCut")
-        self._rb_nocut = QRadioButton("Brak")
-        _cl = _saved.get("cutline_mode", "kiss-cut")
-        if _cl == "flexcut":
-            self._rb_flexcut.setChecked(True)
-        elif _cl == "none":
-            self._rb_nocut.setChecked(True)
-        else:
-            self._rb_kisscut.setChecked(True)
-        self._cutline_group.addButton(self._rb_kisscut, 0)
-        self._cutline_group.addButton(self._rb_flexcut, 1)
-        self._cutline_group.addButton(self._rb_nocut, 2)
-        cut_row.addWidget(self._rb_kisscut)
-        cut_row.addWidget(self._rb_flexcut)
-        cut_row.addWidget(self._rb_nocut)
-        cut_row.addStretch()
-        card_layout.addLayout(cut_row)
+        # Row: Wysokosc
+        row_h = QHBoxLayout()
+        row_h.setSpacing(8)
+        row_h.addWidget(self._field_label("Wysokość"))
+        self._height_edit = QLineEdit()
+        self._height_edit.setFixedWidth(80)
+        self._height_edit.setPlaceholderText("auto")
+        self._height_edit.setProperty("variant", "mono")
+        row_h.addWidget(self._height_edit)
+        row_h.addWidget(UnitLabel("cm"))
+        row_h.addStretch(1)
+        params_card.body.addLayout(row_h)
 
-        # Checkbox: Biały poddruk
-        self._white_cb = QCheckBox("Biały poddruk (White)")
-        self._white_cb.setChecked(bool(_saved.get("white", False)))
-        card_layout.addWidget(self._white_cb)
+        # Row: Linia ciecia (Segmented)
+        row_cut = QHBoxLayout()
+        row_cut.setSpacing(8)
+        row_cut.addWidget(self._field_label("Linia cięcia"))
+        _cl_map = {"kiss-cut": "Kiss-Cut", "flexcut": "FlexCut", "none": "Brak"}
+        _cl_saved = _saved.get("cutline_mode", "kiss-cut")
+        self._cutline_seg = Segmented(
+            ["Kiss-Cut", "FlexCut", "Brak"],
+            default=_cl_map.get(_cl_saved, "Kiss-Cut"),
+        )
+        row_cut.addWidget(self._cutline_seg)
+        row_cut.addStretch(1)
+        params_card.body.addLayout(row_cut)
 
-        # Row: Silnik konturu (raster) — Moore / OpenCV
-        eng_row = QHBoxLayout()
-        eng_row.setSpacing(8)
-        eng_lbl = QLabel("Silnik konturu")
-        eng_lbl.setProperty("class", "field-label")
-        eng_row.addWidget(eng_lbl)
+        # Row: Silnik konturu + Bialy poddruk
+        row_eng = QHBoxLayout()
+        row_eng.setSpacing(8)
+        row_eng.addWidget(self._field_label("Silnik konturu"))
         self._engine_combo = QComboBox()
+        self._engine_combo.setProperty("variant", "mono")
+        self._engine_combo.addItem("Auto (Moore + OpenCV)", "auto")
         self._engine_combo.addItem("Moore (Python)", "moore")
         self._engine_combo.addItem("OpenCV (szybki)", "opencv")
-        self._engine_combo.addItem("Auto", "auto")
-        # Wartość domyślna — zapisana z poprzedniej sesji, fallback na config
         try:
             import config as _cfg
-            default_eng = _saved.get("engine") or (_cfg.CONTOUR_ENGINE or "auto")
-            default_eng = default_eng.lower()
+            default_eng = (_saved.get("engine") or _cfg.CONTOUR_ENGINE or "auto").lower()
             for i in range(self._engine_combo.count()):
                 if self._engine_combo.itemData(i) == default_eng:
                     self._engine_combo.setCurrentIndex(i)
                     break
         except Exception as e:
             log.debug(f"BleedTab: engine default restore failed: {e}")
-        self._engine_combo.setFixedWidth(180)
-        eng_row.addWidget(self._engine_combo)
-        eng_row.addStretch()
-        card_layout.addLayout(eng_row)
+        self._engine_combo.setFixedWidth(200)
+        row_eng.addWidget(self._engine_combo)
+        row_eng.addStretch(1)
+        self._white_cb = QCheckBox("Biały poddruk")
+        self._white_cb.setChecked(bool(_saved.get("white", False)))
+        row_eng.addWidget(self._white_cb)
+        params_card.body.addLayout(row_eng)
 
-        # --- Crop ---
-        crop_row = QHBoxLayout()
-        crop_row.setSpacing(8)
-        self._crop_cb = QCheckBox("Crop")
+        # Row: Crop (advanced — ukryty przy braku wysokosci)
+        row_crop = QHBoxLayout()
+        row_crop.setSpacing(8)
+        row_crop.addWidget(self._field_label("Crop"))
+        self._crop_cb = QCheckBox("Przytnij do wysokości")
         self._crop_cb.setEnabled(False)
         self._crop_cb.toggled.connect(self._on_crop_toggled)
-        crop_row.addWidget(self._crop_cb)
+        row_crop.addWidget(self._crop_cb)
+        row_crop.addStretch(1)
 
         self._crop_shape_group = QButtonGroup(self)
         self._rb_square = QRadioButton("Kwadrat")
-        self._rb_rounded = QRadioButton("Zaokraglony")
-        self._rb_circle = QRadioButton("Okrag")
+        self._rb_rounded = QRadioButton("Zaokrąglony")
+        self._rb_circle = QRadioButton("Okrąg")
         self._rb_square.setChecked(True)
         self._crop_shape_group.addButton(self._rb_square, 0)
         self._crop_shape_group.addButton(self._rb_rounded, 1)
         self._crop_shape_group.addButton(self._rb_circle, 2)
         for rb in (self._rb_square, self._rb_rounded, self._rb_circle):
-            crop_row.addWidget(rb)
+            row_crop.addWidget(rb)
             rb.setVisible(False)
 
-        # Radius (tylko zaokraglony)
         self._radius_label = QLabel("R 9%")
+        self._radius_label.setObjectName("FieldSubLabel")
         self._radius_label.setVisible(False)
-        crop_row.addWidget(self._radius_label)
-        self._radius_dec_btn = QPushButton("-")
-        self._radius_dec_btn.setProperty("class", "ghost")
-        self._radius_dec_btn.setFixedSize(24, 24)
+        row_crop.addWidget(self._radius_label)
+        self._radius_dec_btn = IconButton("−")
         self._radius_dec_btn.setVisible(False)
         self._radius_dec_btn.clicked.connect(self._crop_radius_dec)
-        crop_row.addWidget(self._radius_dec_btn)
-        self._radius_inc_btn = QPushButton("+")
-        self._radius_inc_btn.setProperty("class", "ghost")
-        self._radius_inc_btn.setFixedSize(24, 24)
+        row_crop.addWidget(self._radius_dec_btn)
+        self._radius_inc_btn = IconButton("+")
         self._radius_inc_btn.setVisible(False)
         self._radius_inc_btn.clicked.connect(self._crop_radius_inc)
-        crop_row.addWidget(self._radius_inc_btn)
+        row_crop.addWidget(self._radius_inc_btn)
         self._radius_pct = 9
-
         self._crop_shape_group.idToggled.connect(self._on_crop_shape_changed)
-        crop_row.addStretch()
-        card_layout.addLayout(crop_row)
+
+        params_card.body.addLayout(row_crop)
 
         # Row: Output
-        out_row = QHBoxLayout()
-        out_row.setSpacing(8)
-        out_lbl = QLabel("Output")
-        out_lbl.setProperty("class", "field-label")
-        out_row.addWidget(out_lbl)
-        self._output_edit = QLineEdit("")
+        row_out = QHBoxLayout()
+        row_out.setSpacing(8)
+        row_out.addWidget(self._field_label("Output"))
+        self._output_edit = QLineEdit()
         self._output_edit.setPlaceholderText("Katalog pliku wejściowego")
         self._output_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        out_row.addWidget(self._output_edit)
-        browse_btn = QPushButton("...")
-        browse_btn.setFixedWidth(30)
+        row_out.addWidget(self._output_edit, stretch=1)
+        browse_btn = IconButton("…", tip="Wybierz folder")
         browse_btn.clicked.connect(self._browse_output)
-        out_row.addWidget(browse_btn)
-        card_layout.addLayout(out_row)
+        row_out.addWidget(browse_btn)
+        params_card.body.addLayout(row_out)
 
-        layout.addWidget(card)
+        layout.addWidget(params_card)
+
+        # === Preflight gate card ===
+        pg_card = CardSection("Preflight gate")
+        row_pg = QHBoxLayout()
+        row_pg.setSpacing(10)
+        _gate_map = {"off": "Off", "lenient": "Lenient", "strict": "Strict"}
+        _gate_default = _saved.get("preflight_gate", "off")
+        self._preflight_gate_seg = Segmented(
+            ["Off", "Lenient", "Strict"],
+            default=_gate_map.get(_gate_default, "Off"),
+        )
+        row_pg.addWidget(self._preflight_gate_seg)
+        row_pg.addStretch(1)
+        self._preflight_btn = make_button("Preflight", variant="secondary", size="sm")
+        self._preflight_btn.clicked.connect(self._on_preflight)
+        row_pg.addWidget(self._preflight_btn)
+        pg_card.body.addLayout(row_pg)
+        layout.addWidget(pg_card)
+
+        layout.addStretch(1)
 
         # === Action bar ===
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
-
-        self._run_btn = QPushButton("Generuj bleed")
-        self._run_btn.setObjectName("primary")
+        self._action_bar = ActionBar()
+        self._run_btn = make_button("▶ Generuj bleed", size="lg")
         self._run_btn.clicked.connect(self._on_run)
-        bar.addWidget(self._run_btn)
-
-        self._preflight_btn = QPushButton("Preflight")
-        self._preflight_btn.setObjectName("outline")
-        self._preflight_btn.clicked.connect(self._on_preflight)
-        bar.addWidget(self._preflight_btn)
-
-        # Preflight gate: off/lenient/strict (analogicznie do CLI --preflight)
-        gate_lbl = QLabel("Gate:")
-        gate_lbl.setProperty("class", "field-label")
-        bar.addWidget(gate_lbl)
-        self._preflight_gate = QComboBox()
-        self._preflight_gate.addItem("Off",     "off")
-        self._preflight_gate.addItem("Lenient", "lenient")
-        self._preflight_gate.addItem("Strict",  "strict")
-        _gate_default = _saved.get("preflight_gate", "off")
-        for i in range(self._preflight_gate.count()):
-            if self._preflight_gate.itemData(i) == _gate_default:
-                self._preflight_gate.setCurrentIndex(i)
-                break
-        self._preflight_gate.setFixedWidth(90)
-        self._preflight_gate.setToolTip(
-            "Off — przetwarzaj bez walidacji\n"
-            "Lenient — blokuj gdy błędy (braki krytyczne)\n"
-            "Strict — blokuj gdy błędy lub ostrzeżenia"
-        )
-        bar.addWidget(self._preflight_gate)
+        self._action_bar.body.addWidget(self._run_btn)
 
         self._progress = QProgressBar()
-        self._progress.setFixedWidth(150)
-        self._progress.setFixedHeight(8)
+        self._progress.setFixedWidth(160)
         self._progress.setValue(0)
         self._progress.setVisible(False)
-        bar.addWidget(self._progress)
+        self._action_bar.body.addWidget(self._progress)
 
         self._status_label = QLabel("")
-        self._status_label.setProperty("class", "subheader")
-        bar.addWidget(self._status_label)
-        bar.addStretch()
+        self._status_label.setObjectName("ProgressText")
+        self._action_bar.body.addWidget(self._status_label)
+        self._action_bar.body.addStretch(1)
+        root.addWidget(self._action_bar)
 
-        layout.addLayout(bar)
-        layout.addStretch()
-
-        # Enable black_100k / crop when files loaded
+        # Sygnaly
         self._file_section.files_changed.connect(self._on_files_changed)
         self._height_edit.textChanged.connect(self._on_height_changed)
-        # Crop offsets per file (x_ratio, y_ratio)
         self._crop_offsets: dict[str, tuple[float, float]] = {}
+
+    def _field_label(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setObjectName("FieldLabel")
+        lbl.setFixedWidth(110)
+        return lbl
 
     # --- Public API ---
 
     def clear(self):
-        """Wyczyść pliki i zresetuj output."""
         self._file_section.clear_files()
         self._output_edit.setText("")
         self._status_label.setText("")
@@ -281,15 +264,12 @@ class BleedTab(QWidget):
 
     @property
     def bleed_mm(self) -> float:
-        try:
-            return max(0.0, float(self._bleed_edit.text()))
-        except ValueError:
-            return DEFAULT_BLEED_MM
+        return float(self._bleed_spin.value())
 
     @property
     def cutline_mode(self) -> str:
-        checked = self._cutline_group.checkedId()
-        return {0: "kiss-cut", 1: "flexcut", 2: "none"}.get(checked, "kiss-cut")
+        m = {"Kiss-Cut": "kiss-cut", "FlexCut": "flexcut", "Brak": "none"}
+        return m.get(self._cutline_seg.value(), "kiss-cut")
 
     @property
     def crop_enabled(self) -> bool:
@@ -308,7 +288,6 @@ class BleedTab(QWidget):
         txt = self._output_edit.text().strip()
         if txt:
             return txt
-        # Fallback: katalog pierwszego pliku wejściowego
         if self.files:
             return os.path.dirname(self.files[0])
         return os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
@@ -320,12 +299,10 @@ class BleedTab(QWidget):
         self._black_100k_cb.setEnabled(has_pdf)
         if not has_pdf:
             self._black_100k_cb.setChecked(False)
-        # Crop wymaga height
         has_height = bool(self._height_edit.text().strip())
         self._crop_cb.setEnabled(bool(self.files) and has_height)
         if not self._crop_cb.isEnabled():
             self._crop_cb.setChecked(False)
-        # Ustaw output na katalog ostatnio dodanego pliku
         if self.files:
             self._output_edit.setText(os.path.dirname(self.files[-1]))
 
@@ -359,7 +336,6 @@ class BleedTab(QWidget):
         self._emit_crop_preview()
 
     def _emit_crop_preview(self):
-        """Emituj sygnał z danymi crop do preview panel."""
         if not self._crop_cb.isChecked() or not self.files:
             self.crop_preview_requested.emit({})
             return
@@ -373,7 +349,6 @@ class BleedTab(QWidget):
         })
 
     def update_crop_offset(self, filepath: str, offset: tuple):
-        """Aktualizacja offsetu z preview panel (drag)."""
         self._crop_offsets[filepath] = offset
 
     def _browse_output(self):
@@ -391,17 +366,16 @@ class BleedTab(QWidget):
             for line in text.strip().split('\n'):
                 self._log(f"    {line}")
 
-    def _preflight_gate_passes(self, gate: str) -> bool:
-        """Uruchamia preflight_gate dla wszystkich plikow. Zwraca True gdy OK.
+    def _preflight_gate_value(self) -> str:
+        m = {"Off": "off", "Lenient": "lenient", "Strict": "strict"}
+        return m.get(self._preflight_gate_seg.value(), "off")
 
-        gate ∈ {"lenient", "strict"} (off nigdy nie wola tej metody).
-        Przy bloku pokazuje popup + loguje issue, i ustawia status err na pliku.
-        """
+    def _preflight_gate_passes(self, gate: str) -> bool:
         try:
             from modules.preflight import preflight_gate, preflight_summary
         except Exception as e:
             self._log(f"[preflight] import failed: {e}")
-            return True  # nie blokuj gdy moduł nieosiagalny
+            return True
         blockers: list[tuple[str, str]] = []
         for path in self.files:
             try:
@@ -430,13 +404,11 @@ class BleedTab(QWidget):
         if self._processing or not self.files:
             return
 
-        # Preflight gate (off|lenient|strict) — analogicznie do CLI
-        gate = self._preflight_gate.currentData()
+        gate = self._preflight_gate_value()
         if gate != "off":
             if not self._preflight_gate_passes(gate):
                 return
 
-        # Persist ustawienia dla następnej sesji
         _settings.update({"bleed": {
             "bleed_mm": self.bleed_mm,
             "cutline_mode": self.cutline_mode,
@@ -447,7 +419,7 @@ class BleedTab(QWidget):
 
         self._processing = True
         self._run_btn.setEnabled(False)
-        self._run_btn.setText("Przetwarzam...")
+        self._run_btn.setText("Przetwarzam…")
         self._progress.setVisible(True)
         self._progress.setValue(0)
         self._status_label.setText("")
@@ -480,36 +452,32 @@ class BleedTab(QWidget):
         if not txt:
             return None
         try:
-            return float(txt.replace(",", ".")) * 10.0  # cm → mm
+            return float(txt.replace(",", ".")) * 10.0
         except ValueError:
             return None
 
     def _on_progress(self, current: int, total: int):
         if total > 0:
             self._progress.setValue(int(100 * current / total))
-        self._status_label.setText(f"Plik {current}/{total}...")
+        self._status_label.setText(f"Plik {current} / {total} · {int(100 * current / max(1, total))}%")
 
     def _on_done(self, output_paths: list, input_infos: list):
         self._processing = False
         self._run_btn.setEnabled(True)
-        self._run_btn.setText("Generuj bleed")
+        self._run_btn.setText("▶ Generuj bleed")
         self._progress.setVisible(False)
         n = len(output_paths)
         self._status_label.setText(f"Gotowe — {n} plik(ów)")
         if output_paths:
-            # Przekaż input_infos (dla split-view preview przed/po)
-            # input_infos = [(src_path, page_idx), ...] — parallel do output_paths
             self.preview_ready.emit(input_infos, output_paths)
 
     def _on_error(self, msg: str):
         self._processing = False
         self._run_btn.setEnabled(True)
-        self._run_btn.setText("Generuj bleed")
+        self._run_btn.setText("▶ Generuj bleed")
         self._progress.setVisible(False)
         self._status_label.setText("BŁĄD")
         self._log(f"[BŁĄD KRYTYCZNY] {msg}")
-        # Popup dla operatora — samego logu może nie zauważyć
-        # (skracamy bardzo długie tracebacki, pełna treść jest w panelu logu)
         short = msg if len(msg) <= 600 else msg[:600] + "\n\n[...] pełny log w panelu na dole."
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Critical)
