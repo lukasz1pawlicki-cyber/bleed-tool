@@ -179,12 +179,9 @@ QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
     background: #F6F7F9;
     color: #6B7280;
 }
-QSpinBox::up-button, QSpinBox::down-button,
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
-    width: 16px;
-    border: none;
-    background: transparent;
-}
+/* SpinBox — zostawiamy natywne strzałki platformy (Qt renderuje je
+ * poprawnie); nie styluj up-arrow/down-arrow ani up-button/down-button,
+ * inaczej QSS wyłącza natywny arrow i pojawiają się puste kwadraty. */
 
 QComboBox {
     background: #FFFFFF;

@@ -966,9 +966,12 @@ class PreviewPanel(QWidget):
         """
         self._crop_data = data
         if not data:
-            # Wyłącz crop preview — przywróć normalny podgląd
-            if self._results:
-                self._render_current()
+            # Wyłącz crop preview — reset trybu + transform, delegacja do
+            # _render_current żeby widocznosc widget'ów była spójna z reszta
+            # UI (brak duplikowanych placeholderów/okien).
+            self._view.set_crop_mode(False)
+            self._view.resetTransform()
+            self._render_current()
             return
 
         filepath = data["file"]

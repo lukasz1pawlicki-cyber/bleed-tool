@@ -704,10 +704,13 @@ def _detect_raster_alpha_contour(
     rgb = arr[:, :, :3]
     h, w = alpha.shape
 
-    # Sprawdź czy alpha jest trywialna (cały obraz opaque)
+    # Sprawdź czy alpha jest trywialna (cały obraz opaque).
+    # Threshold 0.1% — dla rounded-rect z radius 9% bok, odcięte rogi to
+    # ~0.69% pikseli, więc 1% threshold fałszywie detektował to jako pełny
+    # opaque i zwracał prostokąt zamiast zaokrąglonego konturu.
     transparent_count = np.sum(alpha < 128)
     total = h * w
-    if transparent_count < total * 0.01:
+    if transparent_count < total * 0.001:
         log.info("Raster alpha: obraz prawie w pełni opaque, prostokątny kontur")
         return None, None
 
@@ -1111,6 +1114,87 @@ def _is_circular(points: np.ndarray, cx: float, cy: float, r: float,
     distances = np.sqrt((points[:, 0] - cx) ** 2 + (points[:, 1] - cy) ** 2)
     max_deviation = np.max(np.abs(distances - r))
     return max_deviation / r < tolerance
+
+
+def make_crop_shape_contour(w_pt: float, h_pt: float, shape: str,
+                             radius_pct: int = 9) -> list:
+    """Zwraca dokładne cut_segments dla kształtu crop: square/rounded/circle/oval.
+
+    Używane gdy user świadomie wybiera kształt w GUI Crop — pomijamy raster
+    boundary tracing (który po DP + smooth Bezier psuje zaokrąglone rogi,
+    interpretując rounded-rect jako okrąg).
+
+    Segmenty w y-down coords, origin (0,0), wymiary w punktach PDF.
+    """
+    if shape == "circle":
+        r = min(w_pt, h_pt) / 2.0
+        return _circle_to_bezier_segments(r, r, r)
+    if shape == "oval":
+        rx = w_pt / 2.0
+        ry = h_pt / 2.0
+        k = 0.5522847498
+        kx = k * rx
+        ky = k * ry
+        cx, cy = rx, ry
+        return [
+            ('c',
+             np.array([cx + rx, cy]), np.array([cx + rx, cy + ky]),
+             np.array([cx + kx, cy + ry]), np.array([cx, cy + ry])),
+            ('c',
+             np.array([cx, cy + ry]), np.array([cx - kx, cy + ry]),
+             np.array([cx - rx, cy + ky]), np.array([cx - rx, cy])),
+            ('c',
+             np.array([cx - rx, cy]), np.array([cx - rx, cy - ky]),
+             np.array([cx - kx, cy - ry]), np.array([cx, cy - ry])),
+            ('c',
+             np.array([cx, cy - ry]), np.array([cx + kx, cy - ry]),
+             np.array([cx + rx, cy - ky]), np.array([cx + rx, cy])),
+        ]
+    if shape == "rounded":
+        r = min(w_pt, h_pt) * radius_pct / 100.0
+        r = max(0.1, min(r, min(w_pt, h_pt) / 2.0))
+        k = 0.5522847498
+        kr = k * r
+        # Rounded rectangle: 4 linie proste + 4 łuki Bézier (clockwise, y-down)
+        # Punkty narożników (on-curve):
+        #   TL: (r, 0) ← (0, r);  TR: (w-r, 0) → (w, r)
+        #   BR: (w, h-r) → (w-r, h);  BL: (r, h) ← (0, h-r)
+        return [
+            # Górny bok
+            ('l', np.array([r, 0.0]), np.array([w_pt - r, 0.0])),
+            # Róg TR
+            ('c',
+             np.array([w_pt - r, 0.0]),
+             np.array([w_pt - r + kr, 0.0]),
+             np.array([w_pt, r - kr]),
+             np.array([w_pt, r])),
+            # Prawy bok
+            ('l', np.array([w_pt, r]), np.array([w_pt, h_pt - r])),
+            # Róg BR
+            ('c',
+             np.array([w_pt, h_pt - r]),
+             np.array([w_pt, h_pt - r + kr]),
+             np.array([w_pt - r + kr, h_pt]),
+             np.array([w_pt - r, h_pt])),
+            # Dolny bok
+            ('l', np.array([w_pt - r, h_pt]), np.array([r, h_pt])),
+            # Róg BL
+            ('c',
+             np.array([r, h_pt]),
+             np.array([r - kr, h_pt]),
+             np.array([0.0, h_pt - r + kr]),
+             np.array([0.0, h_pt - r])),
+            # Lewy bok
+            ('l', np.array([0.0, h_pt - r]), np.array([0.0, r])),
+            # Róg TL
+            ('c',
+             np.array([0.0, r]),
+             np.array([0.0, r - kr]),
+             np.array([r - kr, 0.0]),
+             np.array([r, 0.0])),
+        ]
+    # square / default
+    return _make_page_rect_contour(fitz.Rect(0, 0, w_pt, h_pt))
 
 
 def _circle_to_bezier_segments(cx: float, cy: float, r: float) -> list:

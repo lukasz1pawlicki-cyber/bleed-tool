@@ -94,11 +94,10 @@ class BleedTab(QWidget):
         row_spad = QHBoxLayout()
         row_spad.setSpacing(8)
         row_spad.addWidget(self._field_label("Spad"))
-        self._bleed_spin = QDoubleSpinBox()
-        self._bleed_spin.setRange(0.0, 50.0)
-        self._bleed_spin.setSingleStep(0.5)
-        self._bleed_spin.setDecimals(2)
-        self._bleed_spin.setValue(float(_saved.get("bleed_mm", DEFAULT_BLEED_MM)))
+        self._bleed_spin = QSpinBox()
+        self._bleed_spin.setRange(0, 50)
+        self._bleed_spin.setSingleStep(1)
+        self._bleed_spin.setValue(int(round(float(_saved.get("bleed_mm", DEFAULT_BLEED_MM)))))
         self._bleed_spin.setFixedWidth(80)
         self._bleed_spin.setProperty("variant", "mono")
         row_spad.addWidget(self._bleed_spin)
@@ -148,37 +147,14 @@ class BleedTab(QWidget):
         row_cut.addStretch(1)
         params_card.body.addLayout(row_cut)
 
-        # Row: Silnik konturu + Bialy poddruk
-        row_eng = QHBoxLayout()
-        row_eng.setSpacing(8)
-        row_eng.addWidget(self._field_label("Silnik konturu"))
-        self._engine_combo = QComboBox()
-        self._engine_combo.setProperty("variant", "mono")
-        self._engine_combo.addItem("Auto (Moore + OpenCV)", "auto")
-        self._engine_combo.addItem("Moore (Python)", "moore")
-        self._engine_combo.addItem("OpenCV (szybki)", "opencv")
-        try:
-            import config as _cfg
-            default_eng = (_saved.get("engine") or _cfg.CONTOUR_ENGINE or "auto").lower()
-            for i in range(self._engine_combo.count()):
-                if self._engine_combo.itemData(i) == default_eng:
-                    self._engine_combo.setCurrentIndex(i)
-                    break
-        except Exception as e:
-            log.debug(f"BleedTab: engine default restore failed: {e}")
-        self._engine_combo.setFixedWidth(200)
-        row_eng.addWidget(self._engine_combo)
-        row_eng.addStretch(1)
-        self._white_cb = QCheckBox("Biały poddruk")
-        self._white_cb.setChecked(bool(_saved.get("white", False)))
-        row_eng.addWidget(self._white_cb)
-        params_card.body.addLayout(row_eng)
+        # Silnik konturu = config.CONTOUR_ENGINE (domyslnie opencv).
+        # Bialy poddruk usuniety z GUI Bleed — naklejki generalnie bez bialego.
 
         # Row: Crop (advanced — ukryty przy braku wysokosci)
         row_crop = QHBoxLayout()
         row_crop.setSpacing(8)
         row_crop.addWidget(self._field_label("Crop"))
-        self._crop_cb = QCheckBox("Przytnij do wysokości")
+        self._crop_cb = QCheckBox("Crop")
         self._crop_cb.setEnabled(False)
         self._crop_cb.toggled.connect(self._on_crop_toggled)
         row_crop.addWidget(self._crop_cb)
@@ -444,8 +420,6 @@ class BleedTab(QWidget):
         _settings.update({"bleed": {
             "bleed_mm": self.bleed_mm,
             "cutline_mode": self.cutline_mode,
-            "white": self._white_cb.isChecked(),
-            "engine": self._engine_combo.currentData(),
             "sharp_edges": self._sharp_edges_cb.isChecked(),
             "preflight_gate": gate,
         }})
@@ -466,12 +440,11 @@ class BleedTab(QWidget):
             black_100k=self._black_100k_cb.isChecked(),
             cutline_mode=self.cutline_mode,
             target_height_mm=self._parse_height(),
-            white=self._white_cb.isChecked(),
+            white=False,
             crop_enabled=self.crop_enabled,
             crop_shape=self.crop_shape,
             crop_offsets=dict(self._crop_offsets),
             radius_pct=self._radius_pct,
-            contour_engine=self._engine_combo.currentData(),
             raster_mode=("sharp" if self._sharp_edges_cb.isChecked() else "smooth"),
         )
         self._worker.log_message.connect(self._log)

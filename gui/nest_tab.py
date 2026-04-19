@@ -219,11 +219,10 @@ class NestTab(QWidget):
         gap_lbl.setFixedHeight(26)
         grid_cg.addWidget(gap_lbl, 0, 4, Qt.AlignmentFlag.AlignVCenter)
 
-        self._gap_spin = QDoubleSpinBox()
-        self._gap_spin.setRange(0.0, 100.0)
-        self._gap_spin.setSingleStep(0.5)
-        self._gap_spin.setDecimals(1)
-        self._gap_spin.setValue(float(_saved.get("gap_mm", DEFAULT_GAP_MM)))
+        self._gap_spin = QSpinBox()
+        self._gap_spin.setRange(0, 100)
+        self._gap_spin.setSingleStep(1)
+        self._gap_spin.setValue(int(round(float(_saved.get("gap_mm", DEFAULT_GAP_MM)))))
         self._gap_spin.setFixedSize(80, 26)
         grid_cg.addWidget(self._gap_spin, 0, 5, Qt.AlignmentFlag.AlignVCenter)
 

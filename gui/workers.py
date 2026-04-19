@@ -102,6 +102,19 @@ class BleedWorker(QThread):
                     # Skalowanie do docelowej wysokosci (pomijane gdy crop)
                     if self._target_height_mm and not self._crop_enabled:
                         sticker = scale_sticker(sticker, self._target_height_mm)
+                    # Gdy user swiadomie wybrał kształt w Crop, uzyj dokladnej
+                    # geometrii zamiast detection z alpha (raster boundary +
+                    # DP + smooth Bezier interpretuje rounded-rect jako okrąg).
+                    if self._crop_enabled and self._crop_shape in (
+                            "square", "rounded", "circle", "oval"):
+                        from modules.contour import make_crop_shape_contour
+                        from config import MM_TO_PT
+                        w_pt = sticker.width_mm * MM_TO_PT
+                        h_pt = sticker.height_mm * MM_TO_PT
+                        sticker.cut_segments = make_crop_shape_contour(
+                            w_pt, h_pt, self._crop_shape,
+                            radius_pct=self._radius_pct,
+                        )
                     sticker = generate_bleed(sticker, bleed_mm=self._bleed_mm)
                     # Nazwa wyjsciowa: {stem}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
                     page_idx = si if len(stickers) > 1 else None
