@@ -2809,6 +2809,7 @@ def export_sheet_print(
     sheet: Sheet,
     output_path: str,
     bleed_mm: float = DEFAULT_BLEED_MM,
+    outer_bleed_dpi: int = 300,
 ) -> str:
     """Eksportuje print PDF arkusza (bleed fills + grafika + marks).
 
@@ -2820,6 +2821,10 @@ def export_sheet_print(
         sheet: Sheet z placements
         output_path: ścieżka do pliku wyjściowego
         bleed_mm: wielkość bleed w mm
+        outer_bleed_dpi: DPI rastra dla generowania outer bleed (2mm dookoła
+            grupy naklejek). 300 dla finalnego eksportu (jakość druku),
+            150 dla szybkiego preview w FlexCut (4x mniej pikseli → EDT 4x
+            szybsze, render PDF bez zmiany finalnego arkusza).
 
     Returns:
         output_path
@@ -2920,7 +2925,8 @@ def export_sheet_print(
     # === Outer bleed (spad wokół grupy naklejek) ===
     outer_bleed = getattr(sheet, 'outer_bleed_mm', 0.0)
     if outer_bleed > 0 and sheet.placements:
-        _apply_outer_bleed(doc_out, out_page, sheet, bleed_mm, outer_bleed)
+        _apply_outer_bleed(doc_out, out_page, sheet, bleed_mm, outer_bleed,
+                           dpi=outer_bleed_dpi)
 
     # Marks — spot "Regmark"
     if sheet.marks:
@@ -3000,6 +3006,7 @@ def _apply_outer_bleed(
     sheet: Sheet,
     bleed_mm: float,
     outer_bleed_mm: float,
+    dpi: int = 300,
 ) -> None:
     """Generuje zewnetrzny spad po obwodzie GRUPY naklejek.
 
@@ -3039,8 +3046,8 @@ def _apply_outer_bleed(
 
     ob_mm = outer_bleed_mm
 
-    # Render strony jako raster (300 DPI)
-    dpi = 300
+    # Render strony jako raster (DPI konfigurowalne: 300 dla finalnego eksportu,
+    # 150 dla preview w FlexCut — EDT scaling quadratycznie z pikselami)
     scale = dpi / 72.0
     # math.ceil gwarantuje pelne pokrycie 2mm. int() by dalo 23px=1.95mm
     # i w rogach Chebyshev dist=24 wypadlo poza bleed_px → rogi spadu bialo.

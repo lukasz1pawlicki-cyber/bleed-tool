@@ -20,6 +20,39 @@ from PyQt6.QtGui import (
 )
 
 
+def apply_softproof_fogra39(pil_img):
+    """Symuluje wygląd CMYK FOGRA39 softproof: sRGB → CMYK → sRGB.
+
+    PERCEPTUAL rendering intent kompresuje kolory spoza gamutu CMYK.
+    Zwraca nowy PIL.Image lub ten sam obiekt jeśli ICC niedostępny.
+    """
+    try:
+        from PIL import ImageCms
+        from modules.bleed import _find_fogra39_path
+    except Exception:
+        return pil_img
+    fogra_path = _find_fogra39_path()
+    if fogra_path is None:
+        return pil_img
+    try:
+        srgb_profile = ImageCms.createProfile("sRGB")
+        fogra_profile = ImageCms.getOpenProfile(fogra_path)
+        rgb_in = pil_img if pil_img.mode == "RGB" else pil_img.convert("RGB")
+        pil_cmyk = ImageCms.profileToProfile(
+            rgb_in, srgb_profile, fogra_profile,
+            outputMode="CMYK",
+            renderingIntent=ImageCms.Intent.PERCEPTUAL,
+        )
+        return ImageCms.profileToProfile(
+            pil_cmyk, fogra_profile, srgb_profile,
+            outputMode="RGB",
+            renderingIntent=ImageCms.Intent.PERCEPTUAL,
+        )
+    except Exception as e:
+        log.warning(f"Softproof FOGRA39 failed: {e}")
+        return pil_img
+
+
 class _RenderWorker(QObject):
     """Worker renderujacy PDF do QPixmap w watku tla.
 
@@ -35,10 +68,16 @@ class _RenderWorker(QObject):
 
     pixmap_ready = pyqtSignal(int, str, object)  # (request_id, path, QPixmap|None)
 
-    @pyqtSlot(int, str, int, bool)
-    def render_request(self, request_id: int, path: str, dpi: int, alpha: bool):
-        """Renderuje strone PDF. Emit pixmap_ready niezaleznie od sukcesu."""
+    @pyqtSlot(int, str, int, bool, bool)
+    def render_request(self, request_id: int, path: str, dpi: int,
+                       alpha: bool, softproof: bool = False):
+        """Renderuje strone PDF. Emit pixmap_ready niezaleznie od sukcesu.
+
+        softproof=True — round-trip sRGB→CMYK FOGRA39→sRGB (pokazuje kolory
+        po konwersji drukowej). Wymaga alpha=False (sRGB round-trip).
+        """
         import fitz
+        from PIL import Image as PILImage
         doc = None
         qpix = None
         try:
@@ -46,14 +85,24 @@ class _RenderWorker(QObject):
             page = doc[0]
             mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
             pix = page.get_pixmap(matrix=mat, alpha=alpha)
-            if alpha:
-                qimg = QImage(pix.samples, pix.width, pix.height,
-                              pix.stride, QImage.Format.Format_RGBA8888)
+            if softproof and not alpha:
+                pil = PILImage.frombytes(
+                    "RGB", (pix.width, pix.height), pix.samples
+                ).copy()
+                pil = apply_softproof_fogra39(pil)
+                data = pil.tobytes("raw", "RGB")
+                qimg = QImage(data, pil.width, pil.height,
+                              pil.width * 3, QImage.Format.Format_RGB888)
+                qpix = QPixmap.fromImage(qimg.copy())
             else:
-                qimg = QImage(pix.samples, pix.width, pix.height,
-                              pix.stride, QImage.Format.Format_RGB888)
-            # copy() — odklej dane od pix.samples (zwolni sie gdy doc.close)
-            qpix = QPixmap.fromImage(qimg.copy())
+                if alpha:
+                    qimg = QImage(pix.samples, pix.width, pix.height,
+                                  pix.stride, QImage.Format.Format_RGBA8888)
+                else:
+                    qimg = QImage(pix.samples, pix.width, pix.height,
+                                  pix.stride, QImage.Format.Format_RGB888)
+                # copy() — odklej dane od pix.samples (zwolni sie gdy doc.close)
+                qpix = QPixmap.fromImage(qimg.copy())
         except Exception as e:
             log.warning(f"Async render failed: {path}: {e}")
             qpix = None
@@ -158,6 +207,11 @@ class _PDFGraphicsView(QGraphicsView):
             self._crop_dragging = True
             self._crop_drag_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif event.button() == Qt.MouseButton.LeftButton:
+            # Lewy przycisk (bez crop_mode) = pan (click & hold)
+            self._panning = True
+            self._pan_start = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
             super().mousePressEvent(event)
 
@@ -190,6 +244,9 @@ class _PDFGraphicsView(QGraphicsView):
             self.setCursor(Qt.CursorShape.ArrowCursor)
         elif event.button() == Qt.MouseButton.LeftButton and self._crop_dragging:
             self._crop_dragging = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        elif event.button() == Qt.MouseButton.LeftButton and self._panning:
+            self._panning = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             super().mouseReleaseEvent(event)
@@ -526,6 +583,9 @@ class PreviewPanel(QWidget):
         elif self._job and self._sheet_pdfs and idx < len(self._sheet_pdfs):
             self._render_sheet(idx)
 
+        # Zsynchronizuj sceneRect z items przed fit — żeby wyśrodkować
+        # canvas na rzeczywistej zawartości, a nie na stale cached rect'u.
+        self._scene.setSceneRect(self._scene.itemsBoundingRect())
         self._view.fit_content()
 
     def _update_metadata(self, pdf_path: str):
@@ -544,7 +604,6 @@ class PreviewPanel(QWidget):
 
             media = page.mediabox
             trim = page.trimbox if page.trimbox else None
-            bleed_b = page.bleedbox if page.bleedbox else None
 
             # Wylicz spad z roznicy MediaBox - TrimBox (wszystkie cztery boki)
             bleed_mm_str = "—"
@@ -552,29 +611,12 @@ class PreviewPanel(QWidget):
                 dx = (trim.x0 - media.x0) * 25.4 / 72.0
                 bleed_mm_str = f"{abs(dx):.1f} mm"
 
-            # OutputIntent — sprawdz katalog PDF pod /OutputIntents
-            output_intent = "—"
-            try:
-                cat_xref = doc.pdf_catalog()
-                oi = doc.xref_get_key(cat_xref, "OutputIntents")
-                if oi and oi[0] != "null":
-                    # Spróbuj wyciągnąć identyfikator profilu (FOGRA39 itp.)
-                    raw = oi[1] if len(oi) > 1 else ""
-                    if "FOGRA39" in raw or "FOGRA39" in str(oi):
-                        output_intent = "FOGRA39 (PDF/X-4)"
-                    else:
-                        output_intent = "obecny"
-            except Exception:
-                pass
-
             doc.close()
 
             items = [
-                ("Rozmiar",     _box_str(media)),
-                ("TrimBox",     _box_str(trim)),
-                ("BleedBox",    _box_str(bleed_b)),
-                ("Spad",        bleed_mm_str),
-                ("OutputIntent", output_intent),
+                ("Rozmiar",  _box_str(media)),
+                ("TrimBox",  _box_str(trim)),
+                ("Spad",     bleed_mm_str),
             ]
             self._meta_grid.set_data(items)
             self._meta_grid.setVisible(True)
@@ -593,15 +635,22 @@ class PreviewPanel(QWidget):
             self._render_split(input_path, path, input_page_idx)
             return
 
-        qpix = self._render_pdf_page(path, dpi=150)
+        # Domyślny widok = output PO konwersji CMYK (softproof FOGRA39).
+        # Split view pokazuje oba (input sRGB vs output CMYK).
+        qpix = self._render_pdf_page_softproof(path, dpi=150)
         if qpix:
             self._scene.addPixmap(qpix)
 
     def _render_split(self, input_path: str, output_path: str,
                       input_page_idx: int = 0):
-        """Renderuje podgląd side-by-side: oryginał vs wynik z bleedem."""
-        # Output (PDF z bleedem)
-        out_pix = self._render_pdf_page(output_path, dpi=150)
+        """Renderuje podgląd side-by-side: oryginał vs wynik z bleedem.
+
+        Output jest renderowany z softproofem CMYK FOGRA39 (round-trip
+        sRGB→CMYK→sRGB) — żeby operator widział kolory takie, jak wyjdą
+        po konwersji w RIP-ie drukarki, a nie źródłowy sRGB.
+        """
+        # Output (PDF z bleedem) — softproof CMYK
+        out_pix = self._render_pdf_page_softproof(output_path, dpi=150)
         # Input — obsługuje PDF/SVG/EPS/raster (page_idx dla wielostronicowych)
         in_pix = self._render_input_file(input_path, page_idx=input_page_idx)
 
@@ -737,6 +786,9 @@ class PreviewPanel(QWidget):
         Dla arkusza A4+ @ 150dpi synchroniczny render trwa ~300-800ms
         co zamraza GUI. Delegacja do worker thread pozwala interfejsowi
         pozostac responsywnym podczas renderowania.
+
+        Print pixmap idzie przez softproof CMYK FOGRA39 — operator widzi
+        kolory takie, jak wyjdą po konwersji drukowej.
         """
         pp, cp = self._sheet_pdfs[idx]
 
@@ -744,16 +796,17 @@ class PreviewPanel(QWidget):
         self._async_ticket += 1
         current_ticket = self._async_ticket
 
-        # Print PDF
-        pp_key = self._cache_key(pp, 150, False)
+        # Print PDF — z softproofem
+        pp_key = self._cache_key(pp, 150, False, softproof=True)
         if pp_key in self._cache:
             self._scene.addPixmap(self._cache[pp_key])
         else:
             self._placeholder_in_scene("Renderowanie arkusza...")
             self._submit_async_render(pp, dpi=150, alpha=False,
-                                      role="print", ticket=current_ticket)
+                                      role="print", ticket=current_ticket,
+                                      softproof=True)
 
-        # Cut overlay (jesli istnieje)
+        # Cut overlay (jesli istnieje) — bez softproof (spot color)
         if os.path.isfile(cp):
             cp_key = self._cache_key(cp, 150, True)
             if cp_key in self._cache:
@@ -763,8 +816,9 @@ class PreviewPanel(QWidget):
                 self._submit_async_render(cp, dpi=150, alpha=True,
                                           role="cut", ticket=current_ticket)
 
-    def _cache_key(self, path: str, dpi: int, alpha: bool) -> tuple:
-        return (path, dpi, alpha,
+    def _cache_key(self, path: str, dpi: int, alpha: bool,
+                   softproof: bool = False) -> tuple:
+        return (path, dpi, alpha, softproof,
                 os.path.getmtime(path) if os.path.isfile(path) else 0)
 
     def _placeholder_in_scene(self, text: str) -> None:
@@ -774,7 +828,8 @@ class PreviewPanel(QWidget):
         item.setPos(10, 10)
 
     def _submit_async_render(self, path: str, dpi: int, alpha: bool,
-                             role: str, ticket: int) -> None:
+                             role: str, ticket: int,
+                             softproof: bool = False) -> None:
         """Wysyla request renderowania do _RenderWorker w watku tla."""
         self._ensure_render_thread()
         self._async_request_counter += 1
@@ -784,6 +839,7 @@ class PreviewPanel(QWidget):
             "path": path,
             "dpi": dpi,
             "alpha": alpha,
+            "softproof": softproof,
             "ticket": ticket,
         }
         # QueuedConnection + invokeMethod approach
@@ -795,6 +851,7 @@ class PreviewPanel(QWidget):
             Q_ARG(str, path),
             Q_ARG(int, dpi),
             Q_ARG(bool, alpha),
+            Q_ARG(bool, softproof),
         )
 
     @pyqtSlot(int, str, object)
@@ -810,7 +867,8 @@ class PreviewPanel(QWidget):
         if qpix is None:
             return
         # Cache + wstaw do sceny (pozbadz sie wszystkich placeholder textow)
-        key = self._cache_key(req["path"], req["dpi"], req["alpha"])
+        key = self._cache_key(req["path"], req["dpi"], req["alpha"],
+                              softproof=req.get("softproof", False))
         if len(self._cache) > 10:
             self._cache.pop(next(iter(self._cache)))
         self._cache[key] = qpix
@@ -825,7 +883,47 @@ class PreviewPanel(QWidget):
         item = self._scene.addPixmap(qpix)
         if req["role"] == "cut":
             item.setOpacity(0.8)
+        # Scene rect musi być ustawiony po dodaniu pixmap, żeby fit obejmował
+        # rzeczywisty content (nie placeholder). Bez tego canvas trzyma się
+        # pierwotnego rect'u placeholdera i naklejka ląduje w lewym górnym rogu.
+        self._scene.setSceneRect(self._scene.itemsBoundingRect())
         self._view.fit_content()
+
+    def _render_pdf_page_softproof(self, path: str, dpi: int = 150) -> QPixmap | None:
+        """Renderuje PDF z symulacją softproof CMYK FOGRA39.
+
+        Round-trip sRGB → CMYK (FOGRA39) → sRGB. Kolory spoza gamutu CMYK
+        są kompresowane zgodnie z rendering intent PERCEPTUAL — podgląd
+        pokazuje jak output będzie wyglądał po druku UV na Mimaki UCJV.
+        Fallback: zwykły render RGB gdy ICC niedostępny.
+        """
+        cache_key = (path, dpi, "softproof",
+                     os.path.getmtime(path) if os.path.isfile(path) else 0)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        try:
+            import fitz
+            from PIL import Image
+            doc = fitz.open(path)
+            page = doc[0]
+            mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            pil = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).copy()
+            doc.close()
+
+            pil = apply_softproof_fogra39(pil)
+
+            data = pil.tobytes("raw", "RGB")
+            qimg = QImage(data, pil.width, pil.height,
+                          pil.width * 3, QImage.Format.Format_RGB888)
+            qpixmap = QPixmap.fromImage(qimg.copy())
+            if len(self._cache) > 10:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[cache_key] = qpixmap
+            return qpixmap
+        except Exception as e:
+            log.warning(f"Softproof render failed: {path}: {e}")
+            return self._render_pdf_page(path, dpi=dpi, alpha=False)
 
     def _render_pdf_page(self, path: str, dpi: int = 150, alpha: bool = False) -> QPixmap | None:
         """Renderuje pierwszą stronę PDF jako QPixmap."""

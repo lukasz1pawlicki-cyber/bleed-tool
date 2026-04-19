@@ -260,7 +260,7 @@ def extract_path_segments(items: list, gap_threshold: float = 2.0) -> list:
 # TRIMBOX — PRZYCINANIE STRON ZE SPADAMI
 # =============================================================================
 
-def _crop_to_trimbox(doc: fitz.Document) -> set[int]:
+def _crop_to_trimbox(doc: fitz.Document) -> tuple[set[int], set[int]]:
     """Jeśli strona ma TrimBox mniejszy od MediaBox, przycina do TrimBox.
 
     Pliki eksportowane z Illustratora/InDesign ze spadami mają:
@@ -273,17 +273,40 @@ def _crop_to_trimbox(doc: fitz.Document) -> set[int]:
     bo fitz normalizuje y-coords (y-down) inaczej dla mediabox vs trimbox,
     co powoduje fałszywe różnice gdy boxy są identyczne w PDF.
 
+    Dodatkowo wykrywa malformed TrimBox (Canva): TB ma te same wymiary
+    co MB, tylko przesunięcie offset. Content streamu rysuje w MB coords,
+    nie w TB — pipeline wektorowy daje biały pasek / beżowy bleed.
+    Takie strony NIE są cropowane i trafiają do raster fallback.
+
     Returns:
-        set indeksów stron, które zostały przycięte (mają spady)
+        (cropped_pages, malformed_pages) — zbiory indeksów
     """
     cropped_pages: set[int] = set()
+    malformed_pages: set[int] = set()
     for page in doc:
         xref = page.xref
         raw_media = doc.xref_get_key(xref, "MediaBox")
         raw_trim = doc.xref_get_key(xref, "TrimBox")
 
-        # Brak TrimBox lub TrimBox == MediaBox → nie ma spadów
-        if raw_trim[0] == "null" or raw_media[1] == raw_trim[1]:
+        # Brak TrimBox → nie ma spadów
+        if raw_trim[0] == "null":
+            continue
+
+        # Specjalny przypadek Canva malformed: raw MB == raw TB (identyczne),
+        # ALE fitz normalizuje y-axis inaczej i page.mediabox != page.trimbox.
+        # Content streamu rysuje w MB coords, fitz page.rect = TB po normalizacji.
+        # Pipeline wektorowy daje przesunięcie → raster fallback.
+        if raw_media[1] == raw_trim[1]:
+            fmb, ftb = page.mediabox, page.trimbox
+            if (abs(fmb.width - ftb.width) < 0.5
+                    and abs(fmb.height - ftb.height) < 0.5
+                    and (abs(fmb.x0 - ftb.x0) > 0.5
+                         or abs(fmb.y0 - ftb.y0) > 0.5)):
+                log.info(
+                    f"Strona {page.number + 1}: Canva malformed "
+                    f"(raw MB=raw TB, fitz normalized różne) — raster fallback"
+                )
+                malformed_pages.add(page.number)
             continue
 
         # Parsuj surowe wartości do porównania numerycznego
@@ -303,6 +326,21 @@ def _crop_to_trimbox(doc: fitz.Document) -> set[int]:
         if all(abs(m - t) <= 0.5 for m, t in zip(media_vals, trim_vals)):
             continue
 
+        # Malformed TrimBox: TB ma te same WYMIARY co MB, tylko offset się różni.
+        # To nie są prawdziwe spady — Canva eksportuje tak błędnie. Content
+        # rysowany w MB coords, pipeline wektorowy z TB daje przesunięcie.
+        mb_w = media_vals[2] - media_vals[0]
+        mb_h = media_vals[3] - media_vals[1]
+        tb_w = trim_vals[2] - trim_vals[0]
+        tb_h = trim_vals[3] - trim_vals[1]
+        if abs(mb_w - tb_w) < 0.5 and abs(mb_h - tb_h) < 0.5:
+            log.info(
+                f"Strona {page.number + 1}: TrimBox ma te same wymiary co "
+                f"MediaBox (offset różny) — malformed, raster fallback"
+            )
+            malformed_pages.add(page.number)
+            continue
+
         trimbox = page.trimbox
         log.info(
             f"Strona {page.number + 1}: TrimBox "
@@ -312,7 +350,7 @@ def _crop_to_trimbox(doc: fitz.Document) -> set[int]:
         )
         page.set_cropbox(trimbox)
         cropped_pages.add(page.number)
-    return cropped_pages
+    return cropped_pages, malformed_pages
 
 
 def _detect_raster(image_path: str) -> Sticker:
@@ -977,6 +1015,58 @@ def _get_images_bbox(page: fitz.Page):
     return rect
 
 
+def _get_text_bbox(page: fitz.Page):
+    """Zwraca union bounding box bloków tekstowych (fonty) na stronie.
+
+    Tekst renderowany czcionką NIE pojawia się w get_drawings() — musimy
+    doliczyć go osobno, inaczej grafika z dużym tekstem (np. Affinity/Word)
+    zostanie przycięta do bboxu samych drawings. Returns None jeśli brak tekstu.
+    """
+    try:
+        blocks = page.get_text("blocks")
+    except Exception:
+        return None
+    rects = []
+    for b in blocks:
+        if len(b) < 4:
+            continue
+        r = fitz.Rect(b[0], b[1], b[2], b[3])
+        if r.is_empty or r.width < 0.5 or r.height < 0.5:
+            continue
+        rects.append(r)
+    if not rects:
+        return None
+    return fitz.Rect(
+        min(r.x0 for r in rects), min(r.y0 for r in rects),
+        max(r.x1 for r in rects), max(r.y1 for r in rects),
+    )
+
+
+def _compute_content_rect(page: fitz.Page, drawings: list) -> fitz.Rect:
+    """Oblicza bbox zawartości strony (drawings + images + text) ∩ page.rect.
+
+    Clamp do page.rect jest KRYTYCZNY: np. Canva eksportuje pliki z tekstem
+    klipowanym przez stronę, ale bbox tekstu wychodzi daleko poza MediaBox.
+    Bez clampu content_rect byłby > page i psuł heurystyki artwork-on-artboard
+    oraz outermost-is-fragment.
+    """
+    rects = [d['rect'] for d in drawings]
+    ib = _get_images_bbox(page)
+    if ib is not None:
+        rects.append(ib)
+    tb = _get_text_bbox(page)
+    if tb is not None:
+        rects.append(tb)
+    if not rects:
+        return fitz.Rect(page.rect)
+    union = fitz.Rect(
+        min(r.x0 for r in rects), min(r.y0 for r in rects),
+        max(r.x1 for r in rects), max(r.y1 for r in rects),
+    )
+    union &= page.rect
+    return union
+
+
 def _is_artwork_on_artboard(page: fitz.Page, artwork_rect: fitz.Rect,
                              max_ratio: float = 0.6) -> bool:
     """Sprawdza czy grafika jest znacznie mniejsza od strony (= artwork na artboardzie)."""
@@ -1323,13 +1413,19 @@ def _sample_pdf_page_edge_color(
     return edge_rgb
 
 
-def _sample_page_edge_color(page: fitz.Page) -> tuple[float, float, float]:
-    """Sampluje dominujący kolor krawędzi renderowanej strony.
+def _sample_page_edge_color(page: fitz.Page,
+                             clip: fitz.Rect | None = None
+                             ) -> tuple[float, float, float]:
+    """Sampluje dominujący kolor krawędzi renderowanej strony (lub clip).
 
-    Renderuje stronę na 72 DPI i uśrednia piksele z 2px obramowania.
-    Zwraca (r, g, b) w zakresie 0-1.
+    Renderuje obszar na 72 DPI i uśrednia piksele z 2px obramowania.
+    Gdy `clip` podany — sampluje krawędzie tego podobszaru (np. artwork_rect
+    dla artwork-on-artboard), nie całej strony. Zwraca (r, g, b) w zakresie 0-1.
     """
-    pix = page.get_pixmap(dpi=72, alpha=False)
+    if clip is not None:
+        pix = page.get_pixmap(dpi=72, alpha=False, clip=clip)
+    else:
+        pix = page.get_pixmap(dpi=72, alpha=False)
     arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
     h, w = arr.shape[:2]
     b = 2  # 2px border
@@ -1602,6 +1698,88 @@ def _build_sticker_from_cutcontour(
     return sticker
 
 
+def _render_page_to_tmp_raster(doc: fitz.Document, page_idx: int,
+                                dpi: int = 300) -> str:
+    """Renderuje stronę (page.rect) na tmp PNG dla malformed Canva TrimBox.
+
+    Fitz normalizuje content stream z MediaBox (z offsetem) do page.rect
+    (0,0,w,h) — renderowanie clip=page.rect daje pełny content prawidłowo
+    wyśrodkowany. UŻYCIE clip=mediabox jest pułapką: fitz klampuje clip do
+    page.rect (bo mediabox ma offset poza page.rect), co obcina content.
+    """
+    import tempfile
+    page = doc[page_idx]
+    xref = page.xref
+    # Fitz klampuje clip do page.rect (intersection CropBox ∩ MediaBox).
+    # Canva malformed ma TB wychodzący poza MB, więc page.rect to intersection
+    # — co obcina content. Rozwiązanie: skopiuj stronę do nowego dokumentu
+    # bez CropBox, wtedy page.rect == MB i render obejmuje pełen content.
+    tmp_doc = fitz.open()
+    tmp_doc.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
+    tmp_page = tmp_doc[0]
+    # Usuń wszystkie boxy poza MediaBox w kopii — żeby page.rect = MB
+    for box in ("CropBox", "TrimBox", "ArtBox", "BleedBox"):
+        tmp_doc.xref_set_key(tmp_page.xref, box, "null")
+    tmp_page = tmp_doc.reload_page(tmp_page)
+    pix = tmp_page.get_pixmap(dpi=dpi, alpha=False)
+    tmp_doc.close()
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix='.png', delete=False, prefix='bleed_malformed_'
+    )
+    tmp_name = tmp.name
+    tmp.close()  # zamknij handle przed save (Windows: permission denied)
+    pix.save(tmp_name)
+    return tmp_name
+
+
+def _build_sticker_from_malformed_trimbox(
+    doc: fitz.Document,
+    page_idx: int,
+    original_path: str,
+) -> Sticker:
+    """Buduje Sticker dla malformed Canva (TB z tymi samymi wymiarami co MB).
+
+    Renderuje page.rect jako raster i przekierowuje na ścieżkę raster
+    w eksport.py (dilation + insert_image). Dzięki temu:
+      - treść wyśrodkowana (fitz normalizuje content stream)
+      - bleed rozciąga kolory krawędzi niezależnie od warstw wektora
+    """
+    raster_path = _render_page_to_tmp_raster(doc, page_idx, dpi=300)
+    page = doc[page_idx]
+    # Wymiary stickera = wymiary RAW MediaBox (zawartość streamu Canvy).
+    # page.rect może być znormalizowany do CropBox (TrimBox w malformed).
+    raw_mb = doc.xref_get_key(page.xref, "MediaBox")
+    mb_values = [float(x) for x in raw_mb[1].strip("[] ").split()]
+    aw = mb_values[2] - mb_values[0]
+    ah = mb_values[3] - mb_values[1]
+    w_mm = aw * PT_TO_MM
+    h_mm = ah * PT_TO_MM
+    cut_segments = [
+        ('l', np.array([0.0, 0.0]), np.array([aw, 0.0])),
+        ('l', np.array([aw, 0.0]), np.array([aw, ah])),
+        ('l', np.array([aw, ah]), np.array([0.0, ah])),
+        ('l', np.array([0.0, ah]), np.array([0.0, 0.0])),
+    ]
+    sticker = Sticker(
+        source_path=original_path,
+        page_index=page_idx,
+        width_mm=w_mm,
+        height_mm=h_mm,
+        cut_segments=cut_segments,
+        raster_path=raster_path,
+        pdf_doc=None,
+        page_width_pt=aw,
+        page_height_pt=ah,
+        outermost_drawing_idx=None,
+    )
+    log.info(
+        f"Sticker p{page_idx + 1}: {w_mm:.1f}x{h_mm:.1f}mm, "
+        f"malformed TrimBox → raster fallback ({raster_path})"
+    )
+    return sticker
+
+
 def _build_sticker_from_raster_only_pdf(
     doc: fitz.Document,
     page_idx: int,
@@ -1759,17 +1937,8 @@ def _build_sticker_from_vector(
                     f"edge RGB=({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
                 )
             else:
-                # Sprawdź artwork-on-artboard (drawings + images < page)
-                images_bbox = _get_images_bbox(page)
-                all_rects = [d['rect'] for d in drawings]
-                if images_bbox is not None:
-                    all_rects.append(images_bbox)
-                content_rect = fitz.Rect(
-                    min(r.x0 for r in all_rects),
-                    min(r.y0 for r in all_rects),
-                    max(r.x1 for r in all_rects),
-                    max(r.y1 for r in all_rects),
-                )
+                # content_rect = union(drawings, images, text) ∩ page
+                content_rect = _compute_content_rect(page, drawings)
 
                 if _is_artwork_on_artboard(page, content_rect):
                     artwork_rect = fitz.Rect(
@@ -1778,12 +1947,19 @@ def _build_sticker_from_vector(
                     )
                     artwork_rect &= page.rect
 
+                    # Kolor bleed = kolor tła wokół grafiki (np. białe A4
+                    # wokół "I ♥ SOCJOLOGIA"). Bez tego bleed używa koloru
+                    # outermost drawing (np. czerwone serce) i zalewa tło.
+                    edge_rgb = _sample_page_edge_color(page, clip=artwork_rect)
+
                     log.info(
                         f"Strona {page_idx + 1}: artwork-on-artboard (wektor), "
                         f"grafika {artwork_rect.width * PT_TO_MM:.1f}x"
                         f"{artwork_rect.height * PT_TO_MM:.1f}mm na stronie "
                         f"{page.rect.width * PT_TO_MM:.1f}x"
-                        f"{page.rect.height * PT_TO_MM:.1f}mm"
+                        f"{page.rect.height * PT_TO_MM:.1f}mm, "
+                        f"edge RGB=({edge_rgb[0]:.3f}, "
+                        f"{edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
                     )
 
                     # Kontur = prostokąt artwork
@@ -1801,13 +1977,35 @@ def _build_sticker_from_vector(
                     page_h_pt = artwork_rect.height
                     artwork_on_artboard_flag = True
                 else:
-                    # Grafika wypełnia stronę — standardowy flow
-                    draw_diag = max(outermost_drawing['rect'].width,
-                                    outermost_drawing['rect'].height)
-                    gap_thr = max(0.5, min(2.0, draw_diag * 0.01))
-                    cut_segments = extract_path_segments(
-                        outermost_drawing['items'], gap_threshold=gap_thr
+                    # Grafika wypełnia stronę. Sprawdź czy outermost drawing
+                    # reprezentuje outline: jego bbox powinien być zbliżony
+                    # do union całej zawartości. Jeśli jest znacznie mniejszy,
+                    # to tylko pojedynczy element kompozycji (np. ilustracja
+                    # wielo-pathowa bez jawnego konturu) — bierzemy prostokąt
+                    # strony zamiast ekstraktu jego ścieżek.
+                    od_rect = outermost_drawing['rect']
+                    od_area = abs(od_rect.width * od_rect.height)
+                    content_area = abs(content_rect.width * content_rect.height)
+                    is_fragment = (
+                        content_area > 1.0 and od_area / content_area < 0.5
                     )
+
+                    if is_fragment:
+                        cut_segments = _make_page_rect_contour(page.rect)
+                        edge_rgb = _sample_page_edge_color(page)
+                        log.info(
+                            f"Strona {page_idx + 1}: outermost drawing to "
+                            f"fragment kompozycji ({od_area/content_area:.2f} "
+                            f"powierzchni content) → kontur = prostokąt strony, "
+                            f"edge RGB=({edge_rgb[0]:.3f}, "
+                            f"{edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                        )
+                    else:
+                        draw_diag = max(od_rect.width, od_rect.height)
+                        gap_thr = max(0.5, min(2.0, draw_diag * 0.01))
+                        cut_segments = extract_path_segments(
+                            outermost_drawing['items'], gap_threshold=gap_thr
+                        )
 
             w_mm = page_w_pt * PT_TO_MM
             h_mm = page_h_pt * PT_TO_MM
@@ -1826,7 +2024,7 @@ def _build_sticker_from_vector(
             is_artwork_on_artboard=artwork_on_artboard_flag,
         )
         # Ustaw kolor krawędzi gdy wykryty z renderowanej strony
-        if edge_rgb is not None and (extends_beyond or page_idx in cropped_pages):
+        if edge_rgb is not None:
             sticker.edge_color_rgb = edge_rgb
 
         log.info(
@@ -1896,11 +2094,13 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     doc = fitz.open(pdf_path)
 
     # TrimBox ≠ MediaBox → plik ze spadami, przycinamy do TrimBox
-    cropped_pages = _crop_to_trimbox(doc)
+    cropped_pages, malformed_pages = _crop_to_trimbox(doc)
 
     # Crop marks w zewnętrznym obszarze strony (gdy TrimBox == MediaBox):
     # wykrywamy L-kształtne znaczniki Illustratora i przycinamy do trim.
-    cropped_pages |= apply_crop_marks_cropping(doc, skip_pages=cropped_pages)
+    cropped_pages |= apply_crop_marks_cropping(
+        doc, skip_pages=cropped_pages | malformed_pages
+    )
 
     stickers: list[Sticker] = []
 
@@ -1911,6 +2111,15 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
             stickers.append(
                 _build_sticker_from_cutcontour(
                     doc, page_idx, cutcontour_segs, original_path
+                )
+            )
+            continue
+
+        # 1b. Malformed TrimBox (Canva): render MediaBox jako raster
+        if page_idx in malformed_pages:
+            stickers.append(
+                _build_sticker_from_malformed_trimbox(
+                    doc, page_idx, original_path
                 )
             )
             continue

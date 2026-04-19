@@ -39,6 +39,10 @@ class _FlexCutView(QGraphicsView):
         super().__init__(scene, parent)
         self._origin = None
         self._band = None
+        self._panning = False
+        self._pan_start = None
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     # --- Zoom scroll ---
 
@@ -53,9 +57,15 @@ class _FlexCutView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.scale(factor, factor)
 
-    # --- Rubber band + click ---
+    # --- Rubber band (lewy) + pan (prawy/środkowy) + click ---
 
     def mousePressEvent(self, event: QMouseEvent):
+        # Prawy/środkowy przycisk = pan ("kliknij i przytrzymaj")
+        if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
+            self._panning = True
+            self._pan_start = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._origin = event.position().toPoint()
             if self._band is None:
@@ -65,11 +75,25 @@ class _FlexCutView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self._panning and self._pan_start is not None:
+            delta = event.position() - self._pan_start
+            self._pan_start = event.position()
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - int(delta.x())
+            )
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - int(delta.y())
+            )
+            return
         if self._origin is not None and self._band is not None:
             self._band.setGeometry(QRect(self._origin, event.position().toPoint()).normalized())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
+            self._panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._origin is not None:
             end = event.position().toPoint()
             if self._band:
@@ -317,12 +341,21 @@ class FlexCutDialog(QDialog):
             page = doc[0]
             mat = fitz.Matrix(self._scale, self._scale)
             pix = page.get_pixmap(matrix=mat, alpha=False)
-            qimg = QImage(pix.samples, pix.width, pix.height, pix.stride,
-                          QImage.Format.Format_RGB888)
-            self._cached_print_pixmap = QPixmap.fromImage(qimg.copy())
             self._sheet_h_pt = page.rect.height
-            self._cached_print_idx = idx
             doc.close()
+            # Softproof CMYK FOGRA39: operator widzi kolory po konwersji
+            # drukowej, nie źródłowy sRGB. Round-trip PIL → sRGB.
+            from PIL import Image as PILImage
+            from gui.preview_panel import apply_softproof_fogra39
+            pil = PILImage.frombytes(
+                "RGB", (pix.width, pix.height), pix.samples
+            ).copy()
+            pil = apply_softproof_fogra39(pil)
+            data = pil.tobytes("raw", "RGB")
+            qimg = QImage(data, pil.width, pil.height,
+                          pil.width * 3, QImage.Format.Format_RGB888)
+            self._cached_print_pixmap = QPixmap.fromImage(qimg.copy())
+            self._cached_print_idx = idx
 
         self._scene.addPixmap(self._cached_print_pixmap)
 

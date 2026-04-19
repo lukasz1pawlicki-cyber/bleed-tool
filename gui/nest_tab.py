@@ -545,7 +545,10 @@ class NestTab(QWidget):
         from modules.export import export_sheet_print, export_sheet_cut
         sheet = self._last_job.sheets[idx]
         pp, cp = self._last_pdfs[idx]
-        export_sheet_print(sheet, pp, bleed_mm=0)
+        # Fast preview w FlexCut: niższe DPI outer bleed (150 zamiast 300) —
+        # EDT 4x szybsza przy A3. Finalny eksport ("Zastosuj") używa pełnych
+        # 300 DPI przez _reexport_sheet/export_sheet.
+        export_sheet_print(sheet, pp, bleed_mm=0, outer_bleed_dpi=150)
         export_sheet_cut(sheet, cp, bleed_mm=0, plotter=self.plotter)
 
     # --- Browse ---
