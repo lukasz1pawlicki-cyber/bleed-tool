@@ -389,8 +389,12 @@ def _detect_raster(image_path: str) -> Sticker:
             img, w_pt, h_pt
         )
 
-    if cut_segments is None and not has_alpha:
-        # Obraz bez alpha — spróbuj wykryć kształt z jednolitego tła
+    # RGB bez alpha: domyslnie PROSTOKATNY cut (rectangular sticker, typowy
+    # Canva PNG export). BG contour detection (die-cut po jednolitym tle)
+    # jest opt-in przez env var — uzywane np. dla zeskanowanych logo z bialym
+    # tlem gdzie chcemy sticker w ksztalcie logo.
+    _bg_detect = os.environ.get("BLEED_RASTER_BG_DETECT", "0").strip() in ("1", "true", "yes")
+    if cut_segments is None and not has_alpha and _bg_detect:
         try:
             cut_segments, edge_rgb = _detect_raster_bg_contour(
                 img, w_pt, h_pt
