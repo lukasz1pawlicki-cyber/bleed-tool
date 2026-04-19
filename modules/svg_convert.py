@@ -667,15 +667,56 @@ def extract_svg_contour(
     scale_y = target_h_pt / vb_h
     scale = min(scale_x, scale_y)
 
-    # Zbierz wszystkie clipPath definicje
+    # Zbierz wszystkie clipPath definicje. ClipPath moze zawierac:
+    #  - <path d="..."/>   — general path commands
+    #  - <circle cx cy r/> — kolo
+    #  - <ellipse cx cy rx ry/> — elipsa
+    #  - <rect x y width height [rx ry]/> — prostokat (z/bez rounded corners)
+    #  - <polygon/polyline points="..."/>
+    # Konwertujemy wszystkie na "d"-like command stream zeby uzyc istniejacego
+    # parsera i pipeline'u.
     clip_defs: dict[str, list[tuple]] = {}  # id → parsed commands
     for clip_elem in root.iter(f"{{{_SVG_NS}}}clipPath"):
         cid = clip_elem.get("id", "")
+        if not cid:
+            continue
+        # <path>
         for path_elem in clip_elem.findall(f"{{{_SVG_NS}}}path"):
             d = path_elem.get("d", "")
             if d:
                 cmds = _parse_svg_path_d(d)
                 clip_defs[cid] = cmds
+                break
+        if cid in clip_defs:
+            continue
+        # <circle>
+        circle_elem = clip_elem.find(f"{{{_SVG_NS}}}circle")
+        if circle_elem is not None:
+            d = _circle_to_path_d(circle_elem)
+            if d:
+                clip_defs[cid] = _parse_svg_path_d(d)
+                continue
+        # <ellipse>
+        ellipse_elem = clip_elem.find(f"{{{_SVG_NS}}}ellipse")
+        if ellipse_elem is not None:
+            d = _ellipse_to_path_d(ellipse_elem)
+            if d:
+                clip_defs[cid] = _parse_svg_path_d(d)
+                continue
+        # <rect>
+        rect_elem = clip_elem.find(f"{{{_SVG_NS}}}rect")
+        if rect_elem is not None:
+            d = _rect_to_path_d(rect_elem)
+            if d:
+                clip_defs[cid] = _parse_svg_path_d(d)
+                continue
+        # <polygon>
+        poly_elem = clip_elem.find(f"{{{_SVG_NS}}}polygon")
+        if poly_elem is not None:
+            d = _polygon_to_path_d(poly_elem, close=True)
+            if d:
+                clip_defs[cid] = _parse_svg_path_d(d)
+                continue
 
     # Szukaj największego nie-prostokątnego clipPath
     best_contour = _find_best_global_contour(clip_defs, scale)
@@ -728,3 +769,119 @@ def _extract_clip_id(clip_ref: str) -> str | None:
     """Wyciąga ID z 'url(#abc123)' → 'abc123'."""
     m = re.match(r'url\(#([^)]+)\)', clip_ref)
     return m.group(1) if m else None
+
+
+# ---------------------------------------------------------------------------
+# Konwersja prymitywow SVG (circle/ellipse/rect/polygon) na "d" path command
+# ---------------------------------------------------------------------------
+
+# Kappa: staly do aproksymacji cwiartki okregu krzywa Beziera (0.5522847...)
+_BEZIER_CIRCLE_K = 0.5522847498307936
+
+
+def _circle_to_path_d(elem) -> str:
+    """<circle cx cy r/> → 'd' path z 4 krzywymi Beziera."""
+    try:
+        cx = float(elem.get("cx", "0"))
+        cy = float(elem.get("cy", "0"))
+        r = float(elem.get("r", "0"))
+    except ValueError:
+        return ""
+    if r <= 0:
+        return ""
+    k = _BEZIER_CIRCLE_K * r
+    # Trasa: M(cx+r,cy) -> prawo-dol -> dol-lewo -> lewo-gora -> gora-prawo
+    return (
+        f"M {cx + r} {cy} "
+        f"C {cx + r} {cy + k}, {cx + k} {cy + r}, {cx} {cy + r} "
+        f"C {cx - k} {cy + r}, {cx - r} {cy + k}, {cx - r} {cy} "
+        f"C {cx - r} {cy - k}, {cx - k} {cy - r}, {cx} {cy - r} "
+        f"C {cx + k} {cy - r}, {cx + r} {cy - k}, {cx + r} {cy} Z"
+    )
+
+
+def _ellipse_to_path_d(elem) -> str:
+    """<ellipse cx cy rx ry/> → 'd' path z 4 krzywymi Beziera."""
+    try:
+        cx = float(elem.get("cx", "0"))
+        cy = float(elem.get("cy", "0"))
+        rx = float(elem.get("rx", "0"))
+        ry = float(elem.get("ry", "0"))
+    except ValueError:
+        return ""
+    if rx <= 0 or ry <= 0:
+        return ""
+    kx = _BEZIER_CIRCLE_K * rx
+    ky = _BEZIER_CIRCLE_K * ry
+    return (
+        f"M {cx + rx} {cy} "
+        f"C {cx + rx} {cy + ky}, {cx + kx} {cy + ry}, {cx} {cy + ry} "
+        f"C {cx - kx} {cy + ry}, {cx - rx} {cy + ky}, {cx - rx} {cy} "
+        f"C {cx - rx} {cy - ky}, {cx - kx} {cy - ry}, {cx} {cy - ry} "
+        f"C {cx + kx} {cy - ry}, {cx + rx} {cy - ky}, {cx + rx} {cy} Z"
+    )
+
+
+def _rect_to_path_d(elem) -> str:
+    """<rect x y width height [rx ry]/> → 'd' path (linie + rounded corners)."""
+    try:
+        x = float(elem.get("x", "0"))
+        y = float(elem.get("y", "0"))
+        w = float(elem.get("width", "0"))
+        h = float(elem.get("height", "0"))
+    except ValueError:
+        return ""
+    if w <= 0 or h <= 0:
+        return ""
+    # Rounded corners: rx/ry
+    rx_s = elem.get("rx")
+    ry_s = elem.get("ry")
+    try:
+        rx = float(rx_s) if rx_s is not None else 0.0
+        ry = float(ry_s) if ry_s is not None else rx
+    except ValueError:
+        rx = ry = 0.0
+    rx = min(rx, w / 2)
+    ry = min(ry, h / 2)
+
+    if rx <= 0 or ry <= 0:
+        # Prosty prostokat
+        return (
+            f"M {x} {y} L {x + w} {y} L {x + w} {y + h} "
+            f"L {x} {y + h} Z"
+        )
+    # Zaokraglony — 4 linie + 4 cwiartki elipsy
+    kx = _BEZIER_CIRCLE_K * rx
+    ky = _BEZIER_CIRCLE_K * ry
+    return (
+        f"M {x + rx} {y} "
+        f"L {x + w - rx} {y} "
+        f"C {x + w - rx + kx} {y}, {x + w} {y + ry - ky}, {x + w} {y + ry} "
+        f"L {x + w} {y + h - ry} "
+        f"C {x + w} {y + h - ry + ky}, {x + w - rx + kx} {y + h}, {x + w - rx} {y + h} "
+        f"L {x + rx} {y + h} "
+        f"C {x + rx - kx} {y + h}, {x} {y + h - ry + ky}, {x} {y + h - ry} "
+        f"L {x} {y + ry} "
+        f"C {x} {y + ry - ky}, {x + rx - kx} {y}, {x + rx} {y} Z"
+    )
+
+
+def _polygon_to_path_d(elem, close: bool = True) -> str:
+    """<polygon points="x1 y1 x2 y2 ..."/> → 'd' path z linii."""
+    pts_str = elem.get("points", "").strip()
+    if not pts_str:
+        return ""
+    # Rozdziel na liczby (separatory: whitespace / przecinek)
+    nums = re.split(r'[\s,]+', pts_str)
+    try:
+        coords = [float(n) for n in nums if n]
+    except ValueError:
+        return ""
+    if len(coords) < 4 or len(coords) % 2 != 0:
+        return ""
+    d_parts = [f"M {coords[0]} {coords[1]}"]
+    for i in range(2, len(coords), 2):
+        d_parts.append(f"L {coords[i]} {coords[i + 1]}")
+    if close:
+        d_parts.append("Z")
+    return " ".join(d_parts)
