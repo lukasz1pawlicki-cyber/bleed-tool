@@ -146,7 +146,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Bleed Tool")
         self.resize(1440, 900)
-        self.setMinimumSize(1100, 720)
+        self.setMinimumSize(1200, 720)
 
         # Stan
         self._active_tab = "bleed"
@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
 
         # Lewy panel
         left = QWidget()
+        left.setMinimumWidth(520)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
@@ -192,11 +193,17 @@ class MainWindow(QMainWindow):
         self._preview_layout.setContentsMargins(0, 0, 0, 0)
         self._preview_stack = QStackedWidget()
         self._preview_layout.addWidget(self._preview_stack)
+        self._preview_container.setMinimumWidth(400)
         self._splitter.addWidget(self._preview_container)
 
+        # setStretchFactor sam nie blokuje resize — ustawiamy tez setCollapsible
+        # dla obu stron + initial sizes. Lewy panel ma minimumWidth(520) co
+        # zapobiega zaslonieciu ustawien przy powiekszeniu preview.
+        self._splitter.setCollapsible(0, False)
+        self._splitter.setCollapsible(1, False)
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
-        self._splitter.setSizes([520, 720])
+        self._splitter.setSizes([560, 720])
 
         root_layout.addWidget(self._splitter)
 
