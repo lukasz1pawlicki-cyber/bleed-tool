@@ -18,16 +18,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Sprawdz zaleznosci
-python -c "import PyQt6, fitz, numpy, PIL" >nul 2>&1
+:: Sprawdz zaleznosci (w tym scipy — wymagane przez outer bleed w FlexCut)
+python -c "import PyQt6, fitz, numpy, scipy, PIL, cv2, cairosvg" >nul 2>&1
 if errorlevel 1 (
     echo   Instaluje brakujace zaleznosci...
     echo.
     python -m pip install --upgrade pip >nul 2>&1
-    python -m pip install -r requirements.txt
+    python -m pip install --upgrade -r requirements.txt
     echo.
     :: Sprawdz ponownie
-    python -c "import PyQt6, fitz, numpy, PIL" >nul 2>&1
+    python -c "import PyQt6, fitz, numpy, scipy, PIL, cv2, cairosvg" >nul 2>&1
     if errorlevel 1 (
         echo   BLAD: Instalacja bibliotek nie powiodla sie!
         echo   Sprobuj recznie:  python -m pip install -r requirements.txt

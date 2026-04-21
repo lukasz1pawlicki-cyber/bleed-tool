@@ -150,6 +150,31 @@ class BleedTab(QWidget):
         # Silnik konturu = config.CONTOUR_ENGINE (domyslnie opencv).
         # Bialy poddruk usuniety z GUI Bleed — naklejki generalnie bez bialego.
 
+        # Row: Obrys kształtu (raster) — widoczny gdy sa pliki rastrowe lub PDF
+        row_contour = QHBoxLayout()
+        row_contour.setSpacing(8)
+        row_contour.addWidget(self._field_label("Obrys"))
+        _rc_map = {
+            "standard": "Standardowy",
+            "glow": "Z poświatą",
+            "tight": "Ciasny",
+        }
+        _rc_saved = _saved.get("raster_contour_mode", "standard")
+        self._raster_contour_seg = Segmented(
+            ["Standardowy", "Z poświatą", "Ciasny"],
+            default=_rc_map.get(_rc_saved, "Standardowy"),
+        )
+        self._raster_contour_seg.setToolTip(
+            "Standardowy — domyślny algorytm (threshold 50).\n"
+            "Z poświatą — dla plików z halo/glow/rozproszonymi elementami\n"
+            "  (np. gwiazdki wokół postaci). Niski threshold + closing 5px.\n"
+            "Ciasny — linia cięcia blisko widocznej treści (threshold 150,\n"
+            "  ignoruje faint shadow/tło)."
+        )
+        row_contour.addWidget(self._raster_contour_seg)
+        row_contour.addStretch(1)
+        params_card.body.addLayout(row_contour)
+
         # Row: Crop (advanced — ukryty przy braku wysokosci)
         row_crop = QHBoxLayout()
         row_crop.setSpacing(8)
@@ -276,6 +301,15 @@ class BleedTab(QWidget):
     @property
     def crop_enabled(self) -> bool:
         return self._crop_cb.isChecked() and self._parse_height() is not None
+
+    @property
+    def raster_contour_mode(self) -> str:
+        m = {
+            "Standardowy": "standard",
+            "Z poświatą": "glow",
+            "Ciasny": "tight",
+        }
+        return m.get(self._raster_contour_seg.value(), "standard")
 
     @property
     def crop_shape(self) -> str:
@@ -421,6 +455,7 @@ class BleedTab(QWidget):
             "bleed_mm": self.bleed_mm,
             "cutline_mode": self.cutline_mode,
             "sharp_edges": self._sharp_edges_cb.isChecked(),
+            "raster_contour_mode": self.raster_contour_mode,
             "preflight_gate": gate,
         }})
 
@@ -446,6 +481,7 @@ class BleedTab(QWidget):
             crop_offsets=dict(self._crop_offsets),
             radius_pct=self._radius_pct,
             raster_mode=("sharp" if self._sharp_edges_cb.isChecked() else "smooth"),
+            raster_contour_mode=self.raster_contour_mode,
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)

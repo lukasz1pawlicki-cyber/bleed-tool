@@ -179,9 +179,57 @@ QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
     background: #F6F7F9;
     color: #6B7280;
 }
-/* SpinBox — zostawiamy natywne strzałki platformy (Qt renderuje je
- * poprawnie); nie styluj up-arrow/down-arrow ani up-button/down-button,
- * inaczej QSS wyłącza natywny arrow i pojawiają się puste kwadraty. */
+/* SpinBox — jawnie stylowane przyciski ze strzałkami (border-trick jak
+ * w ComboBox::down-arrow). Powód: natywne Qt strzałki bywają niewidoczne
+ * lub nieklikalne przy małej wysokości / padding. Jawne buttony dają
+ * gwarantowaną strefę klikalną i strzałki renderowane przez Qt z border. */
+QSpinBox, QDoubleSpinBox {
+    padding-right: 22px;  /* zarezerwuj miejsce na przyciski */
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 20px;
+    border: none;
+    border-top-right-radius: 6px;
+    background: transparent;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
+    background: #EFF6FF;
+}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
+    background: #DBEAFE;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 20px;
+    border: none;
+    border-bottom-right-radius: 6px;
+    background: transparent;
+}
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background: #EFF6FF;
+}
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+    background: #DBEAFE;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: none;
+    width: 7px; height: 7px;
+    border-left: 1.4px solid #6B7280;
+    border-top: 1.4px solid #6B7280;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: none;
+    width: 7px; height: 7px;
+    border-right: 1.4px solid #6B7280;
+    border-bottom: 1.4px solid #6B7280;
+}
+QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover,
+QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {
+    border-color: #2563EB;
+}
 
 QComboBox {
     background: #FFFFFF;
@@ -438,11 +486,11 @@ QSpinBox#CopiesSpin {
     background: #FFFFFF;
     border: 1px solid #E2E5ED;
     border-radius: 6px;
-    min-height: 22px; max-height: 22px;
-    max-width: 80px;
+    min-height: 26px; max-height: 26px;
+    max-width: 88px;
     font-family: "JetBrains Mono", monospace;
     font-size: 11px;
-    padding: 0 4px;
+    padding: 0 22px 0 6px;  /* miejsce na up/down buttons */
 }
 
 QPushButton#RemoveRowBtn {

@@ -175,6 +175,28 @@ RASTER_MODE = _os.environ.get("BLEED_RASTER_MODE", "smooth").lower()
 
 
 # =============================================================================
+# RASTER CONTOUR MODE — tryb detekcji obrysu dla rastrowych naklejek
+# =============================================================================
+# "standard" — threshold alpha 50, bez morfologii (DEFAULT)
+#              Dla czystych plików rastrowych z widoczną granicą naklejki
+#              (domyślny dotychczasowy algorytm).
+# "glow"     — threshold 30 + binary_closing (5 iter)
+#              Dla plików z rozmytą poświatą/glow wokół naklejki. Niski
+#              threshold łapie cały halo, closing łączy rozproszone
+#              komponenty (np. gwiazdki dookoła postaci Anieli) w jedną
+#              otoczkę do obrysu.
+# "tight"    — threshold 150, bez morfologii
+#              Dla plików gdzie linia cięcia ma iść BLISKO widocznej treści
+#              (ignoruje faint shadow / pół-przezroczyste tło).
+#
+# Zmienna środowiskowa BLEED_RASTER_CONTOUR_MODE nadpisuje tę wartość.
+# GUI ma przełącznik "Obrys kształtu".
+RASTER_CONTOUR_MODE = _os.environ.get(
+    "BLEED_RASTER_CONTOUR_MODE", "standard"
+).lower()
+
+
+# =============================================================================
 # PDF METADATA ENGINE — silnik zapisu PDF/X-4 OutputIntent
 # =============================================================================
 # "pymupdf" — PyMuPDF xref manipulation (default, zero extra deps)

@@ -748,8 +748,29 @@ def _detect_raster_alpha_contour(
         alpha_small = alpha
         hs, ws = h, w
 
-    # Threshold: alpha > 50 (widoczna treść + biała obwódka)
-    mask = (alpha_small > 50).astype(np.uint8)
+    # Threshold per RASTER_CONTOUR_MODE (patrz config.py):
+    #   standard — alpha > 50 (domyślne, widoczna treść + biała obwódka)
+    #   glow     — alpha > 30 + binary_closing (łączy rozproszoną poświatę)
+    #   tight    — alpha > 150 (linia cięcia blisko widocznej treści)
+    _contour_mode = getattr(config, "RASTER_CONTOUR_MODE", "standard")
+    if _contour_mode == "glow":
+        _alpha_thresh = 30
+    elif _contour_mode == "tight":
+        _alpha_thresh = 150
+    else:
+        _alpha_thresh = 50
+    mask = (alpha_small > _alpha_thresh).astype(np.uint8)
+
+    if _contour_mode == "glow":
+        # Binary closing z kernelem proporcjonalnym do rozdzielczości —
+        # zamyka przerwy w halo, łączy rozproszone komponenty (gwiazdki,
+        # kropki dookoła głównej postaci) w jedną otoczkę.
+        from scipy.ndimage import binary_closing
+        _closing_iters = max(3, int(min(hs, ws) * 0.01))
+        mask = binary_closing(
+            mask.astype(bool), iterations=_closing_iters
+        ).astype(np.uint8)
+        log.debug(f"Raster alpha [glow]: closing iter={_closing_iters}")
 
     # Przelicznik px (skalowany) → pt
     px_to_pt_x = w_pt / ws
@@ -1252,6 +1273,20 @@ def _render_alpha_contour(doc: fitz.Document, page_index: int,
     rgb = data[:, :, :3]
 
     h, w = alpha.shape
+
+    # Tryby inne niż "standard" przekierowujemy na pipeline Moore trace
+    # z `_detect_raster_alpha_contour` (opakowujemy pixmap jako PIL).
+    # Standardowy tryb zachowuje legacy row-scan (nic nie psujemy).
+    _contour_mode = getattr(config, "RASTER_CONTOUR_MODE", "standard")
+    if _contour_mode in ("glow", "tight"):
+        img_pil = PILImage.frombytes("RGBA", (pix.width, pix.height), pix.samples)
+        segs, rgb_edge = _detect_raster_alpha_contour(
+            img_pil, clip_rect.width, clip_rect.height
+        )
+        if segs is not None:
+            return segs, rgb_edge
+        # fallback — w standardowym kodzie zwraca prostokąt gdy nie ma konturu
+
     threshold = 128
 
     # Dla każdego wiersza: lewy i prawy piksel opaque

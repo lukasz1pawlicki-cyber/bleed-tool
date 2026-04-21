@@ -29,6 +29,7 @@ class BleedWorker(QThread):
                  cutline_mode="kiss-cut", target_height_mm=None, white=False,
                  crop_enabled=False, crop_shape="square", crop_offsets=None,
                  radius_pct=9, contour_engine=None, raster_mode=None,
+                 raster_contour_mode=None,
                  parent=None):
         super().__init__(parent)
         self._files = files
@@ -44,6 +45,7 @@ class BleedWorker(QThread):
         self._radius_pct = radius_pct
         self._contour_engine = contour_engine  # "moore" | "opencv" | "auto" | None
         self._raster_mode = raster_mode  # "smooth" | "sharp" | None (= config default)
+        self._raster_contour_mode = raster_contour_mode  # "standard" | "glow" | "tight" | None
 
     def run(self):
         try:
@@ -66,6 +68,13 @@ class BleedWorker(QThread):
         if self._raster_mode in ("smooth", "sharp"):
             config.RASTER_MODE = self._raster_mode
             self.log_message.emit(f"  Tryb rastrow: {self._raster_mode}")
+
+        # Ustaw tryb obrysu rastra (standard / glow / tight) dla tej sesji
+        if self._raster_contour_mode in ("standard", "glow", "tight"):
+            config.RASTER_CONTOUR_MODE = self._raster_contour_mode
+            self.log_message.emit(
+                f"  Obrys kształtu: {self._raster_contour_mode}"
+            )
 
         os.makedirs(self._output_dir, exist_ok=True)
         t0 = time.time()
@@ -191,7 +200,22 @@ class NestWorker(QThread):
 
     @staticmethod
     def _detect_shared_cut_layout(sheets) -> bool:
-        """Sprawdza czy wszystkie arkusze mają identyczny layout cięcia.
+        """[RESERVED — nieużywane] Sprawdza czy wszystkie arkusze mają identyczny
+        layout cięcia.
+
+        OBECNY STATUS: każdy arkusz ma własny cut PDF (sheet_N_cut.pdf).
+        Powód usunięcia shared_cut: przy FlexCut dodawanym per-arkusz w GUI
+        wspólny cut.pdf był nadpisywany (last-wins) i ginęły linie dodane
+        na wcześniejszych arkuszach. Per-sheet jest bezpieczniejsze.
+
+        FUTURE: jeśli wrócimy do wspólnego cut.pdf (oszczędność na ploterze
+        gdy wszystkie arkusze mają identyczny layout cięcia), trzeba:
+          1. Wywołać tę funkcję w _run_inner
+          2. Jeśli True → jeden plik cut.pdf, sheet_pdf_paths wszystkie
+             wskazują na ten sam cp
+          3. W nest_tab._reexport_sheet: merge panel_lines ze wszystkich
+             sheets dzielących cp + is_first guard żeby zapisać tylko raz
+             (gotowa implementacja w git history pod tagiem shared_cut fix)
 
         Identyczny = ta sama liczba placementów, te same pozycje, rotacje,
         wymiary naklejek i linie paneli. Typowy przypadek: grouping_mode="group"
@@ -436,49 +460,24 @@ class NestWorker(QThread):
             sheet = generate_marks(sheet, plotter=self._plotter)
             job.sheets[i] = sheet
 
-        # Wykryj identyczne layouty cięcia — generuj 1 cut PDF zamiast N
-        shared_cut = self._detect_shared_cut_layout(job.sheets)
-
         for i, sheet in enumerate(job.sheets):
             self.progress.emit(total + i, total + ns)
 
             pp = os.path.join(out_dir, f"sheet_{i + 1}_print.pdf")
             wp = os.path.join(out_dir, f"sheet_{i + 1}_white.pdf") if self._white else None
-
-            if shared_cut and i == 0:
-                # Pierwszy arkusz — generuj wspólny cut PDF
-                cp = os.path.join(out_dir, "cut.pdf")
-                export_sheet(sheet, pp, cp, bleed_mm=0, plotter=self._plotter,
-                             white=self._white, white_output_path=wp)
-            elif shared_cut:
-                # Kolejne arkusze — cut już wygenerowany
-                cp = os.path.join(out_dir, "cut.pdf")
-                from modules.export import export_sheet_print, export_sheet_white
-                export_sheet_print(sheet, pp, bleed_mm=0)
-                if self._white and wp:
-                    export_sheet_white(sheet, wp, bleed_mm=0)
-            else:
-                # Różne layouty — osobny cut per arkusz
-                cp = os.path.join(out_dir, f"sheet_{i + 1}_cut.pdf")
-                export_sheet(sheet, pp, cp, bleed_mm=0, plotter=self._plotter,
-                             white=self._white, white_output_path=wp)
+            cp = os.path.join(out_dir, f"sheet_{i + 1}_cut.pdf")
+            export_sheet(sheet, pp, cp, bleed_mm=0, plotter=self._plotter,
+                         white=self._white, white_output_path=wp)
 
             sheet_pdf_paths.append((pp, cp))
 
             pk = os.path.getsize(pp) / 1024
             fl = f", {len(sheet.panel_lines)} FlexCut" if sheet.panel_lines else ""
-            if shared_cut and i > 0:
-                self.log_message.emit(
-                    f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, "
-                    f"print={pk:.1f}KB (cut = wspólny)"
-                )
-            else:
-                ck = os.path.getsize(cp) / 1024
-                self.log_message.emit(
-                    f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, "
-                    f"print={pk:.1f}KB, cut={ck:.1f}KB"
-                    + (" (wspólny dla wszystkich)" if shared_cut else "")
-                )
+            ck = os.path.getsize(cp) / 1024
+            self.log_message.emit(
+                f"  Arkusz {i + 1}: {len(sheet.placements)} naklejek{fl}, "
+                f"print={pk:.1f}KB, cut={ck:.1f}KB"
+            )
 
         elapsed = time.time() - t0
         total_placed = sum(len(s.placements) for s in job.sheets)

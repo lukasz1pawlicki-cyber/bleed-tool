@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QRectF, QPointF, QRect, QSize, pyqtSignal
 from PyQt6.QtGui import (
     QPixmap, QImage, QPen, QColor, QBrush, QKeyEvent, QMouseEvent,
-    QWheelEvent, QTransform,
+    QWheelEvent, QTransform, QShortcut, QKeySequence,
 )
 
 from gui.theme import PREVIEW_CUTCONTOUR, PREVIEW_FLEXCUT, ACCENT
@@ -228,18 +228,18 @@ class FlexCutDialog(QDialog):
         self._update_nav()
         self._render_current()
 
-    # --- Keyboard shortcuts ---
-
-    def keyPressEvent(self, event: QKeyEvent):
-        key = event.text().lower()
-        if key == 'z':
-            self._on_add_flexcut()
-        elif key == 'r':
-            self._on_rotate_180()
-        elif key == 's':
-            self._on_add_bleed()
-        else:
-            super().keyPressEvent(event)
+        # Skróty klawiszowe — QShortcut z WindowShortcut działa niezależnie
+        # od focusu (keyPressEvent na QDialog nie łapie klawiszy gdy focus
+        # ma QGraphicsView po kliknięciu w podgląd).
+        for keys, slot in [
+            (["Z", "z"], self._on_add_flexcut),
+            (["R", "r"], self._on_rotate_180),
+            (["S", "s"], self._on_add_bleed),
+        ]:
+            for k in keys:
+                sc = QShortcut(QKeySequence(k), self)
+                sc.setContext(Qt.ShortcutContext.WindowShortcut)
+                sc.activated.connect(slot)
 
     # --- Navigation ---
 
