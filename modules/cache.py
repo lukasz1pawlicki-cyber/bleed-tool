@@ -96,6 +96,8 @@ def _compute_key(file_path: str, engine: str) -> str:
 
     RASTER_MODE w kluczu: smooth i sharp generuja rozne cut_segments dla tego
     samego pliku, wiec musza byc odrebnymi entries.
+    RASTER_CONTOUR_MODE w kluczu: standard/glow/tight generuja rozne
+    cut_segments (inny threshold + closing) dla tego samego pliku.
     """
     try:
         st = os.stat(file_path)
@@ -106,10 +108,13 @@ def _compute_key(file_path: str, engine: str) -> str:
     try:
         import config as _cfg
         raster_mode = getattr(_cfg, "RASTER_MODE", "smooth")
+        raster_contour_mode = getattr(_cfg, "RASTER_CONTOUR_MODE", "standard")
     except ImportError:
         raster_mode = "smooth"
+        raster_contour_mode = "standard"
     raw = (
-        f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}|raster:{raster_mode}"
+        f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}"
+        f"|raster:{raster_mode}|rc:{raster_contour_mode}"
         f"|v{_CACHE_VERSION}|algo:{algo_sig}"
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()

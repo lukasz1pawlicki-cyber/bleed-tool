@@ -2920,26 +2920,6 @@ def export_sheet_print(
                     px + sticker_w, sheet_h_pt - py,
                 )
 
-            # Anti-gap fill (przywrócone po 70a0a48): dla bleed output PDFs
-            # rysuj podkład w kolorze krawędzi rozszerzony o gap/2 w każdym
-            # kierunku. Pokrywa białe przerwy między sąsiadującymi naklejkami
-            # gdy bleed=0 lub hairline rendering gaps. Grafika z show_pdf_page
-            # rysuje się na wierzchu, więc podkład widać tylko w gap-ach.
-            if getattr(sticker, 'is_bleed_output', False):
-                _gap_half = (getattr(sheet, 'gap_mm', 0.0) / 2.0 + 0.5) * MM_TO_PT
-                er = fitz.Rect(
-                    target_rect.x0 - _gap_half,
-                    target_rect.y0 - _gap_half,
-                    target_rect.x1 + _gap_half,
-                    target_rect.y1 + _gap_half,
-                )
-                r, g, b = sticker.edge_color_rgb or (1, 1, 1)
-                fill_stream = (
-                    f"q {r:.4f} {g:.4f} {b:.4f} rg "
-                    f"{er.x0:.4f} {er.y0:.4f} {er.width:.4f} {er.height:.4f} re f Q"
-                ).encode('ascii')
-                inject_content_stream(doc_out, out_page, fill_stream)
-
             out_page.show_pdf_page(target_rect, prepared_doc, 0, rotate=rot)
 
     # === Outer bleed (spad wokół grupy naklejek) ===
