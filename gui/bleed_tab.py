@@ -172,6 +172,26 @@ class BleedTab(QWidget):
             "  ignoruje faint shadow/tło)."
         )
         row_contour.addWidget(self._raster_contour_seg)
+        row_contour.addSpacing(16)
+
+        # Zmniejsz obrys — cofnięcie linii do wewnątrz alpha-mask (dla plików
+        # Canva z halo: shrink ~3mm daje cięcie na granicy halo/grafika)
+        row_contour.addWidget(self._field_label("Zmniejsz"))
+        self._shrink_spin = QDoubleSpinBox()
+        self._shrink_spin.setRange(0.0, 20.0)
+        self._shrink_spin.setSingleStep(0.5)
+        self._shrink_spin.setDecimals(1)
+        self._shrink_spin.setValue(float(_saved.get("contour_shrink_mm", 0.0)))
+        self._shrink_spin.setFixedWidth(80)
+        self._shrink_spin.setProperty("variant", "mono")
+        self._shrink_spin.setToolTip(
+            "Cofnięcie linii cięcia o X mm do wewnątrz alpha-mask.\n"
+            "0 = bez cofania (domyślne).\n"
+            "~3mm dla plików Canva z halo — linia trafia na granicę\n"
+            "  halo/grafika zamiast zewnętrznej krawędzi halo."
+        )
+        row_contour.addWidget(self._shrink_spin)
+        row_contour.addWidget(UnitLabel("mm"))
         row_contour.addStretch(1)
         params_card.body.addLayout(row_contour)
 
@@ -310,6 +330,10 @@ class BleedTab(QWidget):
             "Ciasny": "tight",
         }
         return m.get(self._raster_contour_seg.value(), "standard")
+
+    @property
+    def raster_contour_shrink_mm(self) -> float:
+        return float(self._shrink_spin.value())
 
     @property
     def crop_shape(self) -> str:
@@ -456,6 +480,7 @@ class BleedTab(QWidget):
             "cutline_mode": self.cutline_mode,
             "sharp_edges": self._sharp_edges_cb.isChecked(),
             "raster_contour_mode": self.raster_contour_mode,
+            "contour_shrink_mm": self.raster_contour_shrink_mm,
             "preflight_gate": gate,
         }})
 
@@ -482,6 +507,7 @@ class BleedTab(QWidget):
             radius_pct=self._radius_pct,
             raster_mode=("sharp" if self._sharp_edges_cb.isChecked() else "smooth"),
             raster_contour_mode=self.raster_contour_mode,
+            raster_contour_shrink_mm=self.raster_contour_shrink_mm,
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)

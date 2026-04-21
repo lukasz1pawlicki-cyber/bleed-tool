@@ -772,6 +772,28 @@ def _detect_raster_alpha_contour(
         ).astype(np.uint8)
         log.debug(f"Raster alpha [glow]: closing iter={_closing_iters}")
 
+    # Shrink: erozja maski o RASTER_CONTOUR_SHRINK_MM do wewnątrz.
+    # Dla plików z halo (Canva stickers) shrink ~3mm przesuwa cięcie z
+    # granicy halo na granicę halo/grafika.
+    _shrink_mm = float(getattr(config, "RASTER_CONTOUR_SHRINK_MM", 0.0) or 0.0)
+    if _shrink_mm > 0:
+        # px/mm w skalowanej masce: ws px / (w_pt * PT_TO_MM) mm
+        w_mm = w_pt * PT_TO_MM
+        px_per_mm = ws / w_mm if w_mm > 0 else 0
+        shrink_px = max(1, int(round(_shrink_mm * px_per_mm)))
+        from scipy.ndimage import binary_erosion
+        eroded = binary_erosion(mask.astype(bool), iterations=shrink_px)
+        if eroded.any():
+            mask = eroded.astype(np.uint8)
+            log.debug(
+                f"Raster alpha shrink: {_shrink_mm:.1f}mm "
+                f"({shrink_px}px @ {px_per_mm:.1f}px/mm)"
+            )
+        else:
+            log.warning(
+                f"Raster alpha shrink {_shrink_mm:.1f}mm obciął całą maskę — pomijam"
+            )
+
     # Przelicznik px (skalowany) → pt
     px_to_pt_x = w_pt / ws
     px_to_pt_y = h_pt / hs
@@ -1262,7 +1284,29 @@ def _render_alpha_contour(doc: fitz.Document, page_index: int,
     """
     page = doc[page_index]
 
-    # Render na umiarkowanej rozdzielczości
+    # Tryby inne niż "standard" (glow/tight) LUB shrink > 0 przekierowujemy
+    # na pipeline Moore trace z `_detect_raster_alpha_contour`. Renderujemy
+    # wtedy w wyższej rozdzielczości (target 800px zamiast 500) — erozja
+    # wymaga dokładnej granicy żeby nie przesuwać cięcia za mocno do wewnątrz.
+    # Standardowy tryb bez shrink zachowuje legacy row-scan (nic nie psujemy).
+    _contour_mode = getattr(config, "RASTER_CONTOUR_MODE", "standard")
+    _shrink_mm = float(getattr(config, "RASTER_CONTOUR_SHRINK_MM", 0.0) or 0.0)
+    if _contour_mode in ("glow", "tight") or _shrink_mm > 0:
+        hires_target = 800
+        hires_scale = hires_target / max(clip_rect.width, clip_rect.height)
+        hires_mat = fitz.Matrix(hires_scale, hires_scale)
+        pix_hi = page.get_pixmap(matrix=hires_mat, clip=clip_rect, alpha=True)
+        img_pil = PILImage.frombytes(
+            "RGBA", (pix_hi.width, pix_hi.height), pix_hi.samples
+        )
+        segs, rgb_edge = _detect_raster_alpha_contour(
+            img_pil, clip_rect.width, clip_rect.height
+        )
+        if segs is not None:
+            return segs, rgb_edge
+        # fallback — w standardowym kodzie zwraca prostokąt gdy nie ma konturu
+
+    # Render na umiarkowanej rozdzielczości (legacy row-scan path)
     target_px = 500
     scale = target_px / max(clip_rect.width, clip_rect.height)
     mat = fitz.Matrix(scale, scale)
@@ -1273,19 +1317,6 @@ def _render_alpha_contour(doc: fitz.Document, page_index: int,
     rgb = data[:, :, :3]
 
     h, w = alpha.shape
-
-    # Tryby inne niż "standard" przekierowujemy na pipeline Moore trace
-    # z `_detect_raster_alpha_contour` (opakowujemy pixmap jako PIL).
-    # Standardowy tryb zachowuje legacy row-scan (nic nie psujemy).
-    _contour_mode = getattr(config, "RASTER_CONTOUR_MODE", "standard")
-    if _contour_mode in ("glow", "tight"):
-        img_pil = PILImage.frombytes("RGBA", (pix.width, pix.height), pix.samples)
-        segs, rgb_edge = _detect_raster_alpha_contour(
-            img_pil, clip_rect.width, clip_rect.height
-        )
-        if segs is not None:
-            return segs, rgb_edge
-        # fallback — w standardowym kodzie zwraca prostokąt gdy nie ma konturu
 
     threshold = 128
 

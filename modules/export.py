@@ -2843,6 +2843,48 @@ def export_sheet_print(
 
     # Białe tło (domyślne)
 
+    # === PASS 0: Anti-gap fill dla bleed output PDFs ===
+    # Rysujemy podkład w kolorze krawędzi PRZED naklejkami, pokrywa białe
+    # hairline przerwy między sąsiadami gdy bleed=0 (lub rendering gaps).
+    # Fill rozszerzony o (gap/2 + 0.5mm) w każdym kierunku — overlap z
+    # sąsiadem eliminuje szpary. KLUCZOWE: pre-pass przed rysowaniem naklejek
+    # (wszystkie fills trafiają na dół content stream). Inaczej fill sticker[i+1]
+    # nadpisywałby sticker[i] (poprzednia implementacja miała ten bug, usunięta
+    # w 70a0a48, przywrócona poprawnie tutaj jako two-pass).
+    _gap_mm = getattr(sheet, 'gap_mm', 0.0)
+    _gap_half_pt = (_gap_mm / 2.0 + 0.5) * MM_TO_PT
+    _antigap_parts = []
+    for placement in sheet.placements:
+        sticker = placement.sticker
+        if not getattr(sticker, 'is_bleed_output', False):
+            continue
+        if sticker.edge_color_rgb is None:
+            continue
+        sticker_w = sticker.page_width_pt + 2 * bleed_pts
+        sticker_h = sticker.page_height_pt + 2 * bleed_pts
+        px = placement.x_mm * MM_TO_PT
+        py = placement.y_mm * MM_TO_PT
+        rot = int(placement.rotation_deg) % 360
+        if rot in (90, 270):
+            tr = fitz.Rect(px, sheet_h_pt - py - sticker_w,
+                           px + sticker_h, sheet_h_pt - py)
+        else:
+            tr = fitz.Rect(px, sheet_h_pt - py - sticker_h,
+                           px + sticker_w, sheet_h_pt - py)
+        fx0 = tr.x0 - _gap_half_pt
+        fy0 = tr.y0 - _gap_half_pt
+        fw = tr.width + 2 * _gap_half_pt
+        fh = tr.height + 2 * _gap_half_pt
+        r, g, b = sticker.edge_color_rgb
+        _antigap_parts.append(
+            f"q {r:.4f} {g:.4f} {b:.4f} rg "
+            f"{fx0:.4f} {fy0:.4f} {fw:.4f} {fh:.4f} re f Q"
+        )
+    if _antigap_parts:
+        inject_content_stream(
+            doc_out, out_page, "\n".join(_antigap_parts).encode('ascii')
+        )
+
     # Cache prepared documents per sticker source (ta sama naklejka × N kopii)
     _prepared_cache: dict[int, fitz.Document] = {}
 

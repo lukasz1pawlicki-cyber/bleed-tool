@@ -29,7 +29,7 @@ class BleedWorker(QThread):
                  cutline_mode="kiss-cut", target_height_mm=None, white=False,
                  crop_enabled=False, crop_shape="square", crop_offsets=None,
                  radius_pct=9, contour_engine=None, raster_mode=None,
-                 raster_contour_mode=None,
+                 raster_contour_mode=None, raster_contour_shrink_mm=0.0,
                  parent=None):
         super().__init__(parent)
         self._files = files
@@ -46,6 +46,7 @@ class BleedWorker(QThread):
         self._contour_engine = contour_engine  # "moore" | "opencv" | "auto" | None
         self._raster_mode = raster_mode  # "smooth" | "sharp" | None (= config default)
         self._raster_contour_mode = raster_contour_mode  # "standard" | "glow" | "tight" | None
+        self._raster_contour_shrink_mm = float(raster_contour_shrink_mm or 0.0)
 
     def run(self):
         try:
@@ -74,6 +75,13 @@ class BleedWorker(QThread):
             config.RASTER_CONTOUR_MODE = self._raster_contour_mode
             self.log_message.emit(
                 f"  Obrys kształtu: {self._raster_contour_mode}"
+            )
+
+        # Ustaw shrink obrysu (cofnięcie linii do wewnątrz alpha-mask)
+        config.RASTER_CONTOUR_SHRINK_MM = self._raster_contour_shrink_mm
+        if self._raster_contour_shrink_mm > 0:
+            self.log_message.emit(
+                f"  Zmniejsz obrys: {self._raster_contour_shrink_mm:.1f}mm"
             )
 
         os.makedirs(self._output_dir, exist_ok=True)

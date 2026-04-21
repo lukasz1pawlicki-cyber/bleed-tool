@@ -197,6 +197,24 @@ RASTER_CONTOUR_MODE = _os.environ.get(
 
 
 # =============================================================================
+# RASTER CONTOUR SHRINK — cofnięcie linii cięcia do wewnątrz
+# =============================================================================
+# Liczba mm o jaką cofnąć obrys konturu do wewnątrz alpha-mask. 0 = bez cofania.
+# Użycie: pliki z halo/glow/shadow gdzie zewnętrzna granica alpha to halo,
+# a prawdziwa linia cięcia ma iść po wewnętrznej krawędzi halo (na granicy
+# halo/grafika). Np. stickery z Canva: halo 3mm → shrink 3.0 daje cięcie
+# dokładnie po obrysie rysunku.
+#
+# Implementacja: scipy.ndimage.binary_erosion przed boundary trace.
+# Dla plików bez halo: 0 (domyślne) — nie obcinać krawędzi grafiki.
+#
+# Zmienna środowiskowa BLEED_RASTER_CONTOUR_SHRINK_MM nadpisuje tę wartość.
+RASTER_CONTOUR_SHRINK_MM = float(
+    _os.environ.get("BLEED_RASTER_CONTOUR_SHRINK_MM", "0")
+)
+
+
+# =============================================================================
 # PDF METADATA ENGINE — silnik zapisu PDF/X-4 OutputIntent
 # =============================================================================
 # "pymupdf" — PyMuPDF xref manipulation (default, zero extra deps)

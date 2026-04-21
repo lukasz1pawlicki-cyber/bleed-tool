@@ -109,12 +109,14 @@ def _compute_key(file_path: str, engine: str) -> str:
         import config as _cfg
         raster_mode = getattr(_cfg, "RASTER_MODE", "smooth")
         raster_contour_mode = getattr(_cfg, "RASTER_CONTOUR_MODE", "standard")
+        shrink_mm = float(getattr(_cfg, "RASTER_CONTOUR_SHRINK_MM", 0.0) or 0.0)
     except ImportError:
         raster_mode = "smooth"
         raster_contour_mode = "standard"
+        shrink_mm = 0.0
     raw = (
         f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}"
-        f"|raster:{raster_mode}|rc:{raster_contour_mode}"
+        f"|raster:{raster_mode}|rc:{raster_contour_mode}|shr:{shrink_mm:.2f}"
         f"|v{_CACHE_VERSION}|algo:{algo_sig}"
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
