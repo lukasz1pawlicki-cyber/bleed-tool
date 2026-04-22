@@ -253,7 +253,8 @@ class FileSection(QWidget):
             spin.setMaximum(9999)
             spin.setValue(self._file_copies.get(filepath, 1))
             spin.setToolTip("Liczba kopii")
-            spin.setFixedSize(36, 22)
+            spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            spin.setFixedSize(46, 24)
             spin.valueChanged.connect(
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
@@ -270,7 +271,8 @@ class FileSection(QWidget):
             h_mm = self._file_height_mm.get(filepath)
             hspin.setValue(0.0 if h_mm is None else float(h_mm) / 10.0)
             hspin.setToolTip("Wysokość naklejki w cm. 'auto' = oryginalna / globalna")
-            hspin.setFixedSize(58, 22)
+            hspin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hspin.setFixedSize(68, 24)
             hspin.valueChanged.connect(
                 lambda v_cm, p=filepath: self._on_height_change(p, v_cm)
             )

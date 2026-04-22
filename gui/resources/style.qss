@@ -483,17 +483,18 @@ QFrame#StatusDot[state="ok"]   { background: #059669; }
 QFrame#StatusDot[state="warn"] { background: #D97706; }
 QFrame#StatusDot[state="err"]  { background: #DC2626; }
 
-/* Copies spinner (inline) — rozmiar wymuszony przez setFixedSize w Pythonie */
+/* Copies spinner (inline) — rozmiar wymuszony przez setFixedSize w Pythonie,
+ * padding symetryczny dla wysrodkowanego tekstu (AlignCenter). */
 QSpinBox#CopiesSpin {
     background: #FFFFFF;
     border: 1px solid #E2E5ED;
     border-radius: 5px;
     font-family: "JetBrains Mono", monospace;
-    font-size: 10.5px;
-    padding: 0 11px 0 2px;  /* 11px prawy reserve na strzalki */
+    font-size: 11px;
+    padding: 0 14px 0 14px;  /* lewy = prawy, inaczej AlignCenter przesuwa */
 }
 QSpinBox#CopiesSpin::up-button, QSpinBox#CopiesSpin::down-button {
-    width: 11px;
+    width: 13px;
 }
 
 /* Height per-file spinner (inline) */
@@ -502,11 +503,11 @@ QDoubleSpinBox#HeightSpin {
     border: 1px solid #E2E5ED;
     border-radius: 5px;
     font-family: "JetBrains Mono", monospace;
-    font-size: 10.5px;
-    padding: 0 11px 0 2px;
+    font-size: 11px;
+    padding: 0 14px 0 14px;
 }
 QDoubleSpinBox#HeightSpin::up-button, QDoubleSpinBox#HeightSpin::down-button {
-    width: 11px;
+    width: 13px;
 }
 
 QPushButton#RemoveRowBtn {
