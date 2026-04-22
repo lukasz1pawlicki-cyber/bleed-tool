@@ -1392,19 +1392,37 @@ def _render_source_cutpath_layer(
     src_bleed_x = bleed_pts / scale_x
     src_bleed_y = bleed_pts / scale_y
 
-    # === pikepdf: clean source (remove stroke-only) ===
+    # === pikepdf: safe cleaning (remove stroke-only LUB bailout na corrupt) ===
+    # Powód: _remove_stroke_only_blocks usuwa bloki `q..Q` które zawieraja S/s
+    # bez fill/Do. Ale BDC/EMC (OCG markers) pary mogą SPANOWAC wiele q..Q
+    # bloków — usunięcie bloku zostawia unbalanced OCG markers → fitz renderer
+    # dostaje corrupted content stream → blank output (przyklad: Michalina
+    # naklejki z Illustratora, 12 OCG warstw, cut line + graphic w jednym q..Q).
+    #
+    # Strategia: uruchom usuwanie; jesli cleaned doc renderuje sie do pustego
+    # rasteru (near-white 99%+), fallback na ORIGINAL source (nie usuwamy nic).
+    # Oryginalna linia ciecia pozostaje w rasterze ale 0.25pt stroke jest
+    # praktycznie niewidoczne, a nasza spot-color CutContour na wierzchu jest
+    # tym co czyta plotter.
     import io
     src_bytes = doc_src.tobytes()
     pike = pikepdf.open(io.BytesIO(src_bytes))
     pike_page = pike.pages[sticker.page_index]
     ops = list(pikepdf.parse_content_stream(pike_page))
-    cleaned_ops = _remove_stroke_only_blocks(ops)
-    cleaned_bytes_pdf = pikepdf.unparse_content_stream(cleaned_ops)
-    pike_page.Contents = pike.make_stream(cleaned_bytes_pdf)
-    buf = io.BytesIO()
-    pike.save(buf)
-    pike.close()
-    cleaned_doc = fitz.open(stream=buf.getvalue(), filetype="pdf")
+    has_bdc_emc = any(str(op) in ('BDC', 'BMC', 'EMC') for _, op in ops)
+    if has_bdc_emc:
+        # Plik ma OCG markers — nie ryzykuj usuwania, zostaw content as-is
+        log.info("Source ma BDC/EMC (OCG) — pomijam cleanup (nie ryzykuj corrupted stream)")
+        pike.close()
+        cleaned_doc = fitz.open(stream=src_bytes, filetype="pdf")
+    else:
+        cleaned_ops = _remove_stroke_only_blocks(ops)
+        cleaned_bytes_pdf = pikepdf.unparse_content_stream(cleaned_ops)
+        pike_page.Contents = pike.make_stream(cleaned_bytes_pdf)
+        buf = io.BytesIO()
+        pike.save(buf)
+        pike.close()
+        cleaned_doc = fitz.open(stream=buf.getvalue(), filetype="pdf")
 
     # === Render cleaned source @ 300 DPI w obszarze bleed bbox ===
     # get_pixmap z clip_rect PRAWDZIWIE ogranicza render do bbox. Content spoza
