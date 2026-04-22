@@ -103,8 +103,12 @@ class FileSection(QWidget):
         self._show_copies = show_copies
         self._files: list[str] = []
         self._file_copies: dict[str, int] = {}
-        # path -> target height in mm (None = auto, użyje globalnej lub oryginalnej)
+        # path -> target height/width in mm (mutualnie wykluczajace sie —
+        # worker liczy drugi wymiar z aspect ratio sticker'a)
         self._file_height_mm: dict[str, float | None] = {}
+        self._file_width_mm: dict[str, float | None] = {}
+        # Widgety per wiersz (dla mutex: zmiana width zeruje UI heightu i odwrotnie)
+        self._row_widgets: dict[str, dict] = {}
         # path -> (status, issue_msg | None)
         self._file_status: dict[str, tuple[str, str | None]] = {}
 
@@ -175,10 +179,16 @@ class FileSection(QWidget):
     def file_heights(self) -> dict[str, float | None]:
         return dict(self._file_height_mm)
 
+    @property
+    def file_widths(self) -> dict[str, float | None]:
+        return dict(self._file_width_mm)
+
     def clear_files(self):
         self._files.clear()
         self._file_copies.clear()
         self._file_height_mm.clear()
+        self._file_width_mm.clear()
+        self._row_widgets.clear()
         self._file_status.clear()
         self._rebuild_list()
         self.files_changed.emit()
@@ -225,6 +235,8 @@ class FileSection(QWidget):
             self._files.remove(path)
             self._file_copies.pop(path, None)
             self._file_height_mm.pop(path, None)
+            self._file_width_mm.pop(path, None)
+            self._row_widgets.pop(path, None)
             self._file_status.pop(path, None)
         self._rebuild_list()
         self.files_changed.emit()
@@ -252,9 +264,9 @@ class FileSection(QWidget):
         ext_lbl.setObjectName("FileExtTag")
         hl.addWidget(ext_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        # Kopie + wysokość — PRZED nazwa (po lewej). setFixedSize(w,h) blokuje
-        # WSZYSTKIE wymiary (Qt nie przelicza sizeHint dynamicznie na podstawie
-        # specialValueText czy sufiksu → kolumny stabilne).
+        # Kopie + wysokość + szerokość — PRZED nazwa (po lewej).
+        # Wysokość/Szerokość mutualnie wykluczajace sie — worker doliczy
+        # drugi wymiar z aspect ratio po detect_contour.
         if self._show_copies:
             from PyQt6.QtWidgets import QDoubleSpinBox
             spin = QSpinBox()
@@ -270,23 +282,43 @@ class FileSection(QWidget):
             )
             hl.addWidget(spin, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-            hspin = QDoubleSpinBox()
-            hspin.setObjectName("HeightSpin")
-            hspin.setDecimals(1)
-            hspin.setMinimum(0.0)   # 0 = auto (puste)
-            hspin.setMaximum(999.9)
-            hspin.setSingleStep(0.5)
-            hspin.setSpecialValueText("auto")
-            # Wewnętrznie trzymamy mm, user wpisuje cm → konwersja *10 / *0.1
+            def _make_dim_spin(object_name: str, tooltip: str):
+                s = QDoubleSpinBox()
+                s.setObjectName(object_name)
+                s.setDecimals(1)
+                s.setMinimum(0.0)
+                s.setMaximum(999.9)
+                s.setSingleStep(0.5)
+                s.setSpecialValueText("auto")
+                s.setToolTip(tooltip)
+                s.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                s.setFixedSize(88, 28)
+                return s
+
+            hspin = _make_dim_spin(
+                "HeightSpin",
+                "Wysokość naklejki w cm (auto = oryginalna / globalna).\n"
+                "Wpisanie wartości zeruje Szerokość — proporcje zachowane.")
             h_mm = self._file_height_mm.get(filepath)
             hspin.setValue(0.0 if h_mm is None else float(h_mm) / 10.0)
-            hspin.setToolTip("Wysokość naklejki w cm. 'auto' = oryginalna / globalna")
-            hspin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hspin.setFixedSize(88, 28)
+            hl.addWidget(hspin, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+            wspin = _make_dim_spin(
+                "WidthSpin",
+                "Szerokość naklejki w cm (auto = oryginalna / globalna).\n"
+                "Wpisanie wartości zeruje Wysokość — proporcje zachowane.")
+            w_mm = self._file_width_mm.get(filepath)
+            wspin.setValue(0.0 if w_mm is None else float(w_mm) / 10.0)
+            hl.addWidget(wspin, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+            self._row_widgets[filepath] = {"h": hspin, "w": wspin}
+
             hspin.valueChanged.connect(
                 lambda v_cm, p=filepath: self._on_height_change(p, v_cm)
             )
-            hl.addWidget(hspin, alignment=Qt.AlignmentFlag.AlignVCenter)
+            wspin.valueChanged.connect(
+                lambda v_cm, p=filepath: self._on_width_change(p, v_cm)
+            )
 
         # Nazwa + meta/issue stack
         name_stack = QWidget()
@@ -362,6 +394,26 @@ class FileSection(QWidget):
             self._file_height_mm.pop(filepath, None)
         else:
             self._file_height_mm[filepath] = float(value_cm) * 10.0
+            # Mutex: zmiana height zeruje width (UI + storage)
+            self._file_width_mm.pop(filepath, None)
+            w = self._row_widgets.get(filepath, {}).get("w")
+            if w is not None and w.value() != 0.0:
+                w.blockSignals(True)
+                w.setValue(0.0)
+                w.blockSignals(False)
+
+    def _on_width_change(self, filepath: str, value_cm: float):
+        if value_cm <= 0.0:
+            self._file_width_mm.pop(filepath, None)
+        else:
+            self._file_width_mm[filepath] = float(value_cm) * 10.0
+            # Mutex: zmiana width zeruje height (UI + storage)
+            self._file_height_mm.pop(filepath, None)
+            h = self._row_widgets.get(filepath, {}).get("h")
+            if h is not None and h.value() != 0.0:
+                h.blockSignals(True)
+                h.setValue(0.0)
+                h.blockSignals(False)
 
     # --- Drag-and-drop na całą kolumnę ---
 

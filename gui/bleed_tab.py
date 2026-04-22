@@ -116,18 +116,42 @@ class BleedTab(QWidget):
         row_spad.addWidget(self._sharp_edges_cb)
         params_card.body.addLayout(row_spad)
 
-        # Row: Wysokosc
+        # Row: Wysokosc / Szerokosc — mutual-exclusion (user wpisuje jedno,
+        # drugie zerowane, worker doczyta aspect ratio per plik).
         row_h = QHBoxLayout()
         row_h.setSpacing(8)
         row_h.addWidget(self._field_label("Wysokość"))
         self._height_edit = QLineEdit()
-        self._height_edit.setFixedWidth(80)
+        self._height_edit.setFixedWidth(70)
         self._height_edit.setPlaceholderText("auto")
         self._height_edit.setProperty("variant", "mono")
         row_h.addWidget(self._height_edit)
         row_h.addWidget(UnitLabel("cm"))
+        row_h.addSpacing(10)
+        row_h.addWidget(self._field_label("Szerokość"))
+        self._width_edit = QLineEdit()
+        self._width_edit.setFixedWidth(70)
+        self._width_edit.setPlaceholderText("auto")
+        self._width_edit.setProperty("variant", "mono")
+        row_h.addWidget(self._width_edit)
+        row_h.addWidget(UnitLabel("cm"))
         row_h.addStretch(1)
         params_card.body.addLayout(row_h)
+
+        # Mutual exclusion: gdy user wpisuje w jedno pole, wyczysc drugie
+        # (bez rekurencji — blockSignals podczas programatycznego clear)
+        def _on_h_typed(_=None):
+            if self._height_edit.text().strip():
+                self._width_edit.blockSignals(True)
+                self._width_edit.clear()
+                self._width_edit.blockSignals(False)
+        def _on_w_typed(_=None):
+            if self._width_edit.text().strip():
+                self._height_edit.blockSignals(True)
+                self._height_edit.clear()
+                self._height_edit.blockSignals(False)
+        self._height_edit.textEdited.connect(_on_h_typed)
+        self._width_edit.textEdited.connect(_on_w_typed)
 
         # Row: Linia ciecia (Segmented)
         row_cut = QHBoxLayout()
@@ -279,6 +303,7 @@ class BleedTab(QWidget):
         self._sharp_edges_cb.setChecked(False)
         self._use_src_cutpath_cb.setChecked(False)
         self._height_edit.setText("")
+        self._width_edit.setText("")
         self._crop_cb.setChecked(False)
         self._rb_square.setChecked(True)
         self._radius_pct = 9
@@ -471,6 +496,7 @@ class BleedTab(QWidget):
             black_100k=self._black_100k_cb.isChecked(),
             cutline_mode=self.cutline_mode,
             target_height_mm=self._parse_height(),
+            target_width_mm=self._parse_width(),
             white=False,
             crop_enabled=self.crop_enabled,
             crop_shape=self.crop_shape,
@@ -480,6 +506,10 @@ class BleedTab(QWidget):
             use_source_cutpath=self.use_source_cutpath,
             per_file_heights={
                 p: v for p, v in self._file_section.file_heights.items()
+                if v is not None and v > 0
+            },
+            per_file_widths={
+                p: v for p, v in self._file_section.file_widths.items()
                 if v is not None and v > 0
             },
         )
@@ -492,6 +522,15 @@ class BleedTab(QWidget):
 
     def _parse_height(self) -> float | None:
         txt = self._height_edit.text().strip()
+        if not txt:
+            return None
+        try:
+            return float(txt.replace(",", ".")) * 10.0
+        except ValueError:
+            return None
+
+    def _parse_width(self) -> float | None:
+        txt = self._width_edit.text().strip()
         if not txt:
             return None
         try:
