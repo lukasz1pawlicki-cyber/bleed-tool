@@ -483,31 +483,21 @@ QFrame#StatusDot[state="ok"]   { background: #059669; }
 QFrame#StatusDot[state="warn"] { background: #D97706; }
 QFrame#StatusDot[state="err"]  { background: #DC2626; }
 
-/* Copies spinner (inline) — rozmiar wymuszony przez setFixedSize w Pythonie,
- * padding symetryczny dla wysrodkowanego tekstu (AlignCenter). */
-QSpinBox#CopiesSpin {
+/* Copies/Height spinnery (inline) — rozmiar wymuszony przez setFixedSize
+ * w Pythonie. AlignCenter + symetryczny padding. Szerokosci widgetow
+ * dobrane tak zeby "999"/"999.9"/"auto" miescily sie po odliczeniu
+ * paddingu i wewnetrznego marginesu QLineEdit (~8px). */
+QSpinBox#CopiesSpin, QDoubleSpinBox#HeightSpin {
     background: #FFFFFF;
     border: 1px solid #E2E5ED;
     border-radius: 5px;
     font-family: "JetBrains Mono", monospace;
     font-size: 11px;
-    padding: 0 14px 0 14px;  /* lewy = prawy, inaczej AlignCenter przesuwa */
+    padding: 0 16px 0 16px;
 }
-QSpinBox#CopiesSpin::up-button, QSpinBox#CopiesSpin::down-button {
-    width: 13px;
-}
-
-/* Height per-file spinner (inline) */
-QDoubleSpinBox#HeightSpin {
-    background: #FFFFFF;
-    border: 1px solid #E2E5ED;
-    border-radius: 5px;
-    font-family: "JetBrains Mono", monospace;
-    font-size: 11px;
-    padding: 0 14px 0 14px;
-}
+QSpinBox#CopiesSpin::up-button, QSpinBox#CopiesSpin::down-button,
 QDoubleSpinBox#HeightSpin::up-button, QDoubleSpinBox#HeightSpin::down-button {
-    width: 13px;
+    width: 14px;
 }
 
 QPushButton#RemoveRowBtn {
