@@ -43,42 +43,19 @@ def _settings_file() -> Path:
 
 
 def load() -> dict[str, Any]:
-    """Wczytuje ustawienia. Zwraca {} gdy brak pliku / corrupt."""
-    p = _settings_file()
-    if not p.exists():
-        return {}
-    try:
-        with p.open(encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return {}
-        if data.get("version") != _SETTINGS_VERSION:
-            return {}
-        return data.get("values", {})
-    except (json.JSONDecodeError, OSError) as e:
-        log.warning(f"[settings] load failed: {e}")
-        return {}
+    """Persistencja wyłączona — program ZAWSZE startuje z ustawień domyślnych."""
+    return {}
 
 
 def save(values: dict[str, Any]) -> None:
-    """Zapisuje ustawienia (best-effort)."""
-    p = _settings_file()
-    payload = {"version": _SETTINGS_VERSION, "values": values}
-    try:
-        tmp = p.with_suffix(".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, p)
-    except OSError as e:
-        log.warning(f"[settings] save failed: {e}")
+    """Persistencja wyłączona — no-op."""
+    return
 
 
 def get(key: str, default: Any = None) -> Any:
-    return load().get(key, default)
+    return default
 
 
 def update(values: dict[str, Any]) -> None:
-    """Merge + save. Inne klucze nietknięte."""
-    current = load()
-    current.update(values)
-    save(current)
+    """Persistencja wyłączona — no-op."""
+    return

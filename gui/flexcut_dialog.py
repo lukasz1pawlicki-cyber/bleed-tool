@@ -228,18 +228,40 @@ class FlexCutDialog(QDialog):
         self._update_nav()
         self._render_current()
 
-        # Skróty klawiszowe — QShortcut z WindowShortcut działa niezależnie
-        # od focusu (keyPressEvent na QDialog nie łapie klawiszy gdy focus
-        # ma QGraphicsView po kliknięciu w podgląd).
-        for keys, slot in [
-            (["Z", "z"], self._on_add_flexcut),
-            (["R", "r"], self._on_rotate_180),
-            (["S", "s"], self._on_add_bleed),
-        ]:
-            for k in keys:
-                sc = QShortcut(QKeySequence(k), self)
-                sc.setContext(Qt.ShortcutContext.WindowShortcut)
-                sc.activated.connect(slot)
+        # Skróty klawiszowe — Z/R/S. QGraphicsView po kliknięciu przejmuje
+        # focus i konsumuje klawisze; WindowShortcut na Qt6/Windows czasem nie
+        # odpala. Rozwiązanie dwuwarstwowe:
+        #   1) QShortcut z WindowShortcut — działa gdy focus ma dialog/toolbar
+        #   2) keyPressEvent na view — przechwytuje S/R/Z gdy focus ma view
+        self._shortcut_slots = {
+            Qt.Key.Key_Z: self._on_add_flexcut,
+            Qt.Key.Key_R: self._on_rotate_180,
+            Qt.Key.Key_S: self._on_add_bleed,
+        }
+        for key_str, slot in [("Z", self._on_add_flexcut),
+                              ("R", self._on_rotate_180),
+                              ("S", self._on_add_bleed)]:
+            sc = QShortcut(QKeySequence(key_str), self)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.activated.connect(slot)
+        # Pozwól view łapać klawisze i przekazywać do handlerów
+        self._view.installEventFilter(self)
+
+    # --- Event filter (skróty Z/R/S gdy focus ma QGraphicsView) ---
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if obj is self._view and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            mods = event.modifiers()
+            # Tylko czyste S/R/Z (bez Ctrl/Alt/Shift) — żeby nie kolidować z pan/zoom
+            if mods in (Qt.KeyboardModifier.NoModifier,
+                        Qt.KeyboardModifier.KeypadModifier):
+                slot = self._shortcut_slots.get(key)
+                if slot is not None:
+                    slot()
+                    return True
+        return super().eventFilter(obj, event)
 
     # --- Navigation ---
 

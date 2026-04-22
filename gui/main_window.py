@@ -1,142 +1,34 @@
 """
 Bleed Tool — main_window.py
 ==============================
-Glowne okno: navy Sidebar (Technikadruku), QSplitter, QStackedWidget,
-LogPanel, dwa niezalezne PreviewPanels.
+Layout: [Top TabBar: Bleed | Nest]
+        [Files (resizable) | Settings (fixed) | Preview (stretch)]
+        [LogPanel — pod całością]
 """
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
-    QPushButton, QSplitter, QStackedWidget, QButtonGroup, QSizePolicy,
+    QSplitter, QStackedWidget, QTabBar, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt
 
 from gui.log_panel import LogPanel
-from gui.atoms import repolish
+from gui.file_section import FileSection
 
 
-class Sidebar(QFrame):
-    """Navy sidebar (196px): logo, nav, MachineCard, footer meta."""
+class _FilePanel(QFrame):
+    """Kolumna plików. DropZone (FileSection) dociągnięty do górnej krawędzi."""
 
-    navigated = pyqtSignal(str)  # "bleed" | "nest" | "flexcut" | ...
-
-    def __init__(self, parent=None):
+    def __init__(self, title: str, aux: str, show_copies: bool = False, parent=None):
         super().__init__(parent)
-        self.setObjectName("Sidebar")
+        self.setObjectName("FilePanel")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 18, 14, 14)
-        lay.setSpacing(10)
-
-        # === Logo ===
-        logo = QWidget()
-        lh = QHBoxLayout(logo)
-        lh.setContentsMargins(4, 0, 4, 14)
-        lh.setSpacing(10)
-        mark = QLabel("BT")
-        mark.setFixedSize(30, 30)
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark.setStyleSheet(
-            "background:#2563EB;color:#fff;border-radius:7px;"
-            "font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;"
-        )
-        lh.addWidget(mark)
-        txt = QWidget()
-        tl = QVBoxLayout(txt)
-        tl.setContentsMargins(0, 0, 0, 0)
-        tl.setSpacing(2)
-        name = QLabel("Bleed Tool")
-        name.setObjectName("SidebarLogoText")
-        sub = QLabel("STICKERPREP")
-        sub.setObjectName("SidebarLogoSub")
-        tl.addWidget(name)
-        tl.addWidget(sub)
-        lh.addWidget(txt)
-        lh.addStretch(1)
-        lay.addWidget(logo)
-
-        # === Workflow ===
-        lay.addWidget(self._section_label("Workflow"))
-        self.btn_bleed = self._nav("Bleed", key="bleed", checked=True)
-        self.btn_nest = self._nav("Nest", key="nest")
-        lay.addWidget(self.btn_bleed)
-        lay.addWidget(self.btn_nest)
-
-        # Grupa ekskluzywna
-        self._nav_group = QButtonGroup(self)
-        self._nav_group.setExclusive(True)
-        for b in (self.btn_bleed, self.btn_nest):
-            self._nav_group.addButton(b)
-            b.clicked.connect(
-                lambda _=False, k=b.property("navKey"): self.navigated.emit(k)
-            )
-
-        lay.addStretch(1)
-        lay.addWidget(self._machine_card())
-
-        # === Footer meta ===
-        foot = QHBoxLayout()
-        v = QLabel("v3.2.0")
-        v.setObjectName("SidebarFootMeta")
-        p = QLabel("FOGRA39")
-        p.setObjectName("SidebarFootMeta")
-        foot.addWidget(v)
-        foot.addStretch(1)
-        foot.addWidget(p)
-        lay.addLayout(foot)
-
-    def _section_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setObjectName("NavLabel")
-        return lbl
-
-    def _nav(self, text: str, *, key: str, checked: bool = False) -> QPushButton:
-        b = QPushButton(text)
-        b.setObjectName("NavItem")
-        b.setCheckable(True)
-        b.setChecked(checked)
-        b.setProperty("navKey", key)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
-        return b
-
-    def _machine_card(self) -> QFrame:
-        c = QFrame()
-        c.setObjectName("MachineCard")
-        v = QVBoxLayout(c)
-        v.setContentsMargins(10, 10, 10, 10)
-        v.setSpacing(4)
-
-        header = QHBoxLayout()
-        title = QLabel("PARK MASZYNOWY")
-        title.setObjectName("MachineCardTitle")
-        header.addWidget(title)
-        header.addStretch(1)
-        dot = QLabel()
-        dot.setFixedSize(6, 6)
-        dot.setStyleSheet("background:#34D399;border-radius:3px;")
-        header.addWidget(dot)
-        v.addLayout(header)
-
-        for key, val in (("Mimaki", "UCJV"), ("Summa", "S3"), ("JWEI", "0806")):
-            row = QHBoxLayout()
-            k = QLabel(key)
-            k.setObjectName("MachineRowKey")
-            vl = QLabel(val)
-            vl.setObjectName("MachineRowVal")
-            row.addWidget(k)
-            row.addStretch(1)
-            row.addWidget(vl)
-            v.addLayout(row)
-
-        return c
-
-    def set_active(self, key: str) -> None:
-        mapping = {
-            "bleed": self.btn_bleed,
-            "nest": self.btn_nest,
-        }
-        btn = mapping.get(key)
-        if btn:
-            btn.setChecked(True)
+        # Mały top-margin — odstęp od zakładek (Bleed/Nest)
+        lay.setContentsMargins(0, 12, 0, 0)
+        lay.setSpacing(0)
+        # FileSection (DropZone + lista + bar)
+        self.file_section = FileSection(show_copies=show_copies)
+        lay.addWidget(self.file_section, stretch=1)
 
 
 class MainWindow(QMainWindow):
@@ -155,57 +47,88 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setObjectName("centralWidget")
         self.setCentralWidget(central)
-        root_layout = QHBoxLayout(central)
+        root_layout = QVBoxLayout(central)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # === Sidebar ===
-        self._sidebar = Sidebar()
-        self._sidebar.navigated.connect(self._activate_tab)
-        root_layout.addWidget(self._sidebar)
+        # === Top tab bar ===
+        self._tab_bar = QTabBar()
+        self._tab_bar.setObjectName("TopTabBar")
+        self._tab_bar.addTab("Bleed")
+        self._tab_bar.addTab("Nest")
+        self._tab_bar.setExpanding(False)
+        self._tab_bar.setDrawBase(True)
+        # Większe zakładki — font + padding
+        _tab_font = self._tab_bar.font()
+        _tab_font.setPointSize(max(_tab_font.pointSize() + 3, 12))
+        _tab_font.setBold(True)
+        self._tab_bar.setFont(_tab_font)
+        self._tab_bar.setStyleSheet(
+            "QTabBar::tab{padding:10px 28px;min-width:120px;}"
+            "QTabBar::tab:selected{background:#2563EB;color:#fff;}"
+        )
+        self._tab_bar.currentChanged.connect(self._on_tab_changed)
+        root_layout.addWidget(self._tab_bar)
 
-        # === Splitter: lewy (content+log) | prawy (preview) ===
+        # === Splitter: Files (resizable) | Settings (fixed) | Preview (stretch) ===
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setHandleWidth(1)
 
-        # Lewy panel
-        left = QWidget()
-        left.setMinimumWidth(520)
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
+        # --- Lewa kolumna: Files stack ---
+        self._file_stack = QStackedWidget()
+        # Oba panele z copies — user może ustawić liczbę kopii na etapie Bleed
+        # (propaguje się do Nest po auto-agregacji) lub poprawić na Nest.
+        self._bleed_files_panel = _FilePanel(
+            "Pliki wejściowe",
+            "PDF · AI · SVG · EPS · PNG · JPG · TIFF",
+            show_copies=True,
+        )
+        self._nest_files_panel = _FilePanel(
+            "Pliki do arkusza",
+            "po bleedzie · kopie per plik",
+            show_copies=True,
+        )
+        self._file_stack.addWidget(self._bleed_files_panel)
+        self._file_stack.addWidget(self._nest_files_panel)
+        # Kolumna plików: min 470 (+30% od 360)
+        self._file_stack.setMinimumWidth(470)
+        self._splitter.addWidget(self._file_stack)
 
-        # Stacked: Bleed | Nest
+        # --- Środkowa kolumna: Settings stack (fixed width) ---
+        settings_container = QWidget()
+        sc_layout = QVBoxLayout(settings_container)
+        sc_layout.setContentsMargins(0, 0, 0, 0)
+        sc_layout.setSpacing(0)
         self._stack = QStackedWidget()
-        left_layout.addWidget(self._stack, stretch=1)
+        sc_layout.addWidget(self._stack, stretch=1)
+        self._splitter.addWidget(settings_container)
 
-        # Log (navy terminal)
-        self.log_panel = LogPanel()
-        self.log_panel.setMinimumHeight(80)
-        self.log_panel.setMaximumHeight(160)
-        left_layout.addWidget(self.log_panel)
-
-        self._splitter.addWidget(left)
-
-        # Prawy panel — preview (stack dla Bleed / Nest)
+        # --- Prawa kolumna: Preview stack ---
         self._preview_container = QWidget()
         self._preview_layout = QVBoxLayout(self._preview_container)
         self._preview_layout.setContentsMargins(0, 0, 0, 0)
         self._preview_stack = QStackedWidget()
         self._preview_layout.addWidget(self._preview_stack)
-        self._preview_container.setMinimumWidth(400)
+        # Preview min 520 (+30% z 400)
+        self._preview_container.setMinimumWidth(520)
         self._splitter.addWidget(self._preview_container)
 
-        # setStretchFactor sam nie blokuje resize — ustawiamy tez setCollapsible
-        # dla obu stron + initial sizes. Lewy panel ma minimumWidth(520) co
-        # zapobiega zaslonieciu ustawien przy powiekszeniu preview.
-        self._splitter.setCollapsible(0, False)
-        self._splitter.setCollapsible(1, False)
-        self._splitter.setStretchFactor(0, 0)
-        self._splitter.setStretchFactor(1, 1)
-        self._splitter.setSizes([560, 720])
+        # Splitter policy
+        for i in range(3):
+            self._splitter.setCollapsible(i, False)
+        self._splitter.setStretchFactor(0, 1)  # files: expand
+        self._splitter.setStretchFactor(1, 0)  # settings: fixed
+        self._splitter.setStretchFactor(2, 2)  # preview: expand more
+        # Files 546, settings fixed 480, preview 754 (+30% z 580)
+        self._splitter.setSizes([546, 480, 754])
 
-        root_layout.addWidget(self._splitter)
+        root_layout.addWidget(self._splitter, stretch=1)
+
+        # === Log panel (pod całością) ===
+        self.log_panel = LogPanel()
+        self.log_panel.setMinimumHeight(80)
+        self.log_panel.setMaximumHeight(160)
+        root_layout.addWidget(self.log_panel)
 
         # === Zakladki ===
         self._bleed_tab = None
@@ -213,6 +136,8 @@ class MainWindow(QMainWindow):
         self._bleed_preview = None
         self._nest_preview = None
         self._init_tabs()
+        # Fixed width settings column — policzone z sizeHint obu tabs
+        self._apply_fixed_settings_width()
         self._activate_tab("bleed")
 
     def _init_tabs(self):
@@ -220,8 +145,16 @@ class MainWindow(QMainWindow):
         from gui.nest_tab import NestTab
         from gui.preview_panel import PreviewPanel
 
-        self._bleed_tab = BleedTab(log_fn=self.log_panel.log)
-        self._nest_tab = NestTab(log_fn=self.log_panel.log, main_window=self)
+        # Tabs otrzymują file_section z panelu lewej kolumny
+        self._bleed_tab = BleedTab(
+            log_fn=self.log_panel.log,
+            file_section=self._bleed_files_panel.file_section,
+        )
+        self._nest_tab = NestTab(
+            log_fn=self.log_panel.log,
+            main_window=self,
+            file_section=self._nest_files_panel.file_section,
+        )
         self._stack.addWidget(self._bleed_tab)
         self._stack.addWidget(self._nest_tab)
 
@@ -238,12 +171,36 @@ class MainWindow(QMainWindow):
         self._bleed_tab._file_section.clear_requested.connect(self.clear_all)
         self._nest_tab._file_section.clear_requested.connect(self.clear_all)
 
+    def _apply_fixed_settings_width(self):
+        """Ustawia stałą szerokość środkowej kolumny (settings) na podstawie
+        sizeHint tabs (max z Bleed i Nest) + margines.
+
+        Settings column się nie rozciąga — pliki i preview przejmują.
+        """
+        try:
+            bleed_w = self._bleed_tab.sizeHint().width()
+            nest_w = self._nest_tab.sizeHint().width()
+            target = max(bleed_w, nest_w)
+            # Padding + scroll bar margin
+            target = max(target + 20, 420)
+            self._stack.setFixedWidth(target)
+        except Exception:
+            self._stack.setFixedWidth(460)
+
+    def _on_tab_changed(self, index: int):
+        key = "bleed" if index == 0 else "nest"
+        self._activate_tab(key)
+
     def _activate_tab(self, key: str):
         self._active_tab = key
         idx = 0 if key == "bleed" else 1
+        self._file_stack.setCurrentIndex(idx)
         self._stack.setCurrentIndex(idx)
         self._preview_stack.setCurrentIndex(idx)
-        self._sidebar.set_active(key)
+        if self._tab_bar.currentIndex() != idx:
+            self._tab_bar.blockSignals(True)
+            self._tab_bar.setCurrentIndex(idx)
+            self._tab_bar.blockSignals(False)
 
     # --- Preview slots ---
 
@@ -252,6 +209,15 @@ class MainWindow(QMainWindow):
             self._bleed_preview.show_bleed_results(output_paths, input_infos=input_infos)
         if self._nest_tab and output_paths:
             self._nest_tab.add_files(output_paths)
+            # Propaguj liczbę kopii z Bleed input → Nest output
+            bleed_fs = self._bleed_files_panel.file_section
+            nest_fs = self._nest_files_panel.file_section
+            for out_path, info in zip(output_paths, input_infos):
+                src_path = info[0] if isinstance(info, (tuple, list)) else info
+                copies = bleed_fs._file_copies.get(src_path)
+                if copies and copies > 1:
+                    nest_fs._file_copies[out_path] = copies
+            nest_fs._rebuild_list()
 
     def _on_nest_preview(self, job, sheet_pdfs, bleed_mm):
         if self._nest_preview:

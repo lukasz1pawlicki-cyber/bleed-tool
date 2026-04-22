@@ -197,6 +197,22 @@ RASTER_CONTOUR_MODE = _os.environ.get(
 
 
 # =============================================================================
+# ALPHA CONTOUR METHOD — algorytm śledzenia konturu z alpha mask
+# =============================================================================
+# "moore"   — Moore boundary tracing (domyślne). Chodzi po krawędzi piksel-po-
+#             pikselu, prawidłowo śledzi wklęsłości i nieregularne kształty
+#             (postacie z kończynami, halo, ilustracje).
+# "rowscan" — leftmost/rightmost per wiersz. Szybsze, dobre dla idealnie
+#             okrągłych/owalnych naklejek bez wklęsłości (fit_circle).
+#
+# Zmienna środowiskowa BLEED_ALPHA_CONTOUR_METHOD nadpisuje tę wartość.
+# GUI Bleed ma przełącznik "Obrys" (widoczny dla plików rastrowych/PDF).
+ALPHA_CONTOUR_METHOD = _os.environ.get(
+    "BLEED_ALPHA_CONTOUR_METHOD", "moore"
+).lower()
+
+
+# =============================================================================
 # RASTER CONTOUR SHRINK — cofnięcie linii cięcia do wewnątrz
 # =============================================================================
 # Liczba mm o jaką cofnąć obrys konturu do wewnątrz alpha-mask. 0 = bez cofania.

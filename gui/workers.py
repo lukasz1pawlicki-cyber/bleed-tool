@@ -29,8 +29,7 @@ class BleedWorker(QThread):
                  cutline_mode="kiss-cut", target_height_mm=None, white=False,
                  crop_enabled=False, crop_shape="square", crop_offsets=None,
                  radius_pct=9, contour_engine=None, raster_mode=None,
-                 raster_contour_mode=None, raster_contour_shrink_mm=0.0,
-                 parent=None):
+                 use_source_cutpath=False, parent=None):
         super().__init__(parent)
         self._files = files
         self._output_dir = output_dir
@@ -45,8 +44,7 @@ class BleedWorker(QThread):
         self._radius_pct = radius_pct
         self._contour_engine = contour_engine  # "moore" | "opencv" | "auto" | None
         self._raster_mode = raster_mode  # "smooth" | "sharp" | None (= config default)
-        self._raster_contour_mode = raster_contour_mode  # "standard" | "glow" | "tight" | None
-        self._raster_contour_shrink_mm = float(raster_contour_shrink_mm or 0.0)
+        self._use_source_cutpath = bool(use_source_cutpath)
 
     def run(self):
         try:
@@ -70,19 +68,6 @@ class BleedWorker(QThread):
             config.RASTER_MODE = self._raster_mode
             self.log_message.emit(f"  Tryb rastrow: {self._raster_mode}")
 
-        # Ustaw tryb obrysu rastra (standard / glow / tight) dla tej sesji
-        if self._raster_contour_mode in ("standard", "glow", "tight"):
-            config.RASTER_CONTOUR_MODE = self._raster_contour_mode
-            self.log_message.emit(
-                f"  Obrys kształtu: {self._raster_contour_mode}"
-            )
-
-        # Ustaw shrink obrysu (cofnięcie linii do wewnątrz alpha-mask)
-        config.RASTER_CONTOUR_SHRINK_MM = self._raster_contour_shrink_mm
-        if self._raster_contour_shrink_mm > 0:
-            self.log_message.emit(
-                f"  Zmniejsz obrys: {self._raster_contour_shrink_mm:.1f}mm"
-            )
 
         os.makedirs(self._output_dir, exist_ok=True)
         t0 = time.time()
@@ -114,7 +99,10 @@ class BleedWorker(QThread):
                     temp_files.append(actual_path)
                     self.log_message.emit(f"  Crop: {self._crop_shape}")
 
-                stickers = detect_contour(actual_path)
+                stickers = detect_contour(
+                    actual_path,
+                    use_source_cutpath=self._use_source_cutpath,
+                )
                 for si, sticker in enumerate(stickers):
                     # Skalowanie do docelowej wysokosci (pomijane gdy crop)
                     if self._target_height_mm and not self._crop_enabled:

@@ -33,13 +33,14 @@ class NestTab(QWidget):
 
     preview_ready = pyqtSignal(object, list, float)
 
-    def __init__(self, log_fn=None, main_window=None, parent=None):
+    def __init__(self, log_fn=None, main_window=None, file_section=None, parent=None):
         super().__init__(parent)
         self._log = log_fn or (lambda msg: None)
         self._main_window = main_window
         self._processing = False
         self._last_job = None
         self._last_pdfs = []
+        self._file_section = file_section  # z main_window (może być None → fallback)
         self._last_bleed = 0.0
         self._roll_widths = list(ROLL_PRESETS)
         _saved = _settings.load().get("nest", {})
@@ -85,14 +86,9 @@ class NestTab(QWidget):
         scroll.setWidget(inner)
         root.addWidget(scroll, stretch=1)
 
-        # === Files card ===
-        files_card = CardSection(
-            "Pliki do arkusza",
-            aux="po bleedzie · kopie per plik",
-        )
-        self._file_section = FileSection(show_copies=True)
-        files_card.body.addWidget(self._file_section)
-        layout.addWidget(files_card)
+        # === Files section (zewnętrzny — z main_window) ===
+        if self._file_section is None:
+            self._file_section = FileSection(show_copies=True)
 
         # === Sheet / Roll card ===
         sheet_card = CardSection("Arkusz / Rola")
@@ -316,6 +312,7 @@ class NestTab(QWidget):
     # --- Public API ---
 
     def clear(self):
+        """Reset do ustawień domyślnych (pliki + wszystkie kontrolki)."""
         self._file_section.clear_files()
         self._output_edit.setText("")
         self._status_label.setText("")
@@ -323,6 +320,16 @@ class NestTab(QWidget):
         self._last_pdfs = []
         self._util_card.clear()
         self._util_card.setVisible(False)
+        # Reset parametrów
+        self._mode_seg.set_value("Arkusze")
+        if self._sheet_combo.count() > 0:
+            self._sheet_combo.setCurrentIndex(0)
+        self._roll_max_edit.setText(str(DEFAULT_ROLL_MAX_LENGTH_MM))
+        self._copies_spin.setValue(1)
+        self._gap_spin.setValue(int(round(float(DEFAULT_GAP_MM))))
+        self._grouping_seg.set_value("Grupuj")
+        self._white_cb.setChecked(False)
+        self._plotter_combo.setCurrentText("jwei")
 
     @property
     def files(self) -> list[str]:

@@ -25,9 +25,11 @@ NIE powinny wpływać na inne.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re as _re
+import tempfile
 import numpy as np
 import fitz  # PyMuPDF
 from PIL import Image as PILImage, ImageFilter
@@ -835,8 +837,12 @@ def _detect_raster_alpha_contour(
 
     log.debug(f"Boundary trace [{config.CONTOUR_ENGINE}]: {len(contour_px)} raw boundary points")
 
-    # Douglas-Peucker — epsilon proporcjonalny do rozdzielczości
-    dp_epsilon = max(4.0, min(hs, ws) * 0.01)
+    # Douglas-Peucker — epsilon proporcjonalny do rozdzielczości.
+    # 0.3% dolnego wymiaru: dla 800px obrazu = ~2.4px → adekwatne dla
+    # skomplikowanych kształtów (postacie, ilustracje z kończynami, halo).
+    # Poprzednie 1% (~8px) dawało tylko ~11 segmentów dla nieregularnych
+    # kształtów — owal zamiast śledzenia wklęsłości.
+    dp_epsilon = max(1.5, min(hs, ws) * 0.003)
     contour_simplified = _douglas_peucker(contour_px, epsilon=dp_epsilon)
 
     # Konwertuj px → pt
@@ -848,11 +854,16 @@ def _detect_raster_alpha_contour(
     # Tryb konturu: smooth (Bezier) vs sharp (linie proste).
     # smooth: Catmull-Rom + Chaikin → wygladzone krzywe dla logotypow/ilustracji
     # sharp: DP polygon → proste linie dla gwiazdek/strzalek z ostrymi kątami
+    # Adaptive min_dist: bbox diagonal / 40 → ~40 segmentów dla każdej wielkości.
+    # Stały 18pt był zbyt agresywny dla małych naklejek (43mm → tylko 11 seg).
+    _xs, _ys = pts_pt[:, 0], pts_pt[:, 1]
+    _bbox_diag = float(np.hypot(_xs.max() - _xs.min(), _ys.max() - _ys.min()))
+    _min_dist = max(2.0, _bbox_diag / 40.0)
     if config.RASTER_MODE == "sharp":
-        segments = _polygon_to_line_segments(pts_pt)
+        segments = _polygon_to_line_segments(pts_pt, min_dist_pt=_min_dist / 2)
         seg_label = "linii prostych (sharp)"
     else:
-        segments = _polygon_to_smooth_bezier(pts_pt)
+        segments = _polygon_to_smooth_bezier(pts_pt, min_dist_pt=_min_dist)
         seg_label = "Bézier (smooth)"
 
     log.info(
@@ -1284,14 +1295,12 @@ def _render_alpha_contour(doc: fitz.Document, page_index: int,
     """
     page = doc[page_index]
 
-    # Tryby inne niż "standard" (glow/tight) LUB shrink > 0 przekierowujemy
-    # na pipeline Moore trace z `_detect_raster_alpha_contour`. Renderujemy
-    # wtedy w wyższej rozdzielczości (target 800px zamiast 500) — erozja
-    # wymaga dokładnej granicy żeby nie przesuwać cięcia za mocno do wewnątrz.
-    # Standardowy tryb bez shrink zachowuje legacy row-scan (nic nie psujemy).
-    _contour_mode = getattr(config, "RASTER_CONTOUR_MODE", "standard")
-    _shrink_mm = float(getattr(config, "RASTER_CONTOUR_SHRINK_MM", 0.0) or 0.0)
-    if _contour_mode in ("glow", "tight") or _shrink_mm > 0:
+    # Metoda obrysu — config.ALPHA_CONTOUR_METHOD ("moore" | "rowscan").
+    # moore (domyślne): hires + Moore boundary trace — śledzi wklęsłości
+    #                   (postacie, kończyny, nieregularne kształty).
+    # rowscan: legacy leftmost/rightmost — dla okrągłych/owalnych (fit_circle).
+    _method = getattr(config, "ALPHA_CONTOUR_METHOD", "moore")
+    if _method != "rowscan":
         hires_target = 800
         hires_scale = hires_target / max(clip_rect.width, clip_rect.height)
         hires_mat = fitz.Matrix(hires_scale, hires_scale)
@@ -1304,9 +1313,9 @@ def _render_alpha_contour(doc: fitz.Document, page_index: int,
         )
         if segs is not None:
             return segs, rgb_edge
-        # fallback — w standardowym kodzie zwraca prostokąt gdy nie ma konturu
+        # Moore nie znalazł (np. trywialne alpha = w pełni opaque) → row-scan
 
-    # Render na umiarkowanej rozdzielczości (legacy row-scan path)
+    # ROW-SCAN: leftmost/rightmost per wiersz — fit_circle dla okrągłych.
     target_px = 500
     scale = target_px / max(clip_rect.width, clip_rect.height)
     mat = fitz.Matrix(scale, scale)
@@ -2188,8 +2197,130 @@ def _build_sticker_from_vector(
         return None
 
 
-def detect_contour(pdf_path: str) -> list[Sticker]:
+def _build_sticker_from_source_cutpath(
+    doc: fitz.Document, page_idx: int, original_path: str
+) -> Sticker | None:
+    """Buduje Sticker z linii cięcia zawartej w PDF jako stroke-only drawing.
+
+    Tylko ekstrahuje cut_segments + sample edge color. Renderowanie rastra
+    i maskowanie do bleed_segments odbywa się w export_single_sticker (gdzie
+    znane jest bleed_mm — mask musi być offset cut_segments, nie same cut).
+    """
+    page = doc[page_idx]
+    drawings = page.get_drawings()
+    stroke_only = [d for d in drawings if d.get("fill") is None
+                   and d.get("items")]
+    if not stroke_only:
+        return None
+
+    all_items = []
+    for d in stroke_only:
+        all_items.extend(d["items"])
+    if not all_items:
+        return None
+
+    try:
+        segs = extract_path_segments(all_items)
+    except ValueError:
+        return None
+    if not segs:
+        return None
+
+    # Bbox segmentów: używamy drawing.rect (uwzględnia control points Béziera)
+    # żeby objąć pełny zasięg rysowanej linii. Bez tego cut_segments byłyby
+    # shifted w środek, bo on-curve points (p0, p3) dają tight bbox węższy
+    # niż rzeczywista linia (krzywe wybrzuszają się poza end-points).
+    draw_rects = [d.get('rect') for d in stroke_only if d.get('rect')]
+    if draw_rects:
+        bb_x0 = min(r.x0 for r in draw_rects)
+        bb_y0 = min(r.y0 for r in draw_rects)
+        bb_x1 = max(r.x1 for r in draw_rects)
+        bb_y1 = max(r.y1 for r in draw_rects)
+    else:
+        # Fallback: on-curve bbox
+        xs, ys = [], []
+        for s in segs:
+            if s[0] == 'l':
+                xs += [float(s[1][0]), float(s[2][0])]
+                ys += [float(s[1][1]), float(s[2][1])]
+            elif s[0] == 'c':
+                xs += [float(s[1][0]), float(s[4][0])]
+                ys += [float(s[1][1]), float(s[4][1])]
+        if not xs or not ys:
+            return None
+        bb_x0, bb_x1 = min(xs), max(xs)
+        bb_y0, bb_y1 = min(ys), max(ys)
+    sticker_w_pt = bb_x1 - bb_x0
+    sticker_h_pt = bb_y1 - bb_y0
+    if sticker_w_pt < 5 or sticker_h_pt < 5:
+        log.warning(f"Cutpath bbox za mały: {sticker_w_pt}x{sticker_h_pt}pt")
+        return None
+
+    # Shift segmenty do origin=(0,0) — relatywne do bbox TL narożnika
+    shifted_segs = []
+    for s in segs:
+        if s[0] == 'l':
+            p0 = (s[1][0] - bb_x0, s[1][1] - bb_y0)
+            p1 = (s[2][0] - bb_x0, s[2][1] - bb_y0)
+            shifted_segs.append(('l', np.array(p0), np.array(p1)))
+        elif s[0] == 'c':
+            shifted_segs.append((
+                'c',
+                np.array((s[1][0] - bb_x0, s[1][1] - bb_y0)),
+                np.array((s[2][0] - bb_x0, s[2][1] - bb_y0)),
+                np.array((s[3][0] - bb_x0, s[3][1] - bb_y0)),
+                np.array((s[4][0] - bb_x0, s[4][1] - bb_y0)),
+            ))
+
+    # Sample edge_color z opaque pikseli wewnątrz cutpath (dla generate_bleed
+    # fill — nie wpływa na output bo raster pokrywa obszar, ale wymagane pole)
+    try:
+        clip_rect = fitz.Rect(bb_x0, bb_y0, bb_x1, bb_y1)
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+        avg = arr.reshape(-1, 3).mean(axis=0) / 255.0
+        edge_rgb = (float(avg[0]), float(avg[1]), float(avg[2]))
+    except Exception:
+        edge_rgb = (0.8, 0.8, 0.8)
+
+    log.info(
+        f"Cutpath z pliku: {len(shifted_segs)} segmentów, "
+        f"bbox={sticker_w_pt:.1f}x{sticker_h_pt:.1f}pt "
+        f"({sticker_w_pt * PT_TO_MM:.1f}x{sticker_h_pt * PT_TO_MM:.1f}mm)"
+    )
+
+    return Sticker(
+        source_path=original_path,
+        page_index=page_idx,
+        pdf_doc=doc,  # export użyje do rerenderowania z OCG off + bleed mask
+        outermost_drawing_idx=None,
+        cut_segments=shifted_segs,
+        bleed_segments=None,
+        page_width_pt=sticker_w_pt,
+        page_height_pt=sticker_h_pt,
+        width_mm=sticker_w_pt * PT_TO_MM,
+        height_mm=sticker_h_pt * PT_TO_MM,
+        raster_path=None,  # raster wyrenderowany na etapie export
+        raster_crop_box=None,
+        edge_color_rgb=edge_rgb,
+        edge_color_cmyk=None,
+        is_cmyk=False,
+        is_artwork_on_artboard=False,
+        from_source_cutpath=True,
+        _src_cutpath_bbox=(bb_x0, bb_y0, bb_x1, bb_y1),
+    )
+
+
+def detect_contour(pdf_path: str, use_source_cutpath: bool = False) -> list[Sticker]:
     """Główna funkcja: wykrywa kontur cięcia z dowolnego pliku wejściowego.
+
+    Args:
+        pdf_path: ścieżka pliku (PDF/SVG/EPS/raster).
+        use_source_cutpath: jeśli True, próbuj wyciągnąć linię cięcia ze
+            stroke-only drawings w PDF (np. pliki z CorelDraw/Illustrator
+            z docięciem jako czerwona/magenta linia). Fallback na normalny
+            pipeline gdy nie znaleziono.
 
     Routing per typ pliku:
       1. Raster (PNG/JPG/TIFF/BMP/WEBP) → _detect_raster()
@@ -2218,7 +2349,8 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     # Cache check (tylko PDF + raster, nie EPS/SVG).
     if _cacheable:
         from modules import cache as _cache
-        cached = _cache.load(pdf_path, config.CONTOUR_ENGINE)
+        cached = _cache.load(pdf_path, config.CONTOUR_ENGINE,
+                             use_source_cutpath=use_source_cutpath)
         if cached is not None:
             # Re-open pdf_doc dla PDF (raster uzywa raster_path, nie pdf_doc).
             # Dla raster_only PDF wszystkie stickers wspoldziela jeden pdf_doc.
@@ -2234,7 +2366,8 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
         result = [_detect_raster(pdf_path)]
         if _cacheable:
             from modules import cache as _cache
-            _cache.save(pdf_path, config.CONTOUR_ENGINE, result)
+            _cache.save(pdf_path, config.CONTOUR_ENGINE, result,
+                        use_source_cutpath=use_source_cutpath)
         return result
 
     # === ŚCIEŻKI 2-3: EPS/SVG → tmp PDF ===
@@ -2255,6 +2388,19 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     stickers: list[Sticker] = []
 
     for page_idx in range(len(doc)):
+        # 0. [opcjonalne] Użyj stroke-only drawings jako linii cięcia
+        if use_source_cutpath:
+            sticker = _build_sticker_from_source_cutpath(
+                doc, page_idx, original_path
+            )
+            if sticker is not None:
+                stickers.append(sticker)
+                continue
+            log.info(
+                f"use_source_cutpath: strona {page_idx + 1} — brak "
+                f"stroke-only drawings, fallback na auto-detekcję"
+            )
+
         # 1. PDF zawiera CutContour (bleed output) → re-ingest
         cutcontour_segs = _extract_cutcontour_segments(doc, page_idx)
         if cutcontour_segs is not None:
@@ -2304,6 +2450,7 @@ def detect_contour(pdf_path: str) -> list[Sticker]:
     # Sprawdzamy rozszerzenie ORYGINALNEGO pliku, nie tmp_pdf.
     if _cacheable and not tmp_pdf:
         from modules import cache as _cache
-        _cache.save(original_path, config.CONTOUR_ENGINE, stickers)
+        _cache.save(original_path, config.CONTOUR_ENGINE, stickers,
+                    use_source_cutpath=use_source_cutpath)
 
     return stickers

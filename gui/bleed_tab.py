@@ -31,10 +31,11 @@ class BleedTab(QWidget):
     preview_ready = pyqtSignal(list, list)
     crop_preview_requested = pyqtSignal(dict)
 
-    def __init__(self, log_fn=None, parent=None):
+    def __init__(self, log_fn=None, file_section=None, parent=None):
         super().__init__(parent)
         self._log = log_fn or (lambda msg: None)
         self._processing = False
+        self._file_section = file_section  # z main_window (może być None → fallback)
         _saved = _settings.load().get("bleed", {})
 
         root = QVBoxLayout(self)
@@ -75,14 +76,10 @@ class BleedTab(QWidget):
         scroll.setWidget(inner)
         root.addWidget(scroll, stretch=1)
 
-        # === Files card ===
-        files_card = CardSection(
-            "Pliki wejściowe",
-            aux="PDF · AI · SVG · EPS · PNG · JPG · TIFF",
-        )
-        self._file_section = FileSection(show_copies=False)
-        files_card.body.addWidget(self._file_section)
-        layout.addWidget(files_card)
+        # === Files section (zewnętrzny — z main_window) ===
+        # Jeśli nie przekazano przez kwarg — fallback na lokalny (dla testów)
+        if not hasattr(self, '_file_section') or self._file_section is None:
+            self._file_section = FileSection(show_copies=False)
 
         # === Parametry card ===
         params_card = CardSection(
@@ -150,50 +147,20 @@ class BleedTab(QWidget):
         # Silnik konturu = config.CONTOUR_ENGINE (domyslnie opencv).
         # Bialy poddruk usuniety z GUI Bleed — naklejki generalnie bez bialego.
 
-        # Row: Obrys kształtu (raster) — widoczny gdy sa pliki rastrowe lub PDF
-        row_contour = QHBoxLayout()
-        row_contour.setSpacing(8)
-        row_contour.addWidget(self._field_label("Obrys"))
-        _rc_map = {
-            "standard": "Standardowy",
-            "glow": "Z poświatą",
-            "tight": "Ciasny",
-        }
-        _rc_saved = _saved.get("raster_contour_mode", "standard")
-        self._raster_contour_seg = Segmented(
-            ["Standardowy", "Z poświatą", "Ciasny"],
-            default=_rc_map.get(_rc_saved, "Standardowy"),
+        # Row: Użyj linii cięcia z pliku — dla PDF z cutpathem (CorelDraw/AI
+        # eksport z czerwoną linią docięcia). Bierze stroke-only drawings jako
+        # cut_segments zamiast auto-detekcji. Domyślnie wyłączone.
+        self._use_src_cutpath_cb = QCheckBox("Użyj linii cięcia z pliku")
+        self._use_src_cutpath_cb.setChecked(
+            bool(_saved.get("use_source_cutpath", False))
         )
-        self._raster_contour_seg.setToolTip(
-            "Standardowy — domyślny algorytm (threshold 50).\n"
-            "Z poświatą — dla plików z halo/glow/rozproszonymi elementami\n"
-            "  (np. gwiazdki wokół postaci). Niski threshold + closing 5px.\n"
-            "Ciasny — linia cięcia blisko widocznej treści (threshold 150,\n"
-            "  ignoruje faint shadow/tło)."
+        self._use_src_cutpath_cb.setToolTip(
+            "Gdy zaznaczone — bierze stroke-only drawings z PDF jako linię\n"
+            "cięcia (np. czerwoną/magenta linię docięcia z CorelDraw).\n"
+            "Offsetuje ją o bleed_mm i generuje CutContour/FlexCut.\n"
+            "Fallback na auto-detekcję gdy plik nie ma stroke-only drawings."
         )
-        row_contour.addWidget(self._raster_contour_seg)
-        row_contour.addSpacing(16)
-
-        # Zmniejsz obrys — cofnięcie linii do wewnątrz alpha-mask (dla plików
-        # Canva z halo: shrink ~3mm daje cięcie na granicy halo/grafika)
-        row_contour.addWidget(self._field_label("Zmniejsz"))
-        self._shrink_spin = QDoubleSpinBox()
-        self._shrink_spin.setRange(0.0, 20.0)
-        self._shrink_spin.setSingleStep(0.5)
-        self._shrink_spin.setDecimals(1)
-        self._shrink_spin.setValue(float(_saved.get("contour_shrink_mm", 0.0)))
-        self._shrink_spin.setFixedWidth(80)
-        self._shrink_spin.setProperty("variant", "mono")
-        self._shrink_spin.setToolTip(
-            "Cofnięcie linii cięcia o X mm do wewnątrz alpha-mask.\n"
-            "0 = bez cofania (domyślne).\n"
-            "~3mm dla plików Canva z halo — linia trafia na granicę\n"
-            "  halo/grafika zamiast zewnętrznej krawędzi halo."
-        )
-        row_contour.addWidget(self._shrink_spin)
-        row_contour.addWidget(UnitLabel("mm"))
-        row_contour.addStretch(1)
-        params_card.body.addLayout(row_contour)
+        params_card.body.addWidget(self._use_src_cutpath_cb)
 
         # Row: Crop (advanced — ukryty przy braku wysokosci)
         row_crop = QHBoxLayout()
@@ -301,9 +268,23 @@ class BleedTab(QWidget):
     # --- Public API ---
 
     def clear(self):
+        """Reset do ustawień domyślnych (pliki + wszystkie kontrolki)."""
         self._file_section.clear_files()
         self._output_edit.setText("")
         self._status_label.setText("")
+        # Reset parametrów
+        self._bleed_spin.setValue(int(round(float(DEFAULT_BLEED_MM))))
+        self._cutline_seg.set_value("Kiss-Cut")
+        self._black_100k_cb.setChecked(False)
+        self._sharp_edges_cb.setChecked(False)
+        self._use_src_cutpath_cb.setChecked(False)
+        self._height_edit.setText("")
+        self._crop_cb.setChecked(False)
+        self._rb_square.setChecked(True)
+        self._radius_pct = 9
+        self._radius_label.setText("R 9%")
+        self._preflight_gate_seg.set_value("Off")
+        self._crop_offsets = {}
 
     @property
     def files(self) -> list[str]:
@@ -323,17 +304,8 @@ class BleedTab(QWidget):
         return self._crop_cb.isChecked() and self._parse_height() is not None
 
     @property
-    def raster_contour_mode(self) -> str:
-        m = {
-            "Standardowy": "standard",
-            "Z poświatą": "glow",
-            "Ciasny": "tight",
-        }
-        return m.get(self._raster_contour_seg.value(), "standard")
-
-    @property
-    def raster_contour_shrink_mm(self) -> float:
-        return float(self._shrink_spin.value())
+    def use_source_cutpath(self) -> bool:
+        return self._use_src_cutpath_cb.isChecked()
 
     @property
     def crop_shape(self) -> str:
@@ -479,8 +451,7 @@ class BleedTab(QWidget):
             "bleed_mm": self.bleed_mm,
             "cutline_mode": self.cutline_mode,
             "sharp_edges": self._sharp_edges_cb.isChecked(),
-            "raster_contour_mode": self.raster_contour_mode,
-            "contour_shrink_mm": self.raster_contour_shrink_mm,
+            "use_source_cutpath": self.use_source_cutpath,
             "preflight_gate": gate,
         }})
 
@@ -506,8 +477,7 @@ class BleedTab(QWidget):
             crop_offsets=dict(self._crop_offsets),
             radius_pct=self._radius_pct,
             raster_mode=("sharp" if self._sharp_edges_cb.isChecked() else "smooth"),
-            raster_contour_mode=self.raster_contour_mode,
-            raster_contour_shrink_mm=self.raster_contour_shrink_mm,
+            use_source_cutpath=self.use_source_cutpath,
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)

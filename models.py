@@ -81,6 +81,17 @@ class Sticker:
     # Colorspace źródłowego PDF (True = DeviceCMYK, False = DeviceRGB/inne)
     is_cmyk: bool = False
 
+    # True = cut_segments pochodzi z linii cięcia w pliku źródłowym (stroke-only
+    # drawing), nie z auto-detekcji. Export: render source (OCG stroke-only OFF)
+    # + mask do bleed_segments (= cut_segments offset). Spad = real source content
+    # w pasie bleed_mm poza cut line, reszta odrzucona (żadnej dilation/fake bleed).
+    from_source_cutpath: bool = False
+
+    # Bbox cutpath w coords oryginalnej strony (bb_x0, bb_y0, bb_x1, bb_y1) w pt.
+    # Używane w export przy from_source_cutpath=True do rerenderu page.get_pixmap
+    # z clip_rect odpowiednio rozszerzonym o bleed_mm.
+    _src_cutpath_bbox: tuple[float, float, float, float] | None = None
+
     def __post_init__(self):
         if self.width_mm < 0 or self.height_mm < 0:
             log.warning(f"Sticker z ujemnymi wymiarami: {self.width_mm}×{self.height_mm}mm")

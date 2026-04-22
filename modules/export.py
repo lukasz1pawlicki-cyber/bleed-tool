@@ -1363,6 +1363,158 @@ def setup_separation_colorspace(
     return cs_resource_name
 
 
+def _render_source_cutpath_layer(
+    sticker, out_page: fitz.Page, bleed_pts: float, out_w: float, out_h: float
+) -> None:
+    """Vector embed source PDF clipped to bleed_segments + removed strokes.
+
+    Implementacja:
+      1. pikepdf otwiera source → parsuje content stream operatorami
+      2. Usuwa stroke-only drawings (`S` / `s` bez `f`/`F`/`B`/`b` w danym q/Q)
+      3. Zapisuje do temp PDF z dodanym clip path w content stream (bleed_segments)
+      4. PyMuPDF show_pdf_page embeduje wyczyszczony source — clipping
+         naturalnie ucina wszystko poza bleed_segments (PDF `W n` = hard clip)
+
+    Brak rasteryzacji → brak AA artefaktów / inpaint fake content.
+    """
+    import pikepdf
+    doc_src = sticker.pdf_doc
+    bbox = sticker._src_cutpath_bbox
+    if bbox is None:
+        raise ValueError("from_source_cutpath: brak _src_cutpath_bbox")
+    bb_x0, bb_y0, bb_x1, bb_y1 = bbox
+
+    # Scale ratio (gdy user zadał target_height_mm)
+    orig_w_pt = max(bb_x1 - bb_x0, 1e-6)
+    orig_h_pt = max(bb_y1 - bb_y0, 1e-6)
+    scale_x = sticker.page_width_pt / orig_w_pt
+    scale_y = sticker.page_height_pt / orig_h_pt
+    src_bleed_x = bleed_pts / scale_x
+    src_bleed_y = bleed_pts / scale_y
+
+    # === pikepdf: clean source (remove stroke-only) ===
+    import io
+    src_bytes = doc_src.tobytes()
+    pike = pikepdf.open(io.BytesIO(src_bytes))
+    pike_page = pike.pages[sticker.page_index]
+    ops = list(pikepdf.parse_content_stream(pike_page))
+    cleaned_ops = _remove_stroke_only_blocks(ops)
+    cleaned_bytes_pdf = pikepdf.unparse_content_stream(cleaned_ops)
+    pike_page.Contents = pike.make_stream(cleaned_bytes_pdf)
+    buf = io.BytesIO()
+    pike.save(buf)
+    pike.close()
+    cleaned_doc = fitz.open(stream=buf.getvalue(), filetype="pdf")
+
+    # === Render cleaned source @ 300 DPI w obszarze bleed bbox ===
+    # get_pixmap z clip_rect PRAWDZIWIE ogranicza render do bbox. Content spoza
+    # (np. iskierki Canva w rogach strony) nie jest renderowany. W przeciwieństwie
+    # do show_pdf_page+clip, który przy opakowaniu w polygon clip-path potrafił
+    # przecieczać content spoza bbox (udokumentowane testami T1/T3).
+    clip_rect = fitz.Rect(bb_x0 - src_bleed_x, bb_y0 - src_bleed_y,
+                          bb_x1 + src_bleed_x, bb_y1 + src_bleed_y)
+    RENDER_DPI = 300
+    render_scale = RENDER_DPI / 72.0
+    cleaned_page = cleaned_doc[sticker.page_index]
+    pix = cleaned_page.get_pixmap(
+        matrix=fitz.Matrix(render_scale, render_scale),
+        clip=clip_rect, alpha=False,
+    )
+    w_px, h_px = pix.width, pix.height
+    rgb_arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(h_px, w_px, 3)
+    cleaned_doc.close()
+
+    # === HARD alpha mask z bleed_segments polygon ===
+    from PIL import ImageDraw as _ImageDraw
+    px_per_pt = w_px / out_w
+    py_per_pt = h_px / out_h
+    polygon_px = []
+    for s in sticker.bleed_segments:
+        if s[0] == 'l':
+            polygon_px.append(
+                ((float(s[1][0]) + bleed_pts) * px_per_pt,
+                 (float(s[1][1]) + bleed_pts) * py_per_pt))
+            polygon_px.append(
+                ((float(s[2][0]) + bleed_pts) * px_per_pt,
+                 (float(s[2][1]) + bleed_pts) * py_per_pt))
+        elif s[0] == 'c':
+            p0, cp1, cp2, p3 = s[1], s[2], s[3], s[4]
+            for t_step in range(17):
+                t = t_step / 16.0
+                mt = 1 - t
+                x = (mt**3 * p0[0] + 3 * mt**2 * t * cp1[0]
+                     + 3 * mt * t**2 * cp2[0] + t**3 * p3[0])
+                y = (mt**3 * p0[1] + 3 * mt**2 * t * cp1[1]
+                     + 3 * mt * t**2 * cp2[1] + t**3 * p3[1])
+                polygon_px.append(
+                    ((x + bleed_pts) * px_per_pt,
+                     (y + bleed_pts) * py_per_pt))
+    mask_pil = PILImage.new("L", (w_px, h_px), 0)
+    if polygon_px:
+        _ImageDraw.Draw(mask_pil).polygon(polygon_px, fill=255)
+
+    rgba_arr = np.empty((h_px, w_px, 4), dtype=np.uint8)
+    rgba_arr[:, :, :3] = rgb_arr
+    rgba_arr[:, :, 3] = np.array(mask_pil)
+
+    with _SafeTempPng(".png") as tmp:
+        PILImage.fromarray(rgba_arr, 'RGBA').save(tmp.name)
+        out_page.insert_image(
+            fitz.Rect(0, 0, out_w, out_h),
+            filename=tmp.name, keep_proportion=False,
+        )
+    log.info(
+        f"Source cutpath: raster clip@bbox {w_px}×{h_px}px + polygon alpha. "
+        f"Spoza bleed bbox nie renderowane (get_pixmap clip)."
+    )
+
+
+def _remove_stroke_only_blocks(ops):
+    """Usuwa stroke-only drawing ops z pikepdf content stream.
+
+    Każdy op to tuple (operands, Operator). Szukamy bloków `q ... Q` które
+    TRANSITIVELY zawierają `S`/`s` (stroke) ale nie zawierają `f`/`F`/`B`/`b`
+    (fill), `Do` (image/form reference) ani tekstu (`Tj`/`TJ`/`'`/`"`).
+    Takie bloki to cut lines — usuwane w całości (włącznie z zagnieżdżonymi
+    wrapperami samego setupu).
+    """
+    FILL_OPS = {'f', 'F', 'f*', 'B', 'B*', 'b', 'b*'}
+    STROKE_OPS = {'S', 's'}
+    # Operatory świadczące o "realnej" zawartości (poza stroke-only ścieżką)
+    CONTENT_OPS = {'Do', 'sh', 'Tj', 'TJ', "'", '"'}
+    result = []
+    q_stack = []  # (index_w_result_dla_q, set_operatorów_transitywnie)
+    for op in ops:
+        operator = op[1]
+        op_name = str(operator)
+
+        if op_name == 'q':
+            q_stack.append((len(result), set()))
+            result.append(op)
+        elif op_name == 'Q':
+            if q_stack:
+                q_idx, inner_names = q_stack.pop()
+                has_stroke = bool(inner_names & STROKE_OPS)
+                has_fill = bool(inner_names & FILL_OPS)
+                has_content = bool(inner_names & CONTENT_OPS)
+                if has_stroke and not has_fill and not has_content:
+                    # Stroke-only → usuń cały blok q..Q
+                    result = result[:q_idx]
+                else:
+                    result.append(op)
+                # Propaguj TRANSITIVELY do rodzica — rodzic bez innej
+                # zawartości też jest stroke-only orphan i powinien być usunięty.
+                if q_stack:
+                    q_stack[-1][1].update(inner_names)
+            else:
+                result.append(op)
+        else:
+            if q_stack:
+                q_stack[-1][1].add(op_name)
+            result.append(op)
+    return result
+
+
 def _fix_content_stream_newlines(doc: fitz.Document, page: fitz.Page) -> None:
     """Zapewnia newline na końcu KAŻDEGO content stream na stronie.
 
@@ -1699,6 +1851,54 @@ def export_single_sticker(
     # Tworzenie PDF wyjściowego
     doc_out = fitz.open()
     out_page = doc_out.new_page(width=out_w, height=out_h)
+
+    # ========================================================================
+    # ŚCIEŻKA from_source_cutpath — linia cięcia z pliku
+    # ========================================================================
+    # Aktywna TYLKO gdy GUI "użyj linii cięcia z pliku" jest zaznaczone.
+    # Bleed = REAL source graphic w pasie bleed_mm poza cut line, reszta
+    # odrzucona. Zero dilation / fake bleed.
+    if getattr(sticker, 'from_source_cutpath', False) and sticker.pdf_doc is not None:
+        _render_source_cutpath_layer(sticker, out_page, bleed_pts, out_w, out_h)
+        # Warstwa 3: CutContour/FlexCut spot
+        if cutcontour:
+            if cutline_mode == "flexcut":
+                _spot_name = SPOT_COLOR_FLEXCUT
+                _spot_cmyk = SPOT_CMYK_FLEXCUT
+                _label = "FlexCut"
+            else:
+                _spot_name = SPOT_COLOR_CUTCONTOUR
+                _spot_cmyk = SPOT_CMYK_CUTCONTOUR
+                _label = "CutContour"
+            _cs_name = setup_separation_colorspace(
+                doc_out, out_page, _spot_name, cmyk_alternate=_spot_cmyk
+            )
+            _cut_stream = build_cutcontour_stream(
+                sticker.cut_segments, bleed_pts, out_h, _cs_name
+            )
+            inject_content_stream(doc_out, out_page, _cut_stream)
+            log.info(f"Warstwa 3: {_label} — OK (source cutpath)")
+        _fix_content_stream_newlines(doc_out, doc_out[0])
+        from modules.pdf_metadata import apply_pdfx4
+        try:
+            apply_pdfx4(doc_out, bleed_mm=bleed_mm)
+        except Exception as e:
+            log.warning(f"PDF/X-4 metadata (source cutpath): {e}")
+        doc_out.save(output_path, deflate=True, garbage=3)
+        doc_out.close()
+        log.info(f"Zapisano [source cutpath]: {output_path}")
+        return {
+            'source_path': sticker.source_path,
+            'output_path': output_path,
+            'white_path': None,
+            'page_size_mm': (sticker.width_mm, sticker.height_mm),
+            'output_size_mm': (out_w * PT_TO_MM, out_h * PT_TO_MM),
+            'bleed_mm': bleed_mm,
+            'num_cut_segments': len(sticker.cut_segments),
+            'num_bleed_segments': len(sticker.bleed_segments),
+            'edge_color_rgb': sticker.edge_color_rgb,
+            'edge_color_cmyk': sticker.edge_color_cmyk,
+        }
 
     # --- WARSTWA 1+2: Bleed + grafika ---
     _is_raster_only_pdf = (

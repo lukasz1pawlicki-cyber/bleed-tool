@@ -86,7 +86,8 @@ def is_cache_enabled() -> bool:
     return os.environ.get("BLEED_NO_CACHE", "").strip() not in ("1", "true", "yes")
 
 
-def _compute_key(file_path: str, engine: str) -> str:
+def _compute_key(file_path: str, engine: str,
+                 use_source_cutpath: bool = False) -> str:
     """sha1(realpath + mtime_ns + size + engine + raster_mode + cache_ver + algo_sig).
 
     Uzywamy mtime_ns + size pliku wejsciowego (szybkie, nie czytamy zawartosci).
@@ -117,6 +118,7 @@ def _compute_key(file_path: str, engine: str) -> str:
     raw = (
         f"{canonical}|{st.st_mtime_ns}|{st.st_size}|{engine}"
         f"|raster:{raster_mode}|rc:{raster_contour_mode}|shr:{shrink_mm:.2f}"
+        f"|srcCut:{int(use_source_cutpath)}"
         f"|v{_CACHE_VERSION}|algo:{algo_sig}"
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -147,6 +149,7 @@ def _serialize_sticker(sticker) -> dict:
         "cutline_mode": sticker.cutline_mode,
         "is_artwork_on_artboard": sticker.is_artwork_on_artboard,
         "is_cmyk": sticker.is_cmyk,
+        "from_source_cutpath": sticker.from_source_cutpath,
     }
 
 
@@ -169,6 +172,7 @@ def _deserialize_sticker(data: dict):
         cutline_mode=data.get("cutline_mode", "kiss-cut"),
         is_artwork_on_artboard=data.get("is_artwork_on_artboard", False),
         is_cmyk=data.get("is_cmyk", False),
+        from_source_cutpath=data.get("from_source_cutpath", False),
     )
 
 
@@ -176,7 +180,8 @@ def _deserialize_sticker(data: dict):
 # PUBLIC API
 # ============================================================================
 
-def load(file_path: str, engine: str) -> list | None:
+def load(file_path: str, engine: str,
+         use_source_cutpath: bool = False) -> list | None:
     """Probuje zaladowac stickers z cache.
 
     Zwraca list[Sticker] (bez pdf_doc — trzeba go osobno zaladowac)
@@ -184,7 +189,7 @@ def load(file_path: str, engine: str) -> list | None:
     """
     if not is_cache_enabled():
         return None
-    key = _compute_key(file_path, engine)
+    key = _compute_key(file_path, engine, use_source_cutpath)
     if not key:
         return None
     cf = _cache_file(key)
@@ -221,11 +226,12 @@ def load(file_path: str, engine: str) -> list | None:
     return stickers
 
 
-def save(file_path: str, engine: str, stickers: list) -> None:
+def save(file_path: str, engine: str, stickers: list,
+         use_source_cutpath: bool = False) -> None:
     """Zapisuje stickers do cache (best-effort — bledy nie propagują)."""
     if not is_cache_enabled():
         return
-    key = _compute_key(file_path, engine)
+    key = _compute_key(file_path, engine, use_source_cutpath)
     if not key:
         return
     cf = _cache_file(key)

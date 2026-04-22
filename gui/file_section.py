@@ -38,39 +38,27 @@ class DropZone(QFrame):
         self.setObjectName("DropZone")
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(84)
+        # Kompaktowa wysokość — ma zajmować ~20% kolumny plików
+        self.setFixedHeight(56)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(14)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(10)
 
-        # Ikona tile 46x46
+        # Ikona mała
         icon = QLabel("↑")
-        icon.setFixedSize(46, 46)
+        icon.setFixedSize(30, 30)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(
-            "background:#FFFFFF;border:1px solid #E2E5ED;border-radius:10px;"
-            "color:#2563EB;font-size:22px;font-weight:700;"
+            "background:#FFFFFF;border:1px solid #E2E5ED;border-radius:7px;"
+            "color:#2563EB;font-size:15px;font-weight:700;"
         )
         lay.addWidget(icon)
 
-        # Teksty
-        text_col = QVBoxLayout()
-        text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(2)
-        self._title = QLabel("Przeciągnij pliki lub kliknij aby wybrać")
+        # Tytuł (jeden wiersz, bez subtekstu)
+        self._title = QLabel("Przeciągnij pliki lub kliknij")
         self._title.setObjectName("DropZoneTitle")
-        text_col.addWidget(self._title)
-        sub = QLabel("PDF · AI · SVG · EPS · PNG · JPG · TIFF")
-        sub.setObjectName("DropZoneSub")
-        text_col.addWidget(sub)
-        lay.addLayout(text_col, stretch=1)
-
-        # Hotkey pill
-        pill = QLabel("⌘O")
-        pill.setObjectName("DropZoneHotkey")
-        pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(pill, alignment=Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self._title, stretch=1)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -118,6 +106,10 @@ class FileSection(QWidget):
         # path -> (status, issue_msg | None)
         self._file_status: dict[str, tuple[str, str | None]] = {}
 
+        # Drag-and-drop obsłużony przez cały FileSection — user może upuścić
+        # plik w DOWOLNE miejsce kolumny, nie tylko w DropZone
+        self.setAcceptDrops(True)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
@@ -131,7 +123,7 @@ class FileSection(QWidget):
         self._scroll = QScrollArea()
         self._scroll.setObjectName("FileListScroll")
         self._scroll.setWidgetResizable(True)
-        self._scroll.setMaximumHeight(196)
+        # Bez maksymalnej wysokości — lista wypełnia pozostałe ~80% kolumny
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet(
             "QScrollArea{background:#FFFFFF;border:1px solid #E2E5ED;border-radius:8px;}"
@@ -143,20 +135,28 @@ class FileSection(QWidget):
         self._list_layout.setSpacing(0)
         self._list_layout.addStretch()
         self._scroll.setWidget(self._list_widget)
-        self._scroll.setVisible(False)
-        layout.addWidget(self._scroll)
+        # Scroll zawsze visible (zarezerwowane miejsce) — bez tego bar "skacze"
+        # gdy lista rośnie z 0 plików.
+        layout.addWidget(self._scroll, stretch=1)
 
-        # === Filebar: licznik + Wyczysc ===
+        # === Filebar: [Wyczyść] [licznik centered] [spacer] ===
+        # Wyśrodkowany licznik przez 3-kolumnowy bar: przycisk po lewej, licznik
+        # w środku (stretch), spacer po prawej o tej samej szerokości co przycisk.
         bar = QHBoxLayout()
-        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setContentsMargins(8, 6, 8, 6)
         bar.setSpacing(8)
-        self._count_label = QLabel("0 plików")
-        self._count_label.setObjectName("FileBarCount")
-        bar.addWidget(self._count_label)
-        bar.addStretch(1)
         clear_btn = make_button("Wyczyść", variant="danger", size="sm")
         clear_btn.clicked.connect(self._on_clear_clicked)
+        clear_btn.setFixedWidth(86)
         bar.addWidget(clear_btn)
+        self._count_label = QLabel("0 plików")
+        self._count_label.setObjectName("FileBarCount")
+        self._count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bar.addWidget(self._count_label, stretch=1)
+        # Spacer symetryczny do przycisku dla wyśrodkowania licznika
+        from PyQt6.QtWidgets import QSpacerItem
+        bar.addSpacerItem(QSpacerItem(86, 0, QSizePolicy.Policy.Fixed,
+                                      QSizePolicy.Policy.Minimum))
         layout.addLayout(bar)
 
     # --- Public API ---
@@ -264,11 +264,7 @@ class FileSection(QWidget):
             issue_lbl.setObjectName("FileIssueErr" if status == "err" else "FileIssueWarn")
             issue_lbl.setToolTip(issue)
             ns.addWidget(issue_lbl)
-        else:
-            meta_lbl = QLabel(os.path.dirname(filepath) or "")
-            meta_lbl.setObjectName("FileMeta")
-            meta_lbl.setToolTip(filepath)
-            ns.addWidget(meta_lbl)
+        # Bez dirname/path — tylko nazwa pliku (user-request)
 
         hl.addWidget(name_stack, stretch=1)
 
@@ -307,7 +303,27 @@ class FileSection(QWidget):
         if err:
             parts.append(f"{err} błąd")
         self._count_label.setText(" · ".join(parts))
-        self._scroll.setVisible(n > 0)
+        # Scroll zawsze visible — bez przeskakiwania layoutu
 
     def _on_copies_change(self, filepath: str, value: int):
         self._file_copies[filepath] = max(1, int(value))
+
+    # --- Drag-and-drop na całą kolumnę ---
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        paths = []
+        for url in event.mimeData().urls():
+            p = url.toLocalFile()
+            if p and os.path.splitext(p)[1].lower() in _SUPPORTED_EXT:
+                paths.append(p)
+        if paths:
+            self._add_files(paths)
+            event.acceptProposedAction()
