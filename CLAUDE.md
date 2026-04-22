@@ -299,6 +299,33 @@ set_mediabox(cropbox ± bleed) → show_pdf_page()
 ```
 MediaBox musi być wokół CropBox, nie wokół (0,0).
 
+### 6. Source-cutpath alpha mask (export.py) — NIE ZMIENIAJ
+```
+cv2.fillPoly(cut_segments) → cv2.dilate(kernel=ellipse, bleed_pts px)
+```
+**KRYTYCZNE**: tylko dla ścieżki `from_source_cutpath=True` (checkbox
+„użyj linii cięcia z pliku"). Maska alpha rastra źródła MUSI być budowana
+z `cut_segments` + dilacja o `bleed_pts` pikseli — NIE z `bleed_segments`.
+
+Powód: `offset_segments()` (bleed.py) na wypukłych/ostrych narożnikach
+produkuje self-intersection loops (pętle refit Béziera). Gdy taki polygon
+rasteryzuje się przez `PIL.ImageDraw.polygon` z regułą even-odd, loops
+tworzą DZIURY w masce w kształcie iskierek/gwiazdek — użytkownik widzi
+białe punkty w strefie bleedu (bug „iskierek", folia błyszcząca 2026-04-21).
+
+Rozwiązanie: cut_segments jest zawsze clean (pochodzi wprost ze źródła
+bez refit). Dilacja cv2 o `bleed_pts` pikseli daje identyczny geometrycznie
+efekt co offset polygon, ale BEZ self-intersections → bez dziur.
+
+Nie używaj: `PIL.polygon(bleed_segments)` (iskierki), `cv2.fillPoly(bleed_segments)`
+(podobnie podatne na holes przy self-int), PDF-level `W n` z bleed_segments
+(rasterizer RIP też produkuje dziury regułą even-odd).
+
+Test regresyjny: `tests/test_source_cutpath_mask.py` — PDF z gwiazdkową
+linią cięcia (7-point, ostre punkty → offset 100% self-intersecting).
+Weryfikuje: brak wewnętrznych dziur w alpha mask + brak białych pikseli
+w visible raster area.
+
 ---
 
 ## Konwersja jednostek

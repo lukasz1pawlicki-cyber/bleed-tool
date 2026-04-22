@@ -1424,38 +1424,51 @@ def _render_source_cutpath_layer(
     rgb_arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(h_px, w_px, 3)
     cleaned_doc.close()
 
-    # === HARD alpha mask z bleed_segments polygon ===
-    from PIL import ImageDraw as _ImageDraw
+    # === HARD alpha mask — CUT polygon + dilacja o bleed_pts ===
+    # UWAGA: poprzednio rasteryzowaliśmy bleed_segments (offset polygon) przez
+    # PIL.polygon, ale offset refit Béziera produkuje self-intersection loops
+    # na wypukłych narożnikach → PIL rysuje je regułą even-odd → DZIURY w masce
+    # w kształcie gwiazdek/iskierek, które użytkownik widział jako białe punkty.
+    # Rozwiązanie: rasteryzuj CUT polygon (zawsze clean, bez loops) i rozszerz
+    # morfologicznie o bleed_pts pikseli. Identyczny efekt co offset, bez holes.
+    import cv2 as _cv2
     px_per_pt = w_px / out_w
     py_per_pt = h_px / out_h
-    polygon_px = []
-    for s in sticker.bleed_segments:
+    cut_px = []
+    for s in sticker.cut_segments:
         if s[0] == 'l':
-            polygon_px.append(
+            cut_px.append(
                 ((float(s[1][0]) + bleed_pts) * px_per_pt,
                  (float(s[1][1]) + bleed_pts) * py_per_pt))
-            polygon_px.append(
+            cut_px.append(
                 ((float(s[2][0]) + bleed_pts) * px_per_pt,
                  (float(s[2][1]) + bleed_pts) * py_per_pt))
         elif s[0] == 'c':
             p0, cp1, cp2, p3 = s[1], s[2], s[3], s[4]
-            for t_step in range(17):
-                t = t_step / 16.0
+            for t_step in range(33):
+                t = t_step / 32.0
                 mt = 1 - t
                 x = (mt**3 * p0[0] + 3 * mt**2 * t * cp1[0]
                      + 3 * mt * t**2 * cp2[0] + t**3 * p3[0])
                 y = (mt**3 * p0[1] + 3 * mt**2 * t * cp1[1]
                      + 3 * mt * t**2 * cp2[1] + t**3 * p3[1])
-                polygon_px.append(
+                cut_px.append(
                     ((x + bleed_pts) * px_per_pt,
                      (y + bleed_pts) * py_per_pt))
-    mask_pil = PILImage.new("L", (w_px, h_px), 0)
-    if polygon_px:
-        _ImageDraw.Draw(mask_pil).polygon(polygon_px, fill=255)
+    mask_arr = np.zeros((h_px, w_px), dtype=np.uint8)
+    if cut_px:
+        pts = np.array([[round(x), round(y)] for x, y in cut_px], dtype=np.int32)
+        _cv2.fillPoly(mask_arr, [pts], 255)
+        # Dilacja o bleed_pts pikseli — identyczny efekt co offset polygon
+        bleed_px = int(round(bleed_pts * (px_per_pt + py_per_pt) / 2))
+        if bleed_px > 0:
+            k = 2 * bleed_px + 1
+            kernel = _cv2.getStructuringElement(_cv2.MORPH_ELLIPSE, (k, k))
+            mask_arr = _cv2.dilate(mask_arr, kernel)
 
     rgba_arr = np.empty((h_px, w_px, 4), dtype=np.uint8)
     rgba_arr[:, :, :3] = rgb_arr
-    rgba_arr[:, :, 3] = np.array(mask_pil)
+    rgba_arr[:, :, 3] = mask_arr
 
     with _SafeTempPng(".png") as tmp:
         PILImage.fromarray(rgba_arr, 'RGBA').save(tmp.name)
