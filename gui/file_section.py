@@ -242,8 +242,9 @@ class FileSection(QWidget):
         ext_lbl.setObjectName("FileExtTag")
         hl.addWidget(ext_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        # Kopie + wysokość — PRZED nazwa (po lewej). Fixed widths — kolumny
-        # muszą być stabilne, żeby wiersze wyglądały jak siatka.
+        # Kopie + wysokość — PRZED nazwa (po lewej). setFixedSize(w,h) blokuje
+        # WSZYSTKIE wymiary (Qt nie przelicza sizeHint dynamicznie na podstawie
+        # specialValueText czy sufiksu → kolumny stabilne).
         if self._show_copies:
             from PyQt6.QtWidgets import QDoubleSpinBox
             spin = QSpinBox()
@@ -252,7 +253,7 @@ class FileSection(QWidget):
             spin.setMaximum(9999)
             spin.setValue(self._file_copies.get(filepath, 1))
             spin.setToolTip("Liczba kopii")
-            spin.setFixedWidth(42)
+            spin.setFixedSize(36, 22)
             spin.valueChanged.connect(
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
@@ -262,16 +263,16 @@ class FileSection(QWidget):
             hspin.setObjectName("HeightSpin")
             hspin.setDecimals(1)
             hspin.setMinimum(0.0)   # 0 = auto (puste)
-            hspin.setMaximum(9999.0)
-            hspin.setSingleStep(1.0)
-            hspin.setSuffix(" mm")
+            hspin.setMaximum(999.9)
+            hspin.setSingleStep(0.5)
             hspin.setSpecialValueText("auto")
-            h_val = self._file_height_mm.get(filepath)
-            hspin.setValue(0.0 if h_val is None else float(h_val))
-            hspin.setToolTip("Wysokość naklejki (mm). 'auto' = oryginalna / globalna")
-            hspin.setFixedWidth(80)
+            # Wewnętrznie trzymamy mm, user wpisuje cm → konwersja *10 / *0.1
+            h_mm = self._file_height_mm.get(filepath)
+            hspin.setValue(0.0 if h_mm is None else float(h_mm) / 10.0)
+            hspin.setToolTip("Wysokość naklejki w cm. 'auto' = oryginalna / globalna")
+            hspin.setFixedSize(58, 22)
             hspin.valueChanged.connect(
-                lambda v, p=filepath: self._on_height_change(p, v)
+                lambda v_cm, p=filepath: self._on_height_change(p, v_cm)
             )
             hl.addWidget(hspin, alignment=Qt.AlignmentFlag.AlignVCenter)
 
@@ -336,12 +337,12 @@ class FileSection(QWidget):
     def _on_copies_change(self, filepath: str, value: int):
         self._file_copies[filepath] = max(1, int(value))
 
-    def _on_height_change(self, filepath: str, value: float):
-        # 0.0 = special "auto" → brak override
-        if value <= 0.0:
+    def _on_height_change(self, filepath: str, value_cm: float):
+        # 0.0 = special "auto" → brak override. UI w cm, storage w mm.
+        if value_cm <= 0.0:
             self._file_height_mm.pop(filepath, None)
         else:
-            self._file_height_mm[filepath] = float(value)
+            self._file_height_mm[filepath] = float(value_cm) * 10.0
 
     # --- Drag-and-drop na całą kolumnę ---
 

@@ -483,34 +483,30 @@ QFrame#StatusDot[state="ok"]   { background: #059669; }
 QFrame#StatusDot[state="warn"] { background: #D97706; }
 QFrame#StatusDot[state="err"]  { background: #DC2626; }
 
-/* Copies spinner (inline) */
+/* Copies spinner (inline) — rozmiar wymuszony przez setFixedSize w Pythonie */
 QSpinBox#CopiesSpin {
     background: #FFFFFF;
     border: 1px solid #E2E5ED;
-    border-radius: 6px;
-    min-height: 20px; max-height: 20px;
-    min-width: 38px; max-width: 42px;
+    border-radius: 5px;
     font-family: "JetBrains Mono", monospace;
     font-size: 10.5px;
-    padding: 0 12px 0 3px;  /* miejsce na up/down buttons */
+    padding: 0 11px 0 2px;  /* 11px prawy reserve na strzalki */
 }
 QSpinBox#CopiesSpin::up-button, QSpinBox#CopiesSpin::down-button {
-    width: 14px;
+    width: 11px;
 }
 
 /* Height per-file spinner (inline) */
 QDoubleSpinBox#HeightSpin {
     background: #FFFFFF;
     border: 1px solid #E2E5ED;
-    border-radius: 6px;
-    min-height: 20px; max-height: 20px;
-    min-width: 70px; max-width: 80px;
+    border-radius: 5px;
     font-family: "JetBrains Mono", monospace;
     font-size: 10.5px;
-    padding: 0 12px 0 3px;
+    padding: 0 11px 0 2px;
 }
 QDoubleSpinBox#HeightSpin::up-button, QDoubleSpinBox#HeightSpin::down-button {
-    width: 14px;
+    width: 11px;
 }
 
 QPushButton#RemoveRowBtn {
