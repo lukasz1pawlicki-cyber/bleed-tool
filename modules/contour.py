@@ -2226,30 +2226,31 @@ def _build_sticker_from_source_cutpath(
     if not segs:
         return None
 
-    # Bbox segmentów: używamy drawing.rect (uwzględnia control points Béziera)
-    # żeby objąć pełny zasięg rysowanej linii. Bez tego cut_segments byłyby
-    # shifted w środek, bo on-curve points (p0, p3) dają tight bbox węższy
-    # niż rzeczywista linia (krzywe wybrzuszają się poza end-points).
-    draw_rects = [d.get('rect') for d in stroke_only if d.get('rect')]
-    if draw_rects:
-        bb_x0 = min(r.x0 for r in draw_rects)
-        bb_y0 = min(r.y0 for r in draw_rects)
-        bb_x1 = max(r.x1 for r in draw_rects)
-        bb_y1 = max(r.y1 for r in draw_rects)
-    else:
-        # Fallback: on-curve bbox
-        xs, ys = [], []
-        for s in segs:
-            if s[0] == 'l':
-                xs += [float(s[1][0]), float(s[2][0])]
-                ys += [float(s[1][1]), float(s[2][1])]
-            elif s[0] == 'c':
-                xs += [float(s[1][0]), float(s[4][0])]
-                ys += [float(s[1][1]), float(s[4][1])]
-        if not xs or not ys:
-            return None
-        bb_x0, bb_x1 = min(xs), max(xs)
-        bb_y0, bb_y1 = min(ys), max(ys)
+    # Bbox segmentów: sampluj KRZYWĄ (nie control points, nie drawing.rect).
+    # drawing.rect zawiera control points → overestimate → białe pole wokół
+    # naklejki. On-curve points (p0, p3) → underestimate gdy krzywa wybrzusza
+    # się między nimi. Sampling 32 punktów per krzywa daje tight bbox
+    # rzeczywistej linii cięcia.
+    xs, ys = [], []
+    for s in segs:
+        if s[0] == 'l':
+            xs += [float(s[1][0]), float(s[2][0])]
+            ys += [float(s[1][1]), float(s[2][1])]
+        elif s[0] == 'c':
+            p0, cp1, cp2, p3 = s[1], s[2], s[3], s[4]
+            for t_step in range(33):
+                t = t_step / 32.0
+                mt = 1 - t
+                x = (mt**3 * float(p0[0]) + 3 * mt**2 * t * float(cp1[0])
+                     + 3 * mt * t**2 * float(cp2[0]) + t**3 * float(p3[0]))
+                y = (mt**3 * float(p0[1]) + 3 * mt**2 * t * float(cp1[1])
+                     + 3 * mt * t**2 * float(cp2[1]) + t**3 * float(p3[1]))
+                xs.append(x)
+                ys.append(y)
+    if not xs or not ys:
+        return None
+    bb_x0, bb_x1 = min(xs), max(xs)
+    bb_y0, bb_y1 = min(ys), max(ys)
     sticker_w_pt = bb_x1 - bb_x0
     sticker_h_pt = bb_y1 - bb_y0
     if sticker_w_pt < 5 or sticker_h_pt < 5:
