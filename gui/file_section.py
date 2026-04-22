@@ -272,14 +272,14 @@ class FileSection(QWidget):
             spin = QSpinBox()
             spin.setObjectName("CopiesSpin")
             spin.setMinimum(1)
-            spin.setMaximum(9999)
+            spin.setMaximum(999)  # 999 kopii az nadto; max wplywa na sizeHint
             spin.setValue(self._file_copies.get(filepath, 1))
             spin.setToolTip("Liczba kopii (mouse wheel lub wpisz)")
             spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # NoButtons = brak strzalek up/down → Qt sizeHint ~83px zamiast
+            # NoButtons = brak strzalek up/down → Qt sizeHint ~53px zamiast
             # ~150px. User nadal moze zmieniac wartosc kolem myszy lub wpisac.
             spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-            spin.setFixedSize(60, 28)
+            spin.setFixedSize(54, 28)
             spin.valueChanged.connect(
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
@@ -290,13 +290,13 @@ class FileSection(QWidget):
                 s.setObjectName(object_name)
                 s.setDecimals(1)
                 s.setMinimum(0.0)
-                s.setMaximum(999.9)
+                s.setMaximum(99.9)   # 99.9 cm = prawie 1m, wystarczy
                 s.setSingleStep(0.5)
                 s.setSpecialValueText("auto")
                 s.setToolTip(tooltip)
                 s.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 s.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-                s.setFixedSize(68, 28)
+                s.setFixedSize(60, 28)
                 return s
 
             hspin = _make_dim_spin(
