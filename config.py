@@ -25,6 +25,7 @@ DEFAULT_MARK_ZONE_MM = 13          # mark_offset(10) + mark_size(3) = 13mm (Summ
 SHEET_PRESETS = {
     "SRA3": (320, 450),
     "SRA3+": (330, 480),
+    "675×600": (675, 600),
 }
 
 # Presety szerokości rolek (tylko szerokość, długość wynika z rozkładu)
@@ -35,6 +36,7 @@ DEFAULT_ROLL_MAX_LENGTH_MM = 1400
 SHEET_SIZES = {
     "SRA3": (320, 450),
     "SRA3+": (330, 480),
+    "675×600": (675, 600),
     "A4": (210, 297),
     "A3": (297, 420),
     "A2": (420, 594),
