@@ -31,7 +31,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_CACHE_VERSION = 3  # zmien gdy zmienia sie format Sticker serialization
+_CACHE_VERSION = 4  # zmien gdy zmienia sie format Sticker serialization
 
 # Mtime zrodel algorytmu konturu — uzywane do auto-invalidacji cache'a
 # gdy operator zmienia kod algorytmu. Liczymy mtime WSZYSTKICH modulow
@@ -150,6 +150,7 @@ def _serialize_sticker(sticker) -> dict:
         "is_artwork_on_artboard": sticker.is_artwork_on_artboard,
         "is_cmyk": sticker.is_cmyk,
         "from_source_cutpath": sticker.from_source_cutpath,
+        "_src_cutpath_bbox": sticker._src_cutpath_bbox,
     }
 
 
@@ -173,6 +174,7 @@ def _deserialize_sticker(data: dict):
         is_artwork_on_artboard=data.get("is_artwork_on_artboard", False),
         is_cmyk=data.get("is_cmyk", False),
         from_source_cutpath=data.get("from_source_cutpath", False),
+        _src_cutpath_bbox=data.get("_src_cutpath_bbox"),
     )
 
 
