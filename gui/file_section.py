@@ -186,8 +186,21 @@ class FileSection(QWidget):
     def set_status(self, path: str, status: str, issue: str | None = None):
         if path not in self._files:
             return
+        prev = self._file_status.get(path, ("wait", None))
         self._file_status[path] = (status, issue)
-        self._rebuild_list()
+        # Rebuild tylko gdy zmieniaja sie rzeczy WIDOCZNE w wierszu:
+        # - tlo (err <-> inne) lub
+        # - obecnosc/tekst issue label
+        # Inaczej (proc/ok/wait bez issue) tylko update licznika — bez
+        # przerysowywania spinerow (zerowaly wartosci, skakal scroll).
+        visual_change = (
+            (prev[0] == "err") != (status == "err")
+            or prev[1] != issue
+        )
+        if visual_change:
+            self._rebuild_list()
+        else:
+            self._update_count()
 
     def reset_statuses(self):
         self._file_status.clear()
@@ -318,7 +331,15 @@ class FileSection(QWidget):
             row = self._build_row(filepath)
             self._list_layout.insertWidget(self._list_layout.count() - 1, row)
 
-        # Licznik ze statusami (np. "5 plików · 3 OK · 1 błąd")
+        self._update_count()
+
+    def _update_count(self):
+        """Licznik ze statusami (np. '5 plików · 3 OK · 1 błąd').
+
+        Wolane osobno przy set_status bez visual_change — update tylko
+        licznika, bez przerysowywania wierszy (spinery nie skacza,
+        scroll nie ucieka, focus/wartosci nie gina).
+        """
         n = len(self._files)
         ok = sum(1 for p in self._files if self._file_status.get(p, ("wait", None))[0] == "ok")
         err = sum(1 for p in self._files if self._file_status.get(p, ("wait", None))[0] == "err")
@@ -331,7 +352,6 @@ class FileSection(QWidget):
         if err:
             parts.append(f"{err} błąd")
         self._count_label.setText(" · ".join(parts))
-        # Scroll zawsze visible — bez przeskakiwania layoutu
 
     def _on_copies_change(self, filepath: str, value: int):
         self._file_copies[filepath] = max(1, int(value))
