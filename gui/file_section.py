@@ -242,7 +242,8 @@ class FileSection(QWidget):
         ext_lbl.setObjectName("FileExtTag")
         hl.addWidget(ext_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        # Kopie + wysokość — PRZED nazwa (po lewej)
+        # Kopie + wysokość — PRZED nazwa (po lewej). Fixed widths — kolumny
+        # muszą być stabilne, żeby wiersze wyglądały jak siatka.
         if self._show_copies:
             from PyQt6.QtWidgets import QDoubleSpinBox
             spin = QSpinBox()
@@ -251,6 +252,7 @@ class FileSection(QWidget):
             spin.setMaximum(9999)
             spin.setValue(self._file_copies.get(filepath, 1))
             spin.setToolTip("Liczba kopii")
+            spin.setFixedWidth(42)
             spin.valueChanged.connect(
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
@@ -267,6 +269,7 @@ class FileSection(QWidget):
             h_val = self._file_height_mm.get(filepath)
             hspin.setValue(0.0 if h_val is None else float(h_val))
             hspin.setToolTip("Wysokość naklejki (mm). 'auto' = oryginalna / globalna")
+            hspin.setFixedWidth(80)
             hspin.valueChanged.connect(
                 lambda v, p=filepath: self._on_height_change(p, v)
             )

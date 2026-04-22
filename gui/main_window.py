@@ -119,8 +119,8 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(0, 1)  # files: expand
         self._splitter.setStretchFactor(1, 0)  # settings: fixed
         self._splitter.setStretchFactor(2, 2)  # preview: expand more
-        # Sizes początkowe: files 420, settings ~460 (fixed), preview reszta
-        self._splitter.setSizes([420, 460, 560])
+        # Sizes początkowe: files 630 (+50% vs 420), settings ~460 (fixed), preview reszta
+        self._splitter.setSizes([630, 460, 560])
 
         root_layout.addWidget(self._splitter, stretch=1)
 
