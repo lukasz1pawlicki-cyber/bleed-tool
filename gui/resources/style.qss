@@ -486,11 +486,14 @@ QSpinBox#CopiesSpin {
     background: #FFFFFF;
     border: 1px solid #E2E5ED;
     border-radius: 6px;
-    min-height: 22px; max-height: 22px;
-    min-width: 48px; max-width: 56px;
+    min-height: 20px; max-height: 20px;
+    min-width: 38px; max-width: 42px;
     font-family: "JetBrains Mono", monospace;
-    font-size: 11px;
-    padding: 0 14px 0 4px;  /* miejsce na up/down buttons */
+    font-size: 10.5px;
+    padding: 0 12px 0 3px;  /* miejsce na up/down buttons */
+}
+QSpinBox#CopiesSpin::up-button, QSpinBox#CopiesSpin::down-button {
+    width: 14px;
 }
 
 QPushButton#RemoveRowBtn {
