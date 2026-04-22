@@ -268,15 +268,18 @@ class FileSection(QWidget):
         # Wysokość/Szerokość mutualnie wykluczajace sie — worker doliczy
         # drugi wymiar z aspect ratio po detect_contour.
         if self._show_copies:
-            from PyQt6.QtWidgets import QDoubleSpinBox
+            from PyQt6.QtWidgets import QDoubleSpinBox, QAbstractSpinBox
             spin = QSpinBox()
             spin.setObjectName("CopiesSpin")
             spin.setMinimum(1)
             spin.setMaximum(9999)
             spin.setValue(self._file_copies.get(filepath, 1))
-            spin.setToolTip("Liczba kopii")
+            spin.setToolTip("Liczba kopii (mouse wheel lub wpisz)")
             spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            spin.setFixedSize(64, 28)
+            # NoButtons = brak strzalek up/down → Qt sizeHint ~83px zamiast
+            # ~150px. User nadal moze zmieniac wartosc kolem myszy lub wpisac.
+            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            spin.setFixedSize(60, 28)
             spin.valueChanged.connect(
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
@@ -292,7 +295,8 @@ class FileSection(QWidget):
                 s.setSpecialValueText("auto")
                 s.setToolTip(tooltip)
                 s.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                s.setFixedSize(88, 28)
+                s.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+                s.setFixedSize(68, 28)
                 return s
 
             hspin = _make_dim_spin(
