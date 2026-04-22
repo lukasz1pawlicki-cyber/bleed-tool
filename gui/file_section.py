@@ -279,7 +279,7 @@ class FileSection(QWidget):
             # NoButtons = brak strzalek up/down → Qt sizeHint ~53px zamiast
             # ~150px. User nadal moze zmieniac wartosc kolem myszy lub wpisac.
             spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-            spin.setFixedSize(54, 28)
+            spin.setFixedSize(50, 28)
             spin.valueChanged.connect(
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
@@ -296,7 +296,7 @@ class FileSection(QWidget):
                 s.setToolTip(tooltip)
                 s.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 s.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-                s.setFixedSize(60, 28)
+                s.setFixedSize(50, 28)
                 return s
 
             hspin = _make_dim_spin(

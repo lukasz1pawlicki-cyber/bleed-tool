@@ -483,16 +483,16 @@ QFrame#StatusDot[state="ok"]   { background: #059669; }
 QFrame#StatusDot[state="warn"] { background: #D97706; }
 QFrame#StatusDot[state="err"]  { background: #DC2626; }
 
-/* Inline spinnery w liscie plikow — NoButtons (Python) + minimalny padding.
- * Bez strzalek Qt sizeHint spada z ~150px do ~83px, fixedSize(50/66 x 28)
- * miesci "999"/"999.9"/"auto" z marginesem. */
+/* Inline spinnery w liscie plikow — NoButtons (Python) + ZERO padding.
+ * Bez strzalek + padding:0 Qt sizeHint = 45 (Copies) / 49 (Height/Width),
+ * miesci sie w fixedSize(50x28). Natural QLineEdit margin wystarczy. */
 QSpinBox#CopiesSpin, QDoubleSpinBox#HeightSpin, QDoubleSpinBox#WidthSpin {
     background: #FFFFFF;
     border: 1px solid #E2E5ED;
     border-radius: 5px;
     font-family: "JetBrains Mono", monospace;
     font-size: 11px;
-    padding: 0 4px 0 4px;
+    padding: 0;
 }
 
 QPushButton#RemoveRowBtn {
