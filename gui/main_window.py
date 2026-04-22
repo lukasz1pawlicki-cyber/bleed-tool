@@ -90,18 +90,18 @@ class MainWindow(QMainWindow):
         )
         self._file_stack.addWidget(self._bleed_files_panel)
         self._file_stack.addWidget(self._nest_files_panel)
-        # Kolumna plików: min 470 (+30% od 360)
-        self._file_stack.setMinimumWidth(470)
+        # Kolumna plików: min 360 (mieści się na 1200px oknie obok fixed 420+ settings)
+        self._file_stack.setMinimumWidth(360)
         self._splitter.addWidget(self._file_stack)
 
         # --- Środkowa kolumna: Settings stack (fixed width) ---
-        settings_container = QWidget()
-        sc_layout = QVBoxLayout(settings_container)
+        self._settings_container = QWidget()
+        sc_layout = QVBoxLayout(self._settings_container)
         sc_layout.setContentsMargins(0, 0, 0, 0)
         sc_layout.setSpacing(0)
         self._stack = QStackedWidget()
         sc_layout.addWidget(self._stack, stretch=1)
-        self._splitter.addWidget(settings_container)
+        self._splitter.addWidget(self._settings_container)
 
         # --- Prawa kolumna: Preview stack ---
         self._preview_container = QWidget()
@@ -109,8 +109,8 @@ class MainWindow(QMainWindow):
         self._preview_layout.setContentsMargins(0, 0, 0, 0)
         self._preview_stack = QStackedWidget()
         self._preview_layout.addWidget(self._preview_stack)
-        # Preview min 520 (+30% z 400)
-        self._preview_container.setMinimumWidth(520)
+        # Preview min 360 (mieści się na 1200px oknie)
+        self._preview_container.setMinimumWidth(360)
         self._splitter.addWidget(self._preview_container)
 
         # Splitter policy
@@ -119,8 +119,8 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(0, 1)  # files: expand
         self._splitter.setStretchFactor(1, 0)  # settings: fixed
         self._splitter.setStretchFactor(2, 2)  # preview: expand more
-        # Files 546, settings fixed 480, preview 754 (+30% z 580)
-        self._splitter.setSizes([546, 480, 754])
+        # Sizes początkowe: files 420, settings ~460 (fixed), preview reszta
+        self._splitter.setSizes([420, 460, 560])
 
         root_layout.addWidget(self._splitter, stretch=1)
 
@@ -172,20 +172,30 @@ class MainWindow(QMainWindow):
         self._nest_tab._file_section.clear_requested.connect(self.clear_all)
 
     def _apply_fixed_settings_width(self):
-        """Ustawia stałą szerokość środkowej kolumny (settings) na podstawie
-        sizeHint tabs (max z Bleed i Nest) + margines.
+        """Ustawia stałą szerokość środkowej kolumny (settings).
 
-        Settings column się nie rozciąga — pliki i preview przejmują.
+        Lock na CONTAINER (nie tylko inner stack) — inaczej QSplitter pozwala
+        draggować uchwyt, container się rozciąga, a inner stack pozostaje
+        fixed → "skakanie" kontrolek przy drag. Dodatkowo blokujemy uchwyty
+        splittera (przycisków przesuwania granicy środkowej kolumny).
         """
         try:
             bleed_w = self._bleed_tab.sizeHint().width()
             nest_w = self._nest_tab.sizeHint().width()
             target = max(bleed_w, nest_w)
-            # Padding + scroll bar margin
             target = max(target + 20, 420)
-            self._stack.setFixedWidth(target)
         except Exception:
-            self._stack.setFixedWidth(460)
+            target = 460
+        self._stack.setFixedWidth(target)
+        # Container MUSI mieć fixed width — QSplitter wtedy nie pozwoli draggować.
+        self._settings_container.setFixedWidth(target)
+        # Jawnie wyłącz uchwyty splittera wokół środkowej kolumny
+        # (handle[0] = między files i settings, handle[1] = między settings i preview)
+        for i in (1, 2):
+            h = self._splitter.handle(i)
+            if h is not None:
+                h.setEnabled(False)
+                h.setCursor(Qt.CursorShape.ArrowCursor)
 
     def _on_tab_changed(self, index: int):
         key = "bleed" if index == 0 else "nest"
