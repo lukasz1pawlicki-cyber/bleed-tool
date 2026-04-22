@@ -44,14 +44,14 @@ echo "  Python: $($PYTHON --version) @ $PYTHON"
 
 # Sprawdz zaleznosci (cairosvg opcjonalny — wymaga natywnego libcairo,
 # program dziala bez niego; SVG input wtedy niedostepny)
-$PYTHON -c "import PyQt6, fitz, numpy, PIL" 2>/dev/null
+$PYTHON -c "import PyQt6, fitz, numpy, scipy, PIL, cv2, pikepdf" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo ""
     echo "  Instaluje brakujace zaleznosci..."
     $PYTHON -m pip install --user -r requirements.txt
     echo ""
     # Sprawdz ponownie
-    $PYTHON -c "import PyQt6, fitz, numpy, PIL" 2>/dev/null
+    $PYTHON -c "import PyQt6, fitz, numpy, scipy, PIL, cv2, pikepdf" 2>/dev/null
     if [ $? -ne 0 ]; then
         echo "  BLAD: Instalacja bibliotek nie powiodla sie!"
         echo "  Sprobuj recznie:  $PYTHON -m pip install -r requirements.txt"

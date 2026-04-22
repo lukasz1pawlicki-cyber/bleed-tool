@@ -10,3 +10,7 @@ opencv-python>=4.5.0
 # pipeline zadziala nawet bez GTK3-Runtime/MSYS2.
 svglib>=1.5.0
 reportlab>=4.0.0
+# pikepdf: wymagane dla sciezki "uzyj linii ciecia z pliku" (parsowanie
+# content stream + usuwanie stroke-only cut line) oraz opcjonalnie jako
+# backend PDF/X-4 metadata (BLEED_PDF_METADATA_ENGINE=pikepdf).
+pikepdf>=8.0.0
