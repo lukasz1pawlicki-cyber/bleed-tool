@@ -230,11 +230,8 @@ class FileSection(QWidget):
         hl.setContentsMargins(10, 8, 8, 8)
         hl.setSpacing(5)
 
-        # Status dot
-        dot = StatusDot(state=status)
-        if issue:
-            dot.setToolTip(issue)
-        hl.addWidget(dot, alignment=Qt.AlignmentFlag.AlignVCenter)
+        # Status (kropka) usunieta — stan bledu oznaczany tłem wiersza (#FEF4F4)
+        # + opis bledu w issue label ponizej.
 
         # Ext tag
         ext = os.path.splitext(filepath)[1].lstrip('.').upper() or "FILE"
@@ -254,7 +251,7 @@ class FileSection(QWidget):
             spin.setValue(self._file_copies.get(filepath, 1))
             spin.setToolTip("Liczba kopii")
             spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            spin.setFixedSize(46, 24)
+            spin.setFixedSize(56, 26)
             spin.valueChanged.connect(
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
@@ -272,7 +269,7 @@ class FileSection(QWidget):
             hspin.setValue(0.0 if h_mm is None else float(h_mm) / 10.0)
             hspin.setToolTip("Wysokość naklejki w cm. 'auto' = oryginalna / globalna")
             hspin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hspin.setFixedSize(68, 24)
+            hspin.setFixedSize(76, 26)
             hspin.valueChanged.connect(
                 lambda v_cm, p=filepath: self._on_height_change(p, v_cm)
             )
