@@ -478,6 +478,10 @@ class BleedTab(QWidget):
             radius_pct=self._radius_pct,
             raster_mode=("sharp" if self._sharp_edges_cb.isChecked() else "smooth"),
             use_source_cutpath=self.use_source_cutpath,
+            per_file_heights={
+                p: v for p, v in self._file_section.file_heights.items()
+                if v is not None and v > 0
+            },
         )
         self._worker.log_message.connect(self._log)
         self._worker.progress.connect(self._on_progress)

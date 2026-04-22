@@ -103,6 +103,8 @@ class FileSection(QWidget):
         self._show_copies = show_copies
         self._files: list[str] = []
         self._file_copies: dict[str, int] = {}
+        # path -> target height in mm (None = auto, użyje globalnej lub oryginalnej)
+        self._file_height_mm: dict[str, float | None] = {}
         # path -> (status, issue_msg | None)
         self._file_status: dict[str, tuple[str, str | None]] = {}
 
@@ -169,9 +171,14 @@ class FileSection(QWidget):
     def file_copies(self) -> dict[str, int]:
         return dict(self._file_copies)
 
+    @property
+    def file_heights(self) -> dict[str, float | None]:
+        return dict(self._file_height_mm)
+
     def clear_files(self):
         self._files.clear()
         self._file_copies.clear()
+        self._file_height_mm.clear()
         self._file_status.clear()
         self._rebuild_list()
         self.files_changed.emit()
@@ -204,6 +211,7 @@ class FileSection(QWidget):
         if path in self._files:
             self._files.remove(path)
             self._file_copies.pop(path, None)
+            self._file_height_mm.pop(path, None)
             self._file_status.pop(path, None)
         self._rebuild_list()
         self.files_changed.emit()
@@ -219,8 +227,8 @@ class FileSection(QWidget):
             "border-bottom:1px solid #E2E5ED;}"
         )
         hl = QHBoxLayout(row)
-        hl.setContentsMargins(12, 9, 12, 9)
-        hl.setSpacing(10)
+        hl.setContentsMargins(10, 8, 8, 8)
+        hl.setSpacing(5)
 
         # Status dot
         dot = StatusDot(state=status)
@@ -234,8 +242,9 @@ class FileSection(QWidget):
         ext_lbl.setObjectName("FileExtTag")
         hl.addWidget(ext_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        # Kopie (Nest) — PRZED nazwa (po lewej)
+        # Kopie + wysokość — PRZED nazwa (po lewej)
         if self._show_copies:
+            from PyQt6.QtWidgets import QDoubleSpinBox
             spin = QSpinBox()
             spin.setObjectName("CopiesSpin")
             spin.setMinimum(1)
@@ -246,6 +255,22 @@ class FileSection(QWidget):
                 lambda v, p=filepath: self._on_copies_change(p, v)
             )
             hl.addWidget(spin, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+            hspin = QDoubleSpinBox()
+            hspin.setObjectName("HeightSpin")
+            hspin.setDecimals(1)
+            hspin.setMinimum(0.0)   # 0 = auto (puste)
+            hspin.setMaximum(9999.0)
+            hspin.setSingleStep(1.0)
+            hspin.setSuffix(" mm")
+            hspin.setSpecialValueText("auto")
+            h_val = self._file_height_mm.get(filepath)
+            hspin.setValue(0.0 if h_val is None else float(h_val))
+            hspin.setToolTip("Wysokość naklejki (mm). 'auto' = oryginalna / globalna")
+            hspin.valueChanged.connect(
+                lambda v, p=filepath: self._on_height_change(p, v)
+            )
+            hl.addWidget(hspin, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # Nazwa + meta/issue stack
         name_stack = QWidget()
@@ -307,6 +332,13 @@ class FileSection(QWidget):
 
     def _on_copies_change(self, filepath: str, value: int):
         self._file_copies[filepath] = max(1, int(value))
+
+    def _on_height_change(self, filepath: str, value: float):
+        # 0.0 = special "auto" → brak override
+        if value <= 0.0:
+            self._file_height_mm.pop(filepath, None)
+        else:
+            self._file_height_mm[filepath] = float(value)
 
     # --- Drag-and-drop na całą kolumnę ---
 

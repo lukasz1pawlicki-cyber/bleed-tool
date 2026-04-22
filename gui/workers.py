@@ -29,7 +29,7 @@ class BleedWorker(QThread):
                  cutline_mode="kiss-cut", target_height_mm=None, white=False,
                  crop_enabled=False, crop_shape="square", crop_offsets=None,
                  radius_pct=9, contour_engine=None, raster_mode=None,
-                 use_source_cutpath=False, parent=None):
+                 use_source_cutpath=False, per_file_heights=None, parent=None):
         super().__init__(parent)
         self._files = files
         self._output_dir = output_dir
@@ -45,6 +45,8 @@ class BleedWorker(QThread):
         self._contour_engine = contour_engine  # "moore" | "opencv" | "auto" | None
         self._raster_mode = raster_mode  # "smooth" | "sharp" | None (= config default)
         self._use_source_cutpath = bool(use_source_cutpath)
+        # per-plik override wysokości (None/brak → użyj target_height_mm globalnej)
+        self._per_file_heights: dict[str, float] = dict(per_file_heights or {})
 
     def run(self):
         try:
@@ -86,12 +88,15 @@ class BleedWorker(QThread):
             name = os.path.basename(pdf)
             try:
                 actual_path = pdf
+                # Per-plik override wysokości ma priorytet nad globalną
+                effective_height = self._per_file_heights.get(pdf) or self._target_height_mm
+
                 # Crop: przyciej przed pipeline
-                if self._crop_enabled and self._target_height_mm:
+                if self._crop_enabled and effective_height:
                     from modules.crop import apply_crop
                     offset = self._crop_offsets.get(pdf, (0.5, 0.5))
                     actual_path = apply_crop(
-                        pdf, self._target_height_mm,
+                        pdf, effective_height,
                         shape=self._crop_shape,
                         offset=offset,
                         radius_pct=self._radius_pct,
@@ -105,8 +110,8 @@ class BleedWorker(QThread):
                 )
                 for si, sticker in enumerate(stickers):
                     # Skalowanie do docelowej wysokosci (pomijane gdy crop)
-                    if self._target_height_mm and not self._crop_enabled:
-                        sticker = scale_sticker(sticker, self._target_height_mm)
+                    if effective_height and not self._crop_enabled:
+                        sticker = scale_sticker(sticker, effective_height)
                     # Gdy user swiadomie wybrał kształt w Crop, uzyj dokladnej
                     # geometrii zamiast detection z alpha (raster boundary +
                     # DP + smooth Bezier interpretuje rounded-rect jako okrąg).

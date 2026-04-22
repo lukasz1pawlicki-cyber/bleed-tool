@@ -496,6 +496,21 @@ QSpinBox#CopiesSpin::up-button, QSpinBox#CopiesSpin::down-button {
     width: 14px;
 }
 
+/* Height per-file spinner (inline) */
+QDoubleSpinBox#HeightSpin {
+    background: #FFFFFF;
+    border: 1px solid #E2E5ED;
+    border-radius: 6px;
+    min-height: 20px; max-height: 20px;
+    min-width: 70px; max-width: 80px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10.5px;
+    padding: 0 12px 0 3px;
+}
+QDoubleSpinBox#HeightSpin::up-button, QDoubleSpinBox#HeightSpin::down-button {
+    width: 14px;
+}
+
 QPushButton#RemoveRowBtn {
     min-width: 22px; max-width: 22px;
     min-height: 22px; max-height: 22px;
