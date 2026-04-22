@@ -1392,37 +1392,31 @@ def _render_source_cutpath_layer(
     src_bleed_x = bleed_pts / scale_x
     src_bleed_y = bleed_pts / scale_y
 
-    # === pikepdf: safe cleaning (remove stroke-only LUB bailout na corrupt) ===
-    # Powód: _remove_stroke_only_blocks usuwa bloki `q..Q` które zawieraja S/s
-    # bez fill/Do. Ale BDC/EMC (OCG markers) pary mogą SPANOWAC wiele q..Q
-    # bloków — usunięcie bloku zostawia unbalanced OCG markers → fitz renderer
-    # dostaje corrupted content stream → blank output (przyklad: Michalina
-    # naklejki z Illustratora, 12 OCG warstw, cut line + graphic w jednym q..Q).
+    # === pikepdf: usun linie ciecia przez replace S/s → n (surgical) ===
+    # Zamiast usuwac cale `q..Q` bloki (psulo BDC/EMC pairing w plikach z OCG),
+    # zamieniamy KAZDE wystapienie:
+    #   S  (stroke path)          → n  (end path without stroke/fill)
+    #   s  (close+stroke)         → h (close) n
+    # Sciezka nadal jest konstruowana przez m/l/c, ale nie jest rysowana.
+    # Struktura streamu nietknieta: q/Q balanced, BDC/EMC balanced, image/Do
+    # nietkniete. Dziala rowniez na plikach z OCG warstwami (Illustrator).
     #
-    # Strategia: uruchom usuwanie; jesli cleaned doc renderuje sie do pustego
-    # rasteru (near-white 99%+), fallback na ORIGINAL source (nie usuwamy nic).
-    # Oryginalna linia ciecia pozostaje w rasterze ale 0.25pt stroke jest
-    # praktycznie niewidoczne, a nasza spot-color CutContour na wierzchu jest
-    # tym co czyta plotter.
+    # UWAGA: usuwamy WSZYSTKIE stroke ops, nie tylko cut line. Zakladamy ze
+    # plik z checkboxem "uzyj linii ciecia z pliku" ma JEDYNIE cut line jako
+    # stroke-only content (typowy workflow CorelDraw/AI: grafika wypelniona,
+    # docieciе jako czerwona/magenta linia bez fillu).
     import io
     src_bytes = doc_src.tobytes()
     pike = pikepdf.open(io.BytesIO(src_bytes))
     pike_page = pike.pages[sticker.page_index]
     ops = list(pikepdf.parse_content_stream(pike_page))
-    has_bdc_emc = any(str(op) in ('BDC', 'BMC', 'EMC') for _, op in ops)
-    if has_bdc_emc:
-        # Plik ma OCG markers — nie ryzykuj usuwania, zostaw content as-is
-        log.info("Source ma BDC/EMC (OCG) — pomijam cleanup (nie ryzykuj corrupted stream)")
-        pike.close()
-        cleaned_doc = fitz.open(stream=src_bytes, filetype="pdf")
-    else:
-        cleaned_ops = _remove_stroke_only_blocks(ops)
-        cleaned_bytes_pdf = pikepdf.unparse_content_stream(cleaned_ops)
-        pike_page.Contents = pike.make_stream(cleaned_bytes_pdf)
-        buf = io.BytesIO()
-        pike.save(buf)
-        pike.close()
-        cleaned_doc = fitz.open(stream=buf.getvalue(), filetype="pdf")
+    cleaned_ops = _replace_strokes_with_nop(ops)
+    cleaned_bytes_pdf = pikepdf.unparse_content_stream(cleaned_ops)
+    pike_page.Contents = pike.make_stream(cleaned_bytes_pdf)
+    buf = io.BytesIO()
+    pike.save(buf)
+    pike.close()
+    cleaned_doc = fitz.open(stream=buf.getvalue(), filetype="pdf")
 
     # === Render cleaned source @ 300 DPI w obszarze bleed bbox ===
     # get_pixmap z clip_rect PRAWDZIWIE ogranicza render do bbox. Content spoza
@@ -1498,6 +1492,51 @@ def _render_source_cutpath_layer(
         f"Source cutpath: raster clip@bbox {w_px}×{h_px}px + polygon alpha. "
         f"Spoza bleed bbox nie renderowane (get_pixmap clip)."
     )
+
+
+def _replace_strokes_with_nop(ops):
+    """Zamienia operatory stroke (S/s/B/B*/b/b*) na n / h n w content stream.
+
+    Cel: usunac wizualne linie ciecia z pliku bez naruszania struktury
+    streamu (q/Q, BDC/EMC, cm, gs, Do pozostaja nietkniete).
+
+    Mapowania (PDF spec):
+      S  (stroke)                 → n  (end path bez stroke/fill)
+      s  (closepath + stroke)     → h n  (closepath, end path)
+      B  (stroke + fill)          → f   (tylko fill, bez stroke)
+      B* (stroke + fill even-odd) → f*
+      b  (closepath + stroke + fill)       → h f
+      b* (closepath + stroke + fill e/o)   → h f*
+
+    Uwaga: B/B* i b/b* RZADKO wystepuja w cut lines (cut line to zwykle
+    czysty stroke), ale dla kompletnosci konwertujemy je na fill-only.
+    """
+    import pikepdf
+    OP_N = pikepdf.Operator("n")
+    OP_H = pikepdf.Operator("h")
+    OP_F = pikepdf.Operator("f")
+    OP_F_STAR = pikepdf.Operator("f*")
+    result = []
+    for operands, op in ops:
+        name = str(op)
+        if name == 'S':
+            result.append((operands, OP_N))
+        elif name == 's':
+            result.append(([], OP_H))
+            result.append(([], OP_N))
+        elif name == 'B':
+            result.append((operands, OP_F))
+        elif name == 'B*':
+            result.append((operands, OP_F_STAR))
+        elif name == 'b':
+            result.append(([], OP_H))
+            result.append((operands, OP_F))
+        elif name == 'b*':
+            result.append(([], OP_H))
+            result.append((operands, OP_F_STAR))
+        else:
+            result.append((operands, op))
+    return result
 
 
 def _remove_stroke_only_blocks(ops):
