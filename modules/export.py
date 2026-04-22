@@ -3056,47 +3056,25 @@ def export_sheet_print(
 
     # Białe tło (domyślne)
 
-    # === PASS 0: Anti-gap fill dla bleed output PDFs ===
-    # Rysujemy podkład w kolorze krawędzi PRZED naklejkami, pokrywa białe
-    # hairline przerwy między sąsiadami gdy bleed=0 (lub rendering gaps).
-    # Fill rozszerzony o (gap/2 + 0.5mm) w każdym kierunku — overlap z
-    # sąsiadem eliminuje szpary. KLUCZOWE: pre-pass przed rysowaniem naklejek
-    # (wszystkie fills trafiają na dół content stream). Inaczej fill sticker[i+1]
-    # nadpisywałby sticker[i] (poprzednia implementacja miała ten bug, usunięta
-    # w 70a0a48, przywrócona poprawnie tutaj jako two-pass).
-    _gap_mm = getattr(sheet, 'gap_mm', 0.0)
-    _gap_half_pt = (_gap_mm / 2.0 + 0.5) * MM_TO_PT
-    _antigap_parts = []
-    for placement in sheet.placements:
-        sticker = placement.sticker
-        if not getattr(sticker, 'is_bleed_output', False):
-            continue
-        if sticker.edge_color_rgb is None:
-            continue
-        sticker_w = sticker.page_width_pt + 2 * bleed_pts
-        sticker_h = sticker.page_height_pt + 2 * bleed_pts
-        px = placement.x_mm * MM_TO_PT
-        py = placement.y_mm * MM_TO_PT
-        rot = int(placement.rotation_deg) % 360
-        if rot in (90, 270):
-            tr = fitz.Rect(px, sheet_h_pt - py - sticker_w,
-                           px + sticker_h, sheet_h_pt - py)
-        else:
-            tr = fitz.Rect(px, sheet_h_pt - py - sticker_h,
-                           px + sticker_w, sheet_h_pt - py)
-        fx0 = tr.x0 - _gap_half_pt
-        fy0 = tr.y0 - _gap_half_pt
-        fw = tr.width + 2 * _gap_half_pt
-        fh = tr.height + 2 * _gap_half_pt
-        r, g, b = sticker.edge_color_rgb
-        _antigap_parts.append(
-            f"q {r:.4f} {g:.4f} {b:.4f} rg "
-            f"{fx0:.4f} {fy0:.4f} {fw:.4f} {fh:.4f} re f Q"
-        )
-    if _antigap_parts:
-        inject_content_stream(
-            doc_out, out_page, "\n".join(_antigap_parts).encode('ascii')
-        )
+    # UWAGA: PASS 0 anti-gap fill usunięty (2026-04-22).
+    # Powód: dla naklejek o różnych kolorach tła rozmieszczonych obok siebie
+    # (np. 3 rzędy różnych produktów) fill w edge_color rozszerzony o 0.5mm
+    # tworzył WIDOCZNE kolorowe obwódki wokół każdej naklejki. Hairline gaps
+    # między sąsiadami rozwiązuje micro-overlap (skalowanie graficznego
+    # rectu o +0.05% wokół centrum) poniżej przy rysowaniu każdej naklejki.
+
+    # Micro-overlap: graphics każdej naklejki rysowane 0.05% większe wokół
+    # środka → sąsiednie naklejki nachodzą o ~0.025% każda strona, pokrywając
+    # sub-piksel hairline rasterizer'a. Nie wpływa na pozycję cięcia (cut
+    # marks rysowane z oryginalnych współrzędnych placement).
+    _SHEET_OVERLAP = 0.0005  # 0.05%
+
+    def _expand_center(rect: fitz.Rect, ratio: float) -> fitz.Rect:
+        cx = (rect.x0 + rect.x1) / 2
+        cy = (rect.y0 + rect.y1) / 2
+        w = rect.width * (1 + ratio)
+        h = rect.height * (1 + ratio)
+        return fitz.Rect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
 
     # Cache prepared documents per sticker source (ta sama naklejka × N kopii)
     _prepared_cache: dict[int, fitz.Document] = {}
@@ -3141,7 +3119,10 @@ def export_sheet_print(
                     px + bleed_pts + img_w,
                     sheet_h_pt - py - bleed_pts,
                 )
-            out_page.insert_image(img_rect, filename=sticker.raster_path, rotate=rot)
+            out_page.insert_image(
+                _expand_center(img_rect, _SHEET_OVERLAP),
+                filename=sticker.raster_path, rotate=rot,
+            )
 
         elif sticker.pdf_doc is not None:
             # Wektor: show_pdf_page z cached prepared source
@@ -3175,7 +3156,10 @@ def export_sheet_print(
                     px + sticker_w, sheet_h_pt - py,
                 )
 
-            out_page.show_pdf_page(target_rect, prepared_doc, 0, rotate=rot)
+            out_page.show_pdf_page(
+                _expand_center(target_rect, _SHEET_OVERLAP),
+                prepared_doc, 0, rotate=rot,
+            )
 
     # === Outer bleed (spad wokół grupy naklejek) ===
     outer_bleed = getattr(sheet, 'outer_bleed_mm', 0.0)
