@@ -730,26 +730,26 @@ def nest_job(
                 if shelves:
                     item = _best_fit_for_shelf(
                         sticker, shelves[-1].remaining_width(), shelves[-1].height, gap_mm,
-                        allow_rotation=False, bleed2=bleed2,
+                        allow_rotation=True, bleed2=bleed2,
                     )
                     if item is not None:
                         placed = _place_in_current_shelf(item)
 
                 # Nowy wiersz z rotacja
                 if not placed:
-                    item = _best_fit_for_new_shelf(sticker, area_w, allow_rotation=False, bleed2=bleed2)
+                    item = _best_fit_for_new_shelf(sticker, area_w, allow_rotation=True, bleed2=bleed2)
                     if item is not None:
                         placed = _place_in_new_shelf(item)
 
                 # Backfill z rotacja
                 if not placed:
-                    placed = _backfill_into_shelves(sticker, allow_rotation=False)
+                    placed = _backfill_into_shelves(sticker, allow_rotation=True)
 
                 # Nowy arkusz z rotacja
                 if not placed:
                     _finalize_sheet(sheet)
                     sheet = _new_sheet()
-                    item = _best_fit_for_new_shelf(sticker, area_w, allow_rotation=False, bleed2=bleed2)
+                    item = _best_fit_for_new_shelf(sticker, area_w, allow_rotation=True, bleed2=bleed2)
                     if item is not None:
                         placed = _place_in_new_shelf(item)
 

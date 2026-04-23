@@ -63,6 +63,11 @@ class Sticker:
     page_height_pt: float = 0.0
     outermost_drawing_idx: Optional[int] = None
 
+    # Ścieżka do tmp PDF wygenerowanego z EPS/SVG (do usunięcia przez konsumenta
+    # po zamknięciu pdf_doc). None = oryginalny plik, nic do czyszczenia.
+    # Ustawiane tylko na pierwszym stickerze z danego source — współdzielony doc.
+    tmp_pdf_path: Optional[str] = None
+
     # Raster source (PNG/JPG/TIFF — alternatywa dla pdf_doc):
     raster_path: Optional[str] = None         # sciezka do oryginalnego pliku rastrowego
     raster_crop_box: Optional[tuple] = None   # (x, y, x2, y2) w px — crop do content area

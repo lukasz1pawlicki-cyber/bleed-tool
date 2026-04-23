@@ -92,6 +92,7 @@ class BleedWorker(QThread):
             self.progress.emit(i, total)
             self.file_status.emit(pdf, "proc", "")
             name = os.path.basename(pdf)
+            _src_stickers = []
             try:
                 actual_path = pdf
                 # Per-plik override ma priorytet nad globalna. Height/width
@@ -118,6 +119,7 @@ class BleedWorker(QThread):
                     actual_path,
                     use_source_cutpath=self._use_source_cutpath,
                 )
+                _src_stickers = stickers  # referencja do cleanup w finally
                 for si, sticker in enumerate(stickers):
                     # Wylicz target_height: bezposrednio lub z width*aspect
                     target_h = eff_height
@@ -160,14 +162,24 @@ class BleedWorker(QThread):
                         f"  {name}: {sticker.width_mm:.1f}x{sticker.height_mm:.1f}mm -> {sz:.0f}KB"
                     )
                     ok += 1
-                # Zamknij pdf_doc po wszystkich stronach (współdzielony)
-                if stickers and stickers[0].pdf_doc is not None:
-                    stickers[0].pdf_doc.close()
                 self.file_status.emit(pdf, "ok", "")
             except Exception as e:
                 self.log_message.emit(f"  [ERR] {name}: {e}")
                 self.file_status.emit(pdf, "err", str(e))
                 err += 1
+            finally:
+                # Zamknij pdf_doc + usuń tmp PDF z EPS/SVG niezależnie od sukcesu.
+                # Współdzielony doc → referencja na pierwszym stickerze.
+                if _src_stickers and _src_stickers[0].pdf_doc is not None:
+                    try:
+                        _src_stickers[0].pdf_doc.close()
+                    except Exception:
+                        pass
+                if _src_stickers and _src_stickers[0].tmp_pdf_path:
+                    try:
+                        os.unlink(_src_stickers[0].tmp_pdf_path)
+                    except OSError:
+                        pass
 
         # Cleanup temp z crop
         for tmp in temp_files:
@@ -193,7 +205,10 @@ class NestWorker(QThread):
     log_message = pyqtSignal(str)
     # file_status: (path, status, issue) gdzie status ∈ {wait,ok,warn,err,proc}
     file_status = pyqtSignal(str, str, str)
-    finished = pyqtSignal(object, list)   # (job, sheet_pdf_paths)
+    # (job, sheet_pdf_paths, open_docs) — open_docs: lista fitz.Document źródeł
+    # trzymanych otwartych przez Stickers w job (show_pdf_page przy re-exporcie
+    # FlexCut). Konsument zamyka je przy zastąpieniu joba / clear / close window.
+    finished = pyqtSignal(object, list, list)
     error = pyqtSignal(str)
 
     def __init__(self, files, file_copies, output_dir,
@@ -270,6 +285,15 @@ class NestWorker(QThread):
         try:
             self._run_inner()
         except Exception as e:
+            # Jeśli _run_inner padł w środku — dokumenty jeszcze otwarte, musimy je
+            # zamknąć (inaczej leak + w Windows zablokowany file handle). Stickers
+            # nie doszły do konsumenta, więc nikt inny ich nie przejmie.
+            for doc in getattr(self, "_open_docs", []):
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+            self._open_docs = []
             self.error.emit(f"{e}\n{traceback.format_exc()}")
 
     def _run_inner(self):
@@ -286,7 +310,8 @@ class NestWorker(QThread):
 
         # 1. Load stickers
         sticker_copies_list = []
-        open_docs = []
+        open_docs: list = []
+        self._open_docs = open_docs  # ref dla error-path w run() — cleanup po crashu
         total = len(self._files)
 
         for i, pdf in enumerate(self._files):
@@ -426,7 +451,7 @@ class NestWorker(QThread):
                     doc.close()
                 except Exception:
                     pass
-            self.finished.emit(Job(), [])
+            self.finished.emit(Job(), [], [])
             return
 
         # 2. Nesting
@@ -500,4 +525,6 @@ class NestWorker(QThread):
             f"\nGotowe: {total_placed} naklejek na {ns} arkusz(ach) ({elapsed:.1f}s)"
         )
         self.progress.emit(total + ns, total + ns)
-        self.finished.emit(job, sheet_pdf_paths)
+        # open_docs przekazywane do konsumenta — lifecycle po stronie NestTab
+        # (zamyka przy zastąpieniu joba / clear / zamknięciu okna).
+        self.finished.emit(job, sheet_pdf_paths, open_docs)

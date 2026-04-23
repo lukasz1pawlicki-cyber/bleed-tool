@@ -2445,7 +2445,17 @@ def detect_contour(pdf_path: str, use_source_cutpath: bool = False) -> list[Stic
 
     if not stickers:
         doc.close()
+        if tmp_pdf:
+            try:
+                os.unlink(tmp_pdf)
+            except OSError:
+                pass
         raise ValueError(f"Brak prawidlowych stron w {pdf_path}")
+
+    # Propaguj tmp_pdf_path na pierwszy sticker — konsument czyści po zamknięciu doc.
+    # Współdzielony pdf_doc (stickers[0].pdf_doc) → jeden tmp file do unlink.
+    if tmp_pdf and stickers:
+        stickers[0].tmp_pdf_path = tmp_pdf
 
     # Zapis do cache (tylko PDF; EPS/SVG maja tmp_pdf inny od original_path).
     # Sprawdzamy rozszerzenie ORYGINALNEGO pliku, nie tmp_pdf.

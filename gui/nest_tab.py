@@ -40,6 +40,10 @@ class NestTab(QWidget):
         self._processing = False
         self._last_job = None
         self._last_pdfs = []
+        # Dokumenty źródeł (fitz.Document) trzymane otwarte dla _last_job —
+        # potrzebne przy re-exporcie FlexCut (show_pdf_page). Zamykamy gdy
+        # zastępujemy job, clear(), albo zamykane jest okno.
+        self._last_open_docs: list = []
         self._file_section = file_section  # z main_window (może być None → fallback)
         self._last_bleed = 0.0
         self._roll_widths = list(ROLL_PRESETS)
@@ -316,6 +320,7 @@ class NestTab(QWidget):
         self._file_section.clear_files()
         self._output_edit.setText("")
         self._status_label.setText("")
+        self._close_last_open_docs()
         self._last_job = None
         self._last_pdfs = []
         self._util_card.clear()
@@ -615,12 +620,33 @@ class NestTab(QWidget):
         pct = int(100 * current / max(1, total))
         self._status_label.setText(f"Plik {current} / {total} · {pct}%")
 
-    def _on_done(self, job, sheet_pdfs):
+    def _close_last_open_docs(self):
+        """Zamyka fitz.Document trzymane dla poprzedniego joba.
+
+        Wywołanie: clear(), zastąpienie joba (_on_done), zamknięcie okna
+        (main_window.closeEvent → nest_tab.closeEvent). Po zamknięciu
+        referencje na Stickers w _last_job są niewalidne — FlexCut/re-export
+        nie działa dla starego joba, co jest OK (stary job już zastąpiony).
+        """
+        for doc in self._last_open_docs:
+            try:
+                doc.close()
+            except Exception:
+                pass
+        self._last_open_docs = []
+
+    def closeEvent(self, event):
+        self._close_last_open_docs()
+        super().closeEvent(event)
+
+    def _on_done(self, job, sheet_pdfs, open_docs=None):
         self._processing = False
         self._nest_btn.setEnabled(True)
         self._nest_btn.setText("▶ Generuj arkusze")
         self._progress.setVisible(False)
         total = sum(len(s.placements) for s in job.sheets)
+        # Zamknij dokumenty poprzedniego joba przed przejęciem nowych
+        self._close_last_open_docs()
 
         if job.sheets:
             used = sum(s.used_area_mm2 for s in job.sheets)
@@ -658,6 +684,7 @@ class NestTab(QWidget):
 
         self._last_job = job
         self._last_pdfs = sheet_pdfs
+        self._last_open_docs = list(open_docs) if open_docs else []
         self._last_bleed = 0.0
         self.preview_ready.emit(job, sheet_pdfs, 0.0)
 

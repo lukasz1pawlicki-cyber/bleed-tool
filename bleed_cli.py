@@ -149,6 +149,7 @@ def _process_one_file(args: tuple) -> dict:
             })
             # Nie return — probujemy dalej
 
+    stickers = []
     try:
         stickers = detect_contour(filepath)
         multi = len(stickers) > 1
@@ -181,11 +182,21 @@ def _process_one_file(args: tuple) -> dict:
             except Exception as e:
                 results.append({"ok": False, "label": label, "error": str(e)})
 
-        if stickers and stickers[0].pdf_doc is not None:
-            stickers[0].pdf_doc.close()
-
     except Exception as e:
         results.append({"ok": False, "label": name, "error": str(e)})
+    finally:
+        # Cleanup zasobów źródła — wspóldzielony pdf_doc + tmp PDF z EPS/SVG.
+        # Wykonuje się niezależnie od sukcesu/porażki eksportu pojedynczych stron.
+        if stickers and stickers[0].pdf_doc is not None:
+            try:
+                stickers[0].pdf_doc.close()
+            except Exception:
+                pass
+        if stickers and stickers[0].tmp_pdf_path:
+            try:
+                os.unlink(stickers[0].tmp_pdf_path)
+            except OSError:
+                pass
 
     return {"filepath": filepath, "results": results}
 

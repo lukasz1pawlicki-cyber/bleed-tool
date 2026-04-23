@@ -251,3 +251,12 @@ class MainWindow(QMainWindow):
 
     def clear_log(self):
         self.log_panel.clear_log()
+
+    def closeEvent(self, event):
+        # Zwolnij fitz.Document-y źródeł trzymane przez ostatni job Nest
+        # (FlexCut/re-export potrzebuje ich póki job jest aktywny, ale przy
+        # zamykaniu aplikacji handle-e muszą zostać zamknięte — Windows
+        # blokuje pliki dopóki proces trzyma fitz.Document).
+        if self._nest_tab is not None:
+            self._nest_tab._close_last_open_docs()
+        super().closeEvent(event)
