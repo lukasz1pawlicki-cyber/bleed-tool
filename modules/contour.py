@@ -2356,11 +2356,22 @@ def detect_contour(pdf_path: str, use_source_cutpath: bool = False) -> list[Stic
             # Re-open pdf_doc dla PDF (raster uzywa raster_path, nie pdf_doc).
             # Dla raster_only PDF wszystkie stickers wspoldziela jeden pdf_doc.
             reopened_doc = None
-            for s in cached:
-                if s.raster_path is None and reopened_doc is None:
-                    reopened_doc = fitz.open(pdf_path)
-                s.pdf_doc = reopened_doc
-            return cached
+            try:
+                for s in cached:
+                    if s.raster_path is None and reopened_doc is None:
+                        reopened_doc = fitz.open(pdf_path)
+                    s.pdf_doc = reopened_doc
+                return cached
+            except Exception as e:
+                # Plik usuniety/przeniesiony miedzy save a load → graceful
+                # fallback na pelny pipeline (re-trace zamiast cryptic error).
+                log.info(f"Cache hit ale fitz.open padl ({e}) — re-trace {pdf_path}")
+                if reopened_doc is not None:
+                    try:
+                        reopened_doc.close()
+                    except Exception:
+                        pass
+                # spadnij dalej do pelnego pipeline'a
 
     # === ŚCIEŻKA 1: Pliki rastrowe (PNG/JPG/TIFF/BMP/WEBP) ===
     if detect_type(pdf_path) == FileType.RASTER:
@@ -2376,72 +2387,88 @@ def detect_contour(pdf_path: str, use_source_cutpath: bool = False) -> list[Stic
 
     # === ŚCIEŻKA 4+5: PDF (wektor lub raster-only) ===
     doc = fitz.open(pdf_path)
-
-    # TrimBox ≠ MediaBox → plik ze spadami, przycinamy do TrimBox
-    cropped_pages, malformed_pages = _crop_to_trimbox(doc)
-
-    # Crop marks w zewnętrznym obszarze strony (gdy TrimBox == MediaBox):
-    # wykrywamy L-kształtne znaczniki Illustratora i przycinamy do trim.
-    cropped_pages |= apply_crop_marks_cropping(
-        doc, skip_pages=cropped_pages | malformed_pages
-    )
-
     stickers: list[Sticker] = []
 
-    for page_idx in range(len(doc)):
-        # 0. [opcjonalne] Użyj stroke-only drawings jako linii cięcia
-        if use_source_cutpath:
-            sticker = _build_sticker_from_source_cutpath(
-                doc, page_idx, original_path
-            )
-            if sticker is not None:
-                stickers.append(sticker)
-                continue
-            log.info(
-                f"use_source_cutpath: strona {page_idx + 1} — brak "
-                f"stroke-only drawings, fallback na auto-detekcję"
-            )
+    # Doc jest przekazywany do Sticker.pdf_doc — konsument odpowiada za close()
+    # po sukcesie. Try/finally zamyka go TYLKO gdy budowa stickerów padnie
+    # (inaczej wyciekal przy malformed PDF / wyjatku w petli stron).
+    try:
+        # TrimBox ≠ MediaBox → plik ze spadami, przycinamy do TrimBox
+        cropped_pages, malformed_pages = _crop_to_trimbox(doc)
 
-        # 1. PDF zawiera CutContour (bleed output) → re-ingest
-        cutcontour_segs = _extract_cutcontour_segments(doc, page_idx)
-        if cutcontour_segs is not None:
-            stickers.append(
-                _build_sticker_from_cutcontour(
-                    doc, page_idx, cutcontour_segs, original_path
-                )
-            )
-            continue
+        # Crop marks w zewnętrznym obszarze strony (gdy TrimBox == MediaBox):
+        # wykrywamy L-kształtne znaczniki Illustratora i przycinamy do trim.
+        cropped_pages |= apply_crop_marks_cropping(
+            doc, skip_pages=cropped_pages | malformed_pages
+        )
 
-        # 1b. Malformed TrimBox (Canva): render MediaBox jako raster
-        if page_idx in malformed_pages:
-            stickers.append(
-                _build_sticker_from_malformed_trimbox(
+        for page_idx in range(len(doc)):
+            # 0. [opcjonalne] Użyj stroke-only drawings jako linii cięcia
+            if use_source_cutpath:
+                sticker = _build_sticker_from_source_cutpath(
                     doc, page_idx, original_path
                 )
-            )
-            continue
+                if sticker is not None:
+                    stickers.append(sticker)
+                    continue
+                log.info(
+                    f"use_source_cutpath: strona {page_idx + 1} — brak "
+                    f"stroke-only drawings, fallback na auto-detekcję"
+                )
 
-        # 2. Standardowa walidacja strony
-        try:
-            page, drawings = validate_page(
-                doc, page_idx, skip_raster_check=bool(tmp_pdf)
-            )
-        except ValueError:
-            # Brak wektorów — sprawdź raster-only PDF
-            sticker = _build_sticker_from_raster_only_pdf(
-                doc, page_idx, original_path
+            # 1. PDF zawiera CutContour (bleed output) → re-ingest
+            cutcontour_segs = _extract_cutcontour_segments(doc, page_idx)
+            if cutcontour_segs is not None:
+                stickers.append(
+                    _build_sticker_from_cutcontour(
+                        doc, page_idx, cutcontour_segs, original_path
+                    )
+                )
+                continue
+
+            # 1b. Malformed TrimBox (Canva): render MediaBox jako raster
+            if page_idx in malformed_pages:
+                stickers.append(
+                    _build_sticker_from_malformed_trimbox(
+                        doc, page_idx, original_path
+                    )
+                )
+                continue
+
+            # 2. Standardowa walidacja strony
+            try:
+                page, drawings = validate_page(
+                    doc, page_idx, skip_raster_check=bool(tmp_pdf)
+                )
+            except ValueError:
+                # Brak wektorów — sprawdź raster-only PDF
+                sticker = _build_sticker_from_raster_only_pdf(
+                    doc, page_idx, original_path
+                )
+                if sticker is not None:
+                    stickers.append(sticker)
+                continue
+
+            # 3. Standardowa ścieżka wektorowa
+            sticker = _build_sticker_from_vector(
+                doc, page_idx, page, drawings, cropped_pages,
+                svg_contour, svg_w_mm, svg_h_mm, original_path,
             )
             if sticker is not None:
                 stickers.append(sticker)
-            continue
-
-        # 3. Standardowa ścieżka wektorowa
-        sticker = _build_sticker_from_vector(
-            doc, page_idx, page, drawings, cropped_pages,
-            svg_contour, svg_w_mm, svg_h_mm, original_path,
-        )
-        if sticker is not None:
-            stickers.append(sticker)
+    except Exception:
+        # Cleanup gdy konsument nie dostanie stickerow → musimy zamknac doc
+        # i sprzatnac tmp PDF (EPS/SVG → ghostscript/cairosvg conversion).
+        try:
+            doc.close()
+        except Exception:
+            pass
+        if tmp_pdf:
+            try:
+                os.unlink(tmp_pdf)
+            except OSError:
+                pass
+        raise
 
     if not stickers:
         doc.close()

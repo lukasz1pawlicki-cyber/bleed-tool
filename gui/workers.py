@@ -352,6 +352,18 @@ class NestWorker(QThread):
             #   - legacy: bleed_<stem>.pdf
             #   - aktualny: <stem>_PRINT_{W}x{H}mm_bleed{N}mm.pdf
             is_bleed_output = name.startswith("bleed_") or "_PRINT_" in name
+            # Nest przyjmuje wylacznie PDF — fitz.open na PNG/SVG/EPS pada
+            # cryptic MuPDF errorem. Wczesna walidacja daje operatorowi
+            # czytelny komunikat zamiast "cannot find startxref".
+            ext = os.path.splitext(pdf)[1].lower()
+            if ext not in (".pdf", ".ai"):
+                msg = (
+                    f"Nest obsluguje tylko PDF/AI — pomijam {ext or '?'} "
+                    f"(uzyj zakladki Bleed dla {ext} albo skonwertuj do PDF)"
+                )
+                self.log_message.emit(f"  [WARN] {name}: {msg}")
+                self.file_status.emit(pdf, "warn", msg)
+                continue
             try:
                 doc = fitz.open(pdf)
                 open_docs.append(doc)

@@ -140,105 +140,112 @@ def _preflight_raster(file_path: str) -> dict:
 def _preflight_pdf(file_path: str) -> dict:
     """Preflight dla plikow PDF/AI."""
     doc = fitz.open(file_path)
-    page = doc[0]
-
-    # Rozmiar strony
-    rect = page.rect
-    w_pt, h_pt = rect.width, rect.height
-    w_mm = w_pt * PT_TO_MM
-    h_mm = h_pt * PT_TO_MM
-
-    # Sprawdz CropBox/TrimBox
-    cropbox = page.cropbox
-    trimbox = page.trimbox
-    if trimbox and trimbox != page.mediabox:
-        # TrimBox definiuje rozmiar naklejki
-        w_mm = trimbox.width * PT_TO_MM
-        h_mm = trimbox.height * PT_TO_MM
-
-    # Drawings (wektory)
-    drawings = page.get_drawings()
-    has_drawings = len(drawings) > 0
-
-    # Obrazy rastrowe
-    images = page.get_images()
-    has_images = len(images) > 0
-
-    # DPI (efektywne) — dla osadzonych obrazow
-    dpi = None
-    if has_images and not has_drawings:
-        # Tylko raster w PDF — oblicz efektywne DPI
-        try:
-            img_info = images[0]
-            xref = img_info[0]
-            base_image = doc.extract_image(xref)
-            img_w = base_image.get("width", 0)
-            if img_w > 0 and w_pt > 0:
-                dpi = img_w / (w_pt / 72.0)
-        except Exception:
-            pass
-
-    # Tekst (fonty nie zamienione na krzywe)
-    text_content = page.get_text("text").strip()
-    has_text = len(text_content) > 0
-
-    # Spot colors (Separation colorspaces)
-    has_spot_colors = False
+    # Try/finally — w batch CLI preflight idzie po kazdym pliku, leak doc
+    # przy uszkodzonym content stream skalowal sie do FD exhaustion.
     try:
-        page_text_raw = page.get_text("rawdict")
-        # Szybkie sprawdzenie: szukaj Separation w xref
-        for i in range(1, doc.xref_length()):
+        page = doc[0]
+
+        # Rozmiar strony
+        rect = page.rect
+        w_pt, h_pt = rect.width, rect.height
+        w_mm = w_pt * PT_TO_MM
+        h_mm = h_pt * PT_TO_MM
+
+        # Sprawdz CropBox/TrimBox
+        cropbox = page.cropbox
+        trimbox = page.trimbox
+        if trimbox and trimbox != page.mediabox:
+            # TrimBox definiuje rozmiar naklejki
+            w_mm = trimbox.width * PT_TO_MM
+            h_mm = trimbox.height * PT_TO_MM
+
+        # Drawings (wektory)
+        drawings = page.get_drawings()
+        has_drawings = len(drawings) > 0
+
+        # Obrazy rastrowe
+        images = page.get_images()
+        has_images = len(images) > 0
+
+        # DPI (efektywne) — dla osadzonych obrazow
+        dpi = None
+        if has_images and not has_drawings:
+            # Tylko raster w PDF — oblicz efektywne DPI
             try:
-                xref_str = doc.xref_object(i)
-                if "/Separation" in xref_str:
-                    has_spot_colors = True
-                    break
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    # Tryb kolorow
-    if has_drawings and not has_images:
-        color_mode = "Vector"
-    elif has_images and not has_drawings:
-        # Sprawdz colorspace osadzonego obrazu
-        try:
-            img_info = images[0]
-            xref = img_info[0]
-            base_image = doc.extract_image(xref)
-            cs = base_image.get("colorspace", 0)
-            # PyMuPDF: colorspace int (1=gray, 3=rgb, 4=cmyk)
-            if cs == 4:
-                color_mode = "CMYK"
-            elif cs == 1:
-                color_mode = "Grayscale"
-            else:
-                color_mode = "RGB"
-        except Exception:
-            color_mode = "RGB"
-    elif has_drawings and has_images:
-        color_mode = "Mixed"
-    else:
-        color_mode = "Vector"  # pusty PDF lub tylko tekst
-
-    is_vector = has_drawings
-
-    # Przezroczystosc — sprawdz alpha w osadzonych obrazach
-    has_transparency = False
-    if has_images:
-        try:
-            for img_info in images[:3]:  # Sprawdz max 3 obrazy
+                img_info = images[0]
                 xref = img_info[0]
-                smask = img_info[1]  # smask xref (0 = brak)
-                if smask != 0:
-                    has_transparency = True
-                    break
+                base_image = doc.extract_image(xref)
+                img_w = base_image.get("width", 0)
+                if img_w > 0 and w_pt > 0:
+                    dpi = img_w / (w_pt / 72.0)
+            except Exception:
+                pass
+
+        # Tekst (fonty nie zamienione na krzywe)
+        text_content = page.get_text("text").strip()
+        has_text = len(text_content) > 0
+
+        # Spot colors (Separation colorspaces)
+        has_spot_colors = False
+        try:
+            page_text_raw = page.get_text("rawdict")
+            # Szybkie sprawdzenie: szukaj Separation w xref
+            for i in range(1, doc.xref_length()):
+                try:
+                    xref_str = doc.xref_object(i)
+                    if "/Separation" in xref_str:
+                        has_spot_colors = True
+                        break
+                except Exception:
+                    continue
         except Exception:
             pass
 
-    page_count = len(doc)
-    doc.close()
+        # Tryb kolorow
+        if has_drawings and not has_images:
+            color_mode = "Vector"
+        elif has_images and not has_drawings:
+            # Sprawdz colorspace osadzonego obrazu
+            try:
+                img_info = images[0]
+                xref = img_info[0]
+                base_image = doc.extract_image(xref)
+                cs = base_image.get("colorspace", 0)
+                # PyMuPDF: colorspace int (1=gray, 3=rgb, 4=cmyk)
+                if cs == 4:
+                    color_mode = "CMYK"
+                elif cs == 1:
+                    color_mode = "Grayscale"
+                else:
+                    color_mode = "RGB"
+            except Exception:
+                color_mode = "RGB"
+        elif has_drawings and has_images:
+            color_mode = "Mixed"
+        else:
+            color_mode = "Vector"  # pusty PDF lub tylko tekst
+
+        is_vector = has_drawings
+
+        # Przezroczystosc — sprawdz alpha w osadzonych obrazach
+        has_transparency = False
+        if has_images:
+            try:
+                for img_info in images[:3]:  # Sprawdz max 3 obrazy
+                    xref = img_info[0]
+                    smask = img_info[1]  # smask xref (0 = brak)
+                    if smask != 0:
+                        has_transparency = True
+                        break
+            except Exception:
+                pass
+
+        page_count = len(doc)
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
 
     issues: list[dict] = []
     warnings_list: list[dict] = []

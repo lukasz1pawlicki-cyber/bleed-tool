@@ -277,12 +277,19 @@ def _apply_pdfx4_pymupdf(
 ) -> str:
     """Backend PyMuPDF — wyodrębniony żeby dispatcher mógł go wywołać z fallback."""
     doc = fitz.open(input_path)
-    apply_pdfx4(doc, bleed_mm=bleed_mm, icc_path=icc_path)
-    if os.path.abspath(input_path) == os.path.abspath(output_path):
-        doc.save(output_path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
-    else:
-        doc.save(output_path)
-    doc.close()
+    # Try/finally — apply_pdfx4 lub doc.save moga rzucic, bez try doc leakowal
+    # po kazdym eksporcie konczacym sie bledem.
+    try:
+        apply_pdfx4(doc, bleed_mm=bleed_mm, icc_path=icc_path)
+        if os.path.abspath(input_path) == os.path.abspath(output_path):
+            doc.save(output_path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+        else:
+            doc.save(output_path)
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
     return output_path
 
 
