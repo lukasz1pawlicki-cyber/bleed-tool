@@ -251,11 +251,37 @@ class NestWorker(QThread):
         wymiary naklejek i linie paneli. Typowy przypadek: grouping_mode="group"
         z naklejkami tego samego rozmiaru — różna grafika, ten sam kontur.
 
+        Why hash geometrii: bez tego dwa rozne ksztalty o tym samym bbox
+        i identycznej liczbie segmentow daja jeden cut.pdf — operator dostaje
+        zla sciezke ciecia dla czesci arkuszy.
+
         Returns:
             True jeśli >= 2 arkuszy i wszystkie mają ten sam layout cięcia.
         """
         if len(sheets) < 2:
             return False
+
+        import hashlib
+
+        def _segments_hash(segments) -> str:
+            """sha1 z zaokraglonych on-curve points segmentow."""
+            h = hashlib.sha1()
+            for seg in segments or ():
+                if not seg:
+                    continue
+                op = seg[0]
+                h.update(op.encode("ascii", errors="ignore"))
+                # Zaokraglamy do 0.01 pt (~3 mikrometry) — odporne na drobny
+                # numerical noise, ale rozroznia rzeczywiste roznice geometrii.
+                for pt in seg[1:]:
+                    if pt is None:
+                        continue
+                    try:
+                        x, y = float(pt[0]), float(pt[1])
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    h.update(f"{x:.2f},{y:.2f};".encode("ascii"))
+            return h.hexdigest()
 
         def _cut_fingerprint(sheet):
             parts = []
@@ -266,6 +292,7 @@ class NestWorker(QThread):
                     round(p.rotation_deg, 0),
                     round(s.width_mm, 2), round(s.height_mm, 2),
                     len(s.cut_segments),
+                    _segments_hash(s.cut_segments),
                 ))
             parts.sort()
             panels = tuple(

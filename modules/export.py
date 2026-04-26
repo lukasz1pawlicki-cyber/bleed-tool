@@ -3612,13 +3612,17 @@ def export_sheet_cut(
         if cut_stream:
             inject_content_stream(doc_out, out_page, cut_stream)
 
-    # Full-cut panel lines (bridge=0, np. spad) — na warstwie CutContour
+    # Full-cut panel lines (bridge=0, np. spad) — zawsze na warstwie CutContour.
+    # Why explicit: cut_cfg z petli wyzej zalezy od ostatniego placementu,
+    # a gdy ostatni byl flexcut, full-cut traflyby na FlexCut (zly kolor/warstwa).
+    # Plus: gdy deduped jest puste, cut_cfg w ogole nie istnieje -> NameError.
     fullcut_lines = [pl for pl in sheet.panel_lines if pl.bridge_length_mm <= 0]
     if fullcut_lines:
+        fullcut_cfg = ocg["CutContour"]
         fullcut_stream = _build_flexcut_stream(
             fullcut_lines, sheet.width_mm, sheet.height_mm,
-            ocg_name=cut_cfg["prop"],
-            ocg_cmyk=cut_cfg["cmyk"],
+            ocg_name=fullcut_cfg["prop"],
+            ocg_cmyk=fullcut_cfg["cmyk"],
         )
         if fullcut_stream:
             inject_content_stream(doc_out, out_page, fullcut_stream)

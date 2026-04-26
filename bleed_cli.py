@@ -116,12 +116,18 @@ def _process_one_file(args: tuple) -> dict:
 
     Kazdy worker otwiera plik samodzielnie (fitz.Document nie jest picklable).
     """
-    filepath, output_dir, bleed_mm, white, overwrite, preflight_mode = args
+    (filepath, output_dir, bleed_mm, white, overwrite, preflight_mode,
+     black_100k, cutline_mode, engine) = args
 
     # Import wewnatrz workera: lazy load ciezkich zaleznosci (fitz, cv2).
+    import config
     from modules.contour import detect_contour
     from modules.bleed import generate_bleed
     from modules.export import export_single_sticker
+
+    # Ustaw silnik konturu per-worker (subprocess ma swoj config module).
+    if engine:
+        config.CONTOUR_ENGINE = engine
 
     name = os.path.splitext(os.path.basename(filepath))[0]
     results: list[dict] = []
@@ -170,7 +176,13 @@ def _process_one_file(args: tuple) -> dict:
                 )
                 out = os.path.join(output_dir, out_name)
                 out = _resolve_output(out, overwrite=overwrite)
-                info = export_single_sticker(sticker, out, bleed_mm=bleed_mm, white=white)
+                info = export_single_sticker(
+                    sticker, out, bleed_mm=bleed_mm,
+                    black_100k=black_100k,
+                    cutcontour=(cutline_mode != "none"),
+                    cutline_mode=cutline_mode,
+                    white=white,
+                )
                 size_kb = os.path.getsize(out) / 1024
                 results.append({
                     "ok": True,
@@ -222,7 +234,9 @@ def _print_file_result(result: dict) -> tuple[int, int]:
 def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
               file_list: list[str] | None = None, white: bool = False,
               overwrite: bool = False, fail_fast: bool = False,
-              jobs: int = 1, preflight_mode: str = "lenient") -> tuple[int, int]:
+              jobs: int = 1, preflight_mode: str = "lenient",
+              black_100k: bool = False, cutline_mode: str = "kiss-cut",
+              engine: str | None = None) -> tuple[int, int]:
     """Generuje bleed dla plików w input_path lub z podanej listy file_list.
 
     Args:
@@ -265,7 +279,8 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
             if total > 1:
                 print(f"Processing file {idx}/{total}: {basename}...")
             result = _process_one_file(
-                (filepath, output_dir, bleed_mm, white, overwrite, preflight_mode)
+                (filepath, output_dir, bleed_mm, white, overwrite,
+                 preflight_mode, black_100k, cutline_mode, engine)
             )
             file_ok, file_err = _print_file_result(result)
             ok += file_ok
@@ -275,7 +290,8 @@ def run_bleed(input_path: str, output_dir: str, bleed_mm: float,
                 break
     else:
         # Tryb rownolegly — ProcessPoolExecutor
-        tasks = [(f, output_dir, bleed_mm, white, overwrite, preflight_mode)
+        tasks = [(f, output_dir, bleed_mm, white, overwrite, preflight_mode,
+                  black_100k, cutline_mode, engine)
                  for f in files]
         completed = 0
         with ProcessPoolExecutor(max_workers=jobs) as executor:
@@ -424,6 +440,9 @@ def main():
 
     # --project: zaladuj plik projektu i zastap flagi CLI
     project_files: list[str] | None = None
+    project_black_100k = False
+    project_cutline_mode = "kiss-cut"
+    project_engine: str | None = None
     if args.project:
         from modules.project import Project
         proj = Project.load(args.project)
@@ -442,6 +461,11 @@ def main():
             args.bleed = proj.bleed.bleed_mm
         if not args.white:
             args.white = proj.bleed.white
+        # Pelna konfiguracja BleedParams — bez tego --project ignorowal
+        # engine/black_100k/cutline_mode mimo zapisu w .bleedproj.
+        project_black_100k = bool(proj.bleed.black_100k)
+        project_cutline_mode = str(proj.bleed.cutline_mode)
+        project_engine = str(proj.bleed.engine) if proj.bleed.engine else None
 
     # Rozwiazanie liczby jobs: 0 = auto (cpu count)
     jobs = args.jobs
@@ -457,6 +481,9 @@ def main():
                 file_list=project_files, white=args.white,
                 overwrite=args.overwrite, fail_fast=args.fail_fast,
                 jobs=jobs, preflight_mode=args.preflight,
+                black_100k=project_black_100k,
+                cutline_mode=project_cutline_mode,
+                engine=project_engine,
             )
         except Exception:
             sys.exit(2)

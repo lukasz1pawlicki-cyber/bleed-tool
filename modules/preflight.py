@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 
 # Rozszerzenia plików rastrowych
 _RASTER_EXT = ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')
-_VECTOR_EXT = ('.pdf', '.ai', '.eps', '.epsf')
+_VECTOR_EXT = ('.pdf', '.ai')
+_EPS_EXT = ('.eps', '.epsf')
 _SVG_EXT = ('.svg',)
 
 
@@ -314,6 +315,80 @@ def _preflight_pdf(file_path: str) -> dict:
     }
 
 
+def _preflight_eps(file_path: str) -> dict:
+    """Preflight dla plikow EPS — konwersja przez Ghostscript -> _preflight_pdf.
+
+    Powod: PyMuPDF nie otwiera EPS natywnie. Bez tej sciezki preflight_gate
+    blokowal EPS (status=error) mimo ze pipeline obsluguje EPS przez
+    ghostscript_bridge.eps_to_pdf().
+    """
+    from modules.ghostscript_bridge import eps_to_pdf, is_ghostscript_available
+
+    if not is_ghostscript_available():
+        # Bez Ghostscript nie mozemy zwalidowac EPS, ale nie blokujemy —
+        # operator dostanie blad dopiero w pipeline (jasniejszy komunikat).
+        return {
+            "path": file_path,
+            "name": os.path.basename(file_path),
+            "size_mm": (0, 0),
+            "dpi": None,
+            "color_mode": "Vector",
+            "has_transparency": False,
+            "has_spot_colors": False,
+            "is_vector": True,
+            "has_text": False,
+            "page_count": 1,
+            "issues": [],
+            "warnings": [_make_issue(
+                "EPS_NO_GS",
+                "EPS — Ghostscript niedostepny, walidacja pominieta",
+                "warning",
+            )],
+            "status": "warning",
+        }
+
+    tmp_pdf = None
+    try:
+        tmp_pdf = eps_to_pdf(file_path)
+        result = _preflight_pdf(tmp_pdf)
+        # Podmien sciezke i nazwe na oryginalny EPS — operator widzi swoj plik
+        result["path"] = file_path
+        result["name"] = os.path.basename(file_path)
+        result["warnings"] = list(result.get("warnings", [])) + [
+            _make_issue("FORMAT_EPS", "Format EPS — konwersja przez Ghostscript", "info")
+        ]
+        # Status moze podskoczyc do warning przez nowy info — przeliczmy
+        if result["status"] == "ok":
+            result["status"] = "warning"
+        return result
+    except (FileNotFoundError, RuntimeError) as e:
+        return {
+            "path": file_path,
+            "name": os.path.basename(file_path),
+            "size_mm": (0, 0),
+            "dpi": None,
+            "color_mode": "Vector",
+            "has_transparency": False,
+            "has_spot_colors": False,
+            "is_vector": True,
+            "has_text": False,
+            "page_count": 1,
+            "issues": [_make_issue(
+                "EPS_CONVERT_FAILED",
+                f"EPS — konwersja Ghostscript nie powiodla sie: {e}",
+                "error",
+            )],
+            "warnings": [],
+            "status": "error",
+        }
+    finally:
+        if tmp_pdf and os.path.exists(tmp_pdf):
+            try:
+                os.unlink(tmp_pdf)
+            except OSError:
+                pass
+
+
 def _preflight_svg(file_path: str) -> dict:
     """Preflight dla plikow SVG — szybkie parsowanie XML."""
     w_mm, h_mm = 100.0, 100.0  # domyslne
@@ -509,6 +584,8 @@ def preflight_check(file_path: str) -> dict:
             return _preflight_raster(file_path)
         elif ext in _SVG_EXT:
             return _preflight_svg(file_path)
+        elif ext in _EPS_EXT:
+            return _preflight_eps(file_path)
         elif ext in _VECTOR_EXT:
             return _preflight_pdf(file_path)
         else:
