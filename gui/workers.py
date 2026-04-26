@@ -451,6 +451,14 @@ class NestWorker(QThread):
                         ('l', (cw_pt, ch_pt), (0, ch_pt)),
                         ('l', (0, ch_pt), (0, 0)),
                     ]
+                    # Operator powinien wiedziec ze ploter dostanie prostokat
+                    # zamiast rzeczywistego ksztaltu — typowo gdy uzytkownik
+                    # wrzucil surowy print PDF zamiast bleed output z CutContour.
+                    if not is_bleed_output:
+                        self.log_message.emit(
+                            f"    [!] {name}: brak CutContour w PDF → "
+                            f"linia ciecia = prostokat {pw_mm:.0f}x{ph_mm:.0f}mm"
+                        )
 
                 bleed_segs = []
 

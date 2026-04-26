@@ -1165,6 +1165,10 @@ def _fit_circle(points: np.ndarray) -> tuple[float, float, float] | None:
 def _is_circular(points: np.ndarray, cx: float, cy: float, r: float,
                   tolerance: float = 0.05) -> bool:
     """Sprawdza czy punkty leżą na okręgu (w granicy tolerance * r)."""
+    # Guard dla degeneratywnych przypadkow (raster z kilkoma pikselami):
+    # _fit_circle moze zwrocic r ~ 0, dzielenie ponizej dawalo inf/nan.
+    if r < 1e-6:
+        return False
     distances = np.sqrt((points[:, 0] - cx) ** 2 + (points[:, 1] - cy) ** 2)
     max_deviation = np.max(np.abs(distances - r))
     return max_deviation / r < tolerance

@@ -7,10 +7,24 @@ Dataclasses dla pipeline bleed.
 from __future__ import annotations
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+
+_FORBIDDEN_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _sanitize_stem(stem: str) -> str:
+    """Usuwa znaki niedozwolone na Windows (<>:"/\\|?* + control chars).
+
+    macOS/Linux pozwalaja np. na ':' w nazwie, ale Windows i niektore RIP-y
+    odrzucaja. Bezpieczniej zamienic na '_' niz wybuchnac przy save().
+    """
+    sanitized = _FORBIDDEN_FILENAME_CHARS.sub("_", stem).strip().rstrip(".")
+    return sanitized or "output"
 
 
 def build_output_name(
@@ -26,7 +40,7 @@ def build_output_name(
     Dla wielostronicowych dodaje sufiks _p{N}:
         {stem}_p{N}_PRINT_{W}x{H}mm_bleed{N}mm.pdf
     """
-    stem = os.path.splitext(os.path.basename(input_path))[0]
+    stem = _sanitize_stem(os.path.splitext(os.path.basename(input_path))[0])
     w = round(trim_w_mm)
     h = round(trim_h_mm)
     b = round(bleed_mm)
