@@ -80,14 +80,17 @@ def test_cache_invalidated_by_file_change(tmp_path, isolated_cache):
 def test_cache_different_engine_different_key(tmp_path, isolated_cache):
     """Zmiana silnika konturu → inny klucz → cache miss."""
     pdf = make_rectangle_vector(tmp_path, w_mm=50, h_mm=50)
-    # Zapisujemy pod "moore"
     stickers = detect_contour(pdf)
     if stickers[0].pdf_doc is not None:
         stickers[0].pdf_doc.close()
+    # detect_contour() auto-zapisal pod config.CONTOUR_ENGINE (domyslnie
+    # "opencv") — czyscimy zeby manual save/load operowaly na czystym stanie
+    # i test sprawdzal dokladnie roznicowanie po engine.
+    cache.clear_all()
     cache.save(pdf, "moore", stickers)
-    # Sprawdzamy pod innym engine → miss
+    # Inny engine → miss
     assert cache.load(pdf, "opencv") is None
-    # Ale pod tym samym → hit
+    # Ten sam engine → hit
     assert cache.load(pdf, "moore") is not None
 
 
