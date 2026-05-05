@@ -129,14 +129,19 @@ def find_outermost_drawing(
             candidates.append((i, d, area, has_fill))
 
     if candidates:
-        # Preferuj kandydatów z fill (tło/background)
+        # Preferuj kandydatów z fill (tło/background).
+        # Przy równej area tie-break: najwyższy idx = drawing rysowany
+        # najpóźniej = leżący na wierzchu = wizualnie widoczny.
+        # Bez tego pliki z czarnym pełnostronicowym tłem POD białym/kolorowym
+        # overlay'em (typowe dla eksportu Illustrator/InDesign) wybierały
+        # czarne tło i generowały spad w niewłaściwym kolorze.
         filled = [c for c in candidates if c[3]]
         if filled:
-            idx, drawing, area, _ = min(filled, key=lambda x: x[2])
+            idx, drawing, area, _ = min(filled, key=lambda x: (x[2], -x[0]))
             log.info(f"Zewnętrzny kontur: drawing[{idx}], area={area:.1f}pt² (filled)")
             return idx, drawing
-        # Brak filled — weź najciaśniejszy stroke-only
-        idx, drawing, area, _ = min(candidates, key=lambda x: x[2])
+        # Brak filled — weź najciaśniejszy stroke-only (analogiczny tie-break)
+        idx, drawing, area, _ = min(candidates, key=lambda x: (x[2], -x[0]))
         log.info(f"Zewnętrzny kontur: drawing[{idx}], area={area:.1f}pt² (stroke-only)")
         return idx, drawing
 

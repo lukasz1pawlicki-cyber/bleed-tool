@@ -139,6 +139,19 @@ def rgb_to_cmyk(rgb: tuple[float, float, float]) -> tuple[float, float, float, f
 # KOLOR KRAWĘDZI
 # =============================================================================
 
+# Tolerancja akceptacji natywnego CMYK z content stream:
+# delta-CMYK >= 0.10 oznacza inny kolor niż wykryta krawędź (regex trafił
+# w czarne tło, czarny tekst itp.) — wtedy ICC-converted edge_rgb jest pewniejsze.
+NATIVE_CMYK_TOLERANCE = 0.10
+
+
+def _cmyk_close(a: tuple[float, float, float, float],
+                b: tuple[float, float, float, float],
+                tol: float = NATIVE_CMYK_TOLERANCE) -> bool:
+    """Zwraca True jeśli każdy kanał (c, m, y, k) różni się o ≤ tol."""
+    return all(abs(ai - bi) <= tol for ai, bi in zip(a, b))
+
+
 def extract_native_cmyk(doc, page) -> tuple[float, float, float, float] | None:
     """Wyciąga kolor CMYK fill krawędzi z content stream strony PDF.
 
@@ -162,6 +175,60 @@ def extract_native_cmyk(doc, page) -> tuple[float, float, float, float] | None:
     except Exception:
         pass
     return None
+
+
+# Próg wariancji RGB krawędzi — powyżej tego krawędź jest niejednolita
+# i wymaga raster path z dilation (zamiast solid-fill jednym kolorem).
+# 0.10 = ~25/255 — różnica między np. białym a jasnoszarym (ten sam kolor wizualnie).
+# Nie obniżać poniżej 0.07: szumy renderingu i antialiasing dają ~0.05 nawet
+# dla jednolitej krawędzi.
+EDGE_UNIFORMITY_TOLERANCE = 0.10
+
+
+def check_edge_uniformity(page, dpi: int = 72,
+                          tolerance: float = EDGE_UNIFORMITY_TOLERANCE) -> bool:
+    """Sprawdza czy krawędź strony jest jednolita kolorystycznie.
+
+    Renderuje stronę w niskim DPI, sampluje 1px obwódkę i liczy zakres kolorów
+    (max - min) na każdym kanale RGB. Zwraca False jeśli zakres przekracza
+    tolerance na którymkolwiek kanale.
+
+    Niejednolita krawędź (np. fioletowe pasy + białe sektory + czarne belki)
+    wymaga raster path z dilation — solid-fill bleed jednym kolorem dawałby
+    widoczny mismatch w pasie spadu.
+    """
+    try:
+        import fitz  # lokalny import — bleed.py nie powinien zależeć na fitz globalnie
+        mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+        # Potrzebny min. 5px obraz: pomijamy 2px obwódkę po każdej stronie
+        # (subpixel rasterization artifacts, antialiasing) i sampluje ring
+        # pomiędzy 2px a 3px głębokości od brzegu.
+        if arr.shape[0] < 6 or arr.shape[1] < 6:
+            return True
+
+        inset = 2
+        # Wewnętrzny pierścień: rząd 2 i -3, oraz kolumna 2 i -3
+        top = arr[inset, inset:-inset, :]
+        bottom = arr[-1 - inset, inset:-inset, :]
+        left = arr[inset + 1:-1 - inset, inset, :]
+        right = arr[inset + 1:-1 - inset, -1 - inset, :]
+        edge = np.concatenate([top, bottom, left, right], axis=0).astype(np.float32) / 255.0
+
+        # Zakres per kanał
+        ranges = edge.max(axis=0) - edge.min(axis=0)
+        max_range = float(ranges.max())
+        uniform = max_range <= tolerance
+        if not uniform:
+            log.info(
+                f"Krawędź niejednolita: max range RGB {max_range:.3f} > {tolerance:.3f} "
+                f"→ eksport przejdzie przez raster path (dilation)"
+            )
+        return uniform
+    except Exception as e:
+        log.warning(f"Nie udało się sprawdzić jednolitości krawędzi ({e}) — zakładam jednolita")
+        return True
 
 
 def extract_edge_color(drawing: dict) -> tuple[float, float, float]:
@@ -564,14 +631,25 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
                 break
 
             if not found_canva_bg:
-                # Brak pełnostronicowego tła — sampluj z renderowanej strony
-                # (typowy SVG/grafika: biała strona + grafika w środku)
-                rendered_rgb = _sample_page_edge_color(page)
-                edge_rgb = rendered_rgb
-                log.info(
-                    f"Outermost drawing biały — kolor z renderingu krawędzi: "
-                    f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
-                )
+                # Brak pełnostronicowego tła — sprawdź jednolitość krawędzi.
+                # Niejednolita krawędź (np. boczne kolumny + środkowe sektory):
+                # avg z _sample_page_edge_color daje "kompromisowy" kolor który
+                # zalewa cały pas spadu i jest widocznie zły lokalnie. Zamiast
+                # tego zostajemy przy outermost białym (top layer) — solid-fill
+                # bleed = biały, a expand_edge_paths/expand_page_fills lokalnie
+                # nadrysują kolorowe pasy z source content streamu.
+                if check_edge_uniformity(page):
+                    rendered_rgb = _sample_page_edge_color(page)
+                    edge_rgb = rendered_rgb
+                    log.info(
+                        f"Outermost drawing biały — kolor z renderingu krawędzi: "
+                        f"({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})"
+                    )
+                else:
+                    log.info(
+                        "Outermost biały + krawędź niejednolita — solid-fill biały, "
+                        "lokalne kolory pochodzą z rozszerzonych drawings"
+                    )
 
         sticker.edge_color_rgb = edge_rgb
         log.info(f"Kolor krawędzi RGB: ({edge_rgb[0]:.3f}, {edge_rgb[1]:.3f}, {edge_rgb[2]:.3f})")
@@ -582,35 +660,53 @@ def generate_bleed(sticker: Sticker, bleed_mm: float = DEFAULT_BLEED_MM) -> Stic
         log.warning(f"Brak źródła koloru krawędzi, fallback biały: {sticker.source_path}")
 
     # 3. Kolor CMYK — natywny z content stream (CMYK PDF) lub konwersja RGB→CMYK
-    # UWAGA: extract_native_cmyk zwraca PIERWSZY nie-biały k-fill, co MOŻE nie być
-    # rzeczywistym kolorem tła (np. czarny tekst w białej naklejce). Używamy go
-    # tylko gdy wykryty RGB krawędzi jest wyraźnie nie-biały — wtedy zachowanie
-    # natywnej fidelity CMYK ma sens. Dla białych/jasnych krawędzi preferujemy
-    # konwersję z edge_rgb, bo gwarantuje zgodność z rzeczywistym kolorem tła.
-    edge_is_near_white = all(c > 0.95 for c in edge_rgb)
-    if sticker.is_cmyk and sticker.pdf_doc is not None and not edge_is_near_white:
+    # UWAGA: extract_native_cmyk zwraca PIERWSZY nie-biały k-fill z content stream,
+    # co MOŻE nie być rzeczywistym kolorem widocznej krawędzi. Pliki z multi-warstw
+    # (np. czarne tło Illustratora pod kolorowym overlayem) trafiają tu niewłaściwy
+    # k-operator. Dla białych krawędzi też nie ma sensu (czarny tekst zwraca k≠0).
+    # Stąd weryfikacja: natywny CMYK akceptujemy tylko gdy jest BLISKI ICC-converted
+    # edge_rgb (max diff per channel ≤ NATIVE_CMYK_TOLERANCE). Inaczej fallback ICC.
+    edge_cmyk = rgb_to_cmyk(edge_rgb)
+    if sticker.is_cmyk and sticker.pdf_doc is not None:
         native_cmyk = extract_native_cmyk(sticker.pdf_doc, sticker.pdf_doc[sticker.page_index])
-        if native_cmyk is not None:
+        if native_cmyk is not None and _cmyk_close(native_cmyk, edge_cmyk):
             edge_cmyk = native_cmyk
             log.info(
                 f"Kolor krawędzi CMYK (natywny): ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
                 f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
             )
+        elif native_cmyk is not None:
+            log.info(
+                f"Natywny CMYK ({native_cmyk[0]:.3f}, {native_cmyk[1]:.3f}, {native_cmyk[2]:.3f}, "
+                f"{native_cmyk[3]:.3f}) odbiega od koloru krawędzi RGB — uzywam konwersji ICC"
+            )
+            log.info(
+                f"Kolor krawędzi CMYK (konwersja): ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
+                f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
+            )
         else:
-            edge_cmyk = rgb_to_cmyk(edge_rgb)
             log.info(
                 f"Kolor krawędzi CMYK (konwersja): ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
                 f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
             )
     else:
-        edge_cmyk = rgb_to_cmyk(edge_rgb)
         log.info(
             f"Kolor krawędzi CMYK (konwersja): ({edge_cmyk[0]:.3f}, {edge_cmyk[1]:.3f}, "
             f"{edge_cmyk[2]:.3f}, {edge_cmyk[3]:.3f})"
         )
     sticker.edge_color_cmyk = edge_cmyk
 
-    # 4. Snap wymiarów do okrągłych wartości (eliminuje białe gap-y na arkuszu)
+    # 4. Sprawdź jednolitość krawędzi (tylko PDF z pdf_doc — rastry mają własną
+    # ścieżkę, raster_path traktowany jest oddzielnie w eksporcie).
+    if sticker.pdf_doc is not None and sticker.raster_path is None:
+        try:
+            page = sticker.pdf_doc[sticker.page_index]
+            sticker.edge_uniform = check_edge_uniformity(page)
+        except Exception as e:
+            log.warning(f"check_edge_uniformity nieudana ({e}) — zakładam jednolita krawędź")
+            sticker.edge_uniform = True
+
+    # 5. Snap wymiarów do okrągłych wartości (eliminuje białe gap-y na arkuszu)
     _snap_sticker_dimensions(sticker, bleed_mm)
 
     return sticker

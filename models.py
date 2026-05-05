@@ -111,6 +111,13 @@ class Sticker:
     # z clip_rect odpowiednio rozszerzonym o bleed_mm.
     _src_cutpath_bbox: tuple[float, float, float, float] | None = None
 
+    # True = krawędź naklejki ma jednolity kolor (np. jeden full-bleed background).
+    # False = krawędź mieszana (np. boki kolorowe + góra/dół białe + paski czarne).
+    # Dla False bleed.generate_bleed używa białego solid-fill (zamiast avg krawędzi),
+    # a export.py polega na expand_page_fills/expand_edge_paths (z recursją do
+    # Form XObjects) by lokalnie nadrysować kolory krawędzi.
+    edge_uniform: bool = True
+
     def __post_init__(self):
         if self.width_mm < 0 or self.height_mm < 0:
             log.warning(f"Sticker z ujemnymi wymiarami: {self.width_mm}×{self.height_mm}mm")

@@ -602,6 +602,193 @@ def expand_clip_paths(
         log.info(f"Rozszerzono clipping paths o {bleed_pts:.2f}pt")
 
 
+def _iter_content_and_xobject_xrefs(doc: fitz.Document, page: fitz.Page) -> list[int]:
+    """Zwraca xref-y wszystkich strumieni rysujących grafikę strony.
+
+    BFS przez:
+      - Content stream strony (Contents)
+      - Form XObjects z Resources/XObject — rekurencyjnie do dowolnej głębokości
+        (Illustrator zagnieżdża X2 → X4/X6/X8 itd., wszystkie warstwy zawierają
+        rzeczywistą grafikę).
+
+    Bez rekurencji wgłąb expand_* nie znajdowałby kolorowych pasów
+    rysowanych w sub-XObjektach (incident Slowinski p1 2026-05-05).
+    """
+    visited: set[int] = set()
+    result: list[int] = []
+    form_subtype_re = re_module.compile(r'/Subtype\s*/Form')
+
+    def _add_form_xobjects(parent_obj_str: str) -> None:
+        """Z parsera obj-stringa wyciąga referencje do Form XObjects i recursuje."""
+        # Znajdź sekcję /XObject << ... >> wewnątrz Resources
+        xo_match = re_module.search(r'/XObject\s*<<', parent_obj_str)
+        if not xo_match:
+            return
+        # Znajdź matching '>>' (proste: pierwsze '>>' po pozycji startu)
+        # Resources/XObject zwykle nie ma zagnieżdżonych <<>>, więc to bezpieczne
+        section_start = xo_match.end()
+        section_end = parent_obj_str.find('>>', section_start)
+        if section_end < 0:
+            return
+        section = parent_obj_str[section_start:section_end]
+        for m in re_module.finditer(r'(\d+)\s+\d+\s+R', section):
+            sub_xref = int(m.group(1))
+            if sub_xref in visited:
+                continue
+            try:
+                sub_obj = doc.xref_object(sub_xref)
+                if form_subtype_re.search(sub_obj):
+                    visited.add(sub_xref)
+                    result.append(sub_xref)
+                    _add_form_xobjects(sub_obj)  # rekursja
+            except Exception:
+                continue
+
+    # Page Contents streamy
+    page_xref = page.xref
+    contents_info = doc.xref_get_key(page_xref, "Contents")
+    if contents_info[0] != 'null':
+        for m in re_module.finditer(r'(\d+)\s+\d+\s+R', contents_info[1]):
+            xref = int(m.group(1))
+            if xref not in visited:
+                visited.add(xref)
+                result.append(xref)
+
+    # Page-level XObjects (recursive)
+    try:
+        page_obj = doc.xref_object(page_xref)
+        _add_form_xobjects(page_obj)
+    except Exception:
+        pass
+
+    return result
+
+
+def overlay_edge_extensions(
+    doc: fitz.Document, page: fitz.Page, bleed_pts: float,
+    edge_x0: float, edge_y0: float, edge_x1: float, edge_y1: float,
+) -> None:
+    """Rysuje extension rectangles dla drawings dotykających krawędzi trim.
+
+    Iteruje `page.get_drawings()` (zwraca rect/fill w page-coords po
+    zaaplikowaniu wszystkich CTM, niezależnie od głębokości XObjektów)
+    i rysuje "pasy spadu" w obszarze poza CropBox, kontynuujące lokalne
+    kolory krawędzi.
+
+    Działa niezależnie od struktury XObjektów (Illustrator zagnieżdża
+    grafikę głęboko, expand_edge_paths/expand_page_fills nie radzą sobie
+    z głębokim CTM tracking — to overlay obejmuje wszystkie przypadki).
+
+    Wymaga aktywnego CropBox = (edge_x0, edge_y0, edge_x1, edge_y1).
+    UWAGA: edge_yX podawane w fitz coords (y=edge_y0 = top, y=edge_y1 = bottom)
+    bo `get_drawings()` zwraca rect w fitz coords.
+
+    Wstawia nowe operatory na KONIEC content streamu strony — extensions
+    rysują się na wierzchu source content. Bo extensions są POZA CropBox,
+    nie zalewają grafiki w trim area.
+    """
+    drawings = page.get_drawings()
+    if not drawings:
+        return
+
+    tol = 2.0
+    extensions: list[tuple[tuple, float, float, float, float]] = []
+
+    for d in drawings:
+        fill = d.get('fill')
+        if fill is None or len(fill) < 3:
+            continue
+        # Pomiń drawings które nie mają wypełnienia (stroke-only)
+        if d.get('type') not in ('f', 'fs'):
+            # type 'f' = fill, 'fs' = fill+stroke; 's' = stroke only (pomijamy)
+            continue
+        r = d.get('rect')
+        if r is None:
+            continue
+
+        # Czy bbox dotyka/przekracza krawędzi trim?
+        touches_left = r.x0 <= edge_x0 + tol
+        touches_top = r.y0 <= edge_y0 + tol
+        touches_right = r.x1 >= edge_x1 - tol
+        touches_bottom = r.y1 >= edge_y1 - tol
+
+        if not (touches_left or touches_right or touches_top or touches_bottom):
+            continue
+
+        rgb = tuple(fill[:3])
+
+        # Effective extent po klipie do trim area
+        ext_x0 = max(r.x0, edge_x0)
+        ext_x1 = min(r.x1, edge_x1)
+        ext_y0 = max(r.y0, edge_y0)
+        ext_y1 = min(r.y1, edge_y1)
+        if ext_x1 <= ext_x0 or ext_y1 <= ext_y0:
+            continue  # niewidoczny po klipie
+
+        # Extension rectangles per touched edge
+        if touches_left:
+            extensions.append((rgb, edge_x0 - bleed_pts, ext_y0, edge_x0, ext_y1))
+        if touches_right:
+            extensions.append((rgb, edge_x1, ext_y0, edge_x1 + bleed_pts, ext_y1))
+        if touches_top:
+            extensions.append((rgb, ext_x0, edge_y0 - bleed_pts, ext_x1, edge_y0))
+        if touches_bottom:
+            extensions.append((rgb, ext_x0, edge_y1, ext_x1, edge_y1 + bleed_pts))
+
+        # Corner extensions: drawing dotykające dwóch przyległych krawędzi
+        # wypełniają narożnik bleed area (bez tego narożnik zostaje biały —
+        # ekstensje L i T pokrywają tylko paski boczne, nie skrzyżowanie).
+        # Drawings są iterowane w kolejności get_drawings() (= kolejność
+        # rysowania PDF) → później dodany corner wygrywa na wierzchu,
+        # deterministycznie powtarza top-layer kolor narożnika etykiety.
+        if touches_left and touches_top:
+            extensions.append((rgb, edge_x0 - bleed_pts, edge_y0 - bleed_pts,
+                               edge_x0, edge_y0))
+        if touches_right and touches_top:
+            extensions.append((rgb, edge_x1, edge_y0 - bleed_pts,
+                               edge_x1 + bleed_pts, edge_y0))
+        if touches_right and touches_bottom:
+            extensions.append((rgb, edge_x1, edge_y1,
+                               edge_x1 + bleed_pts, edge_y1 + bleed_pts))
+        if touches_left and touches_bottom:
+            extensions.append((rgb, edge_x0 - bleed_pts, edge_y1,
+                               edge_x0, edge_y1 + bleed_pts))
+
+    if not extensions:
+        return
+
+    # Buduj content stream rysujący extensions w PDF coords (y-up).
+    # Page MediaBox origin = (0, 0). Fitz y-down → PDF y-up: y_pdf = page_h - y_fitz.
+    page_h = page.rect.height
+    parts: list[str] = ['q\n']
+    for rgb, x0, y0_f, x1, y1_f in extensions:
+        # Konwersja fitz y-down → PDF y-up
+        y0_pdf = page_h - y1_f  # bottom edge (smaller PDF y)
+        y1_pdf = page_h - y0_f  # top edge (larger PDF y)
+        w = x1 - x0
+        h = y1_pdf - y0_pdf
+        parts.append(
+            f'{rgb[0]:.4f} {rgb[1]:.4f} {rgb[2]:.4f} rg\n'
+            f'{x0:.4f} {y0_pdf:.4f} {w:.4f} {h:.4f} re f\n'
+        )
+    parts.append('Q\n')
+    extension_ops = ''.join(parts).encode('latin-1')
+
+    # Append do ostatniego content streamu strony.
+    # page._wrap_contents() w PyMuPDF zapewnia że Contents jest pojedynczym streamem.
+    page.wrap_contents()
+    page_xref = page.xref
+    contents_info = doc.xref_get_key(page_xref, "Contents")
+    xref_match = re_module.search(r'(\d+)\s+\d+\s+R', contents_info[1])
+    if not xref_match:
+        log.warning("overlay_edge_extensions: brak Contents xref do zapisu")
+        return
+    content_xref = int(xref_match.group(1))
+    existing = doc.xref_stream(content_xref) or b''
+    doc.update_stream(content_xref, existing + extension_ops)
+    log.info(f"Narysowano {len(extensions)} edge extensions (overlay)")
+
+
 def expand_page_fills(
     doc: fitz.Document, page: fitz.Page, bleed_pts: float,
     page_w_pt: float, page_h_pt: float,
@@ -626,16 +813,12 @@ def expand_page_fills(
     if edge_y1 is None:
         edge_y1 = page_h_pt
 
-    page_xref = page.xref
-    contents_info = doc.xref_get_key(page_xref, "Contents")
-    xref_str = contents_info[1]
-    xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xref_str)
+    xrefs = _iter_content_and_xobject_xrefs(doc, page)
     if not xrefs:
         return
 
     modified = False
-    for xr_str in xrefs:
-        xr = int(xr_str)
+    for xr in xrefs:
         stream = doc.xref_stream(xr)
         if not stream:
             continue
@@ -715,18 +898,20 @@ def _expand_fills_in_stream(
 
                         tol = 2.0  # tolerance in pt
 
-                        # Które krawędzie dotyka fill?
-                        touches_left = abs(eff_x - edge_x0) < tol
-                        touches_bottom = abs(eff_y - edge_y0) < tol
-                        touches_right = abs(eff_x1 - edge_x1) < tol
-                        touches_top = abs(eff_y1 - edge_y1) < tol
+                        # Które krawędzie dotyka fill (lub przekracza)?
+                        # eff_x <= edge_x0 + tol = "dotyka lub wystaje za lewą krawędź" itp.
+                        touches_left = eff_x <= edge_x0 + tol
+                        touches_bottom = eff_y <= edge_y0 + tol
+                        touches_right = eff_x1 >= edge_x1 - tol
+                        touches_top = eff_y1 >= edge_y1 - tol
 
-                        # Fill musi mieć pełną szerokość LUB pełną wysokość
-                        # i dotykać przynajmniej jednej krawędzi
-                        trim_w = edge_x1 - edge_x0
-                        trim_h = edge_y1 - edge_y0
-                        full_width = abs(eff_w - trim_w) < tol and touches_left
-                        full_height = abs(eff_h - trim_h) < tol and touches_bottom
+                        # Fill effectively-full po clipie do strony:
+                        # rect ≥ trim w danej osi (równa OR wystaje poza obie krawędzie).
+                        # Dla wektorów z Illustratora bocznik często ma y0<0, y1>page_h
+                        # (pasek na lewy bok rysowany "z naddatkiem", clipped do strony) —
+                        # NIE jest full_height geometrycznie, ale jest effektywnie po clipie.
+                        full_width = touches_left and touches_right
+                        full_height = touches_bottom and touches_top
 
                         if full_width or full_height:
                             dx = bleed_pts / current_sx
@@ -790,16 +975,12 @@ def expand_edge_paths(
     if edge_y1 is None:
         edge_y1 = page_h_pt
 
-    page_xref = page.xref
-    contents_info = doc.xref_get_key(page_xref, "Contents")
-    xref_str = contents_info[1]
-    xrefs = re_module.findall(r'(\d+)\s+\d+\s+R', xref_str)
+    xrefs = _iter_content_and_xobject_xrefs(doc, page)
     if not xrefs:
         return
 
     modified = False
-    for xr_str in xrefs:
-        xr = int(xr_str)
+    for xr in xrefs:
         stream = doc.xref_stream(xr)
         if not stream:
             continue
@@ -2186,6 +2367,18 @@ def export_single_sticker(
             expand_edge_paths(
                 doc_src, src_page, bleed_pts,
                 src_cropbox.width, src_cropbox.height,
+                src_cropbox.x0, src_cropbox.y0,
+                src_cropbox.x1, src_cropbox.y1,
+            )
+
+            # Overlay edge extensions: rysuje rect-y w obszarze poza CropBox
+            # kolorami wszystkich filled drawings dotykających krawędzi.
+            # Używa get_drawings() — niezależne od głębokości XObjektów
+            # (Illustrator z głęboko zagnieżdżonymi formami: X2 → X4/X6/X8).
+            # Wykonujemy PRZED set_mediabox i usunięciem boxów — page coords
+            # są wciąż w original CropBox.
+            overlay_edge_extensions(
+                doc_src, src_page, bleed_pts,
                 src_cropbox.x0, src_cropbox.y0,
                 src_cropbox.x1, src_cropbox.y1,
             )
