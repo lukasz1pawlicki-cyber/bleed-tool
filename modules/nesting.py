@@ -197,6 +197,7 @@ def nest_job(
     max_sheet_length_mm: float | None = None,
     grouping_mode: str = "group",
     bleed_mm: float = 0.0,
+    max_per_sheet: int = 0,
     _center_mode: str = "xy",
 ) -> Job:
     """Rozmieszcza naklejki na arkuszach algorytmem shelf (row-by-row).
@@ -213,6 +214,10 @@ def nest_job(
                        "separate" = kazdy wzor na osobnym arkuszu,
                        "mix" = mieszaj wszystkie wzory (cross-group backfill)
         bleed_mm: wielkosc bleed w mm (naklejki powiekszone o 2*bleed)
+        max_per_sheet: gorny limit naklejek na jednym arkuszu (tylko tryb "mix",
+                       0 = bez limitu). Po osiagnieciu limitu kolejne naklejki
+                       trafiaja na nowy arkusz (placement i backfill respektuja
+                       cap; takze konsolidacja koncowa).
 
     Returns:
         Job z wypelniona lista sheets (z placements).
@@ -241,6 +246,14 @@ def nest_job(
         raise ValueError(f"bleed_mm musi byc >= 0, podano {bleed_mm}")
     if gap_mm < 0:
         raise ValueError(f"gap_mm musi byc >= 0, podano {gap_mm}")
+    if max_per_sheet < 0:
+        raise ValueError(f"max_per_sheet musi byc >= 0, podano {max_per_sheet}")
+
+    # Cap egzekwowany tylko w trybie "mix" (jedyny gdzie cross-group backfill
+    # mogby przekroczyc oczekiwana liczbe). 0 = bez limitu.
+    cap_active = grouping_mode == "mix" and max_per_sheet > 0
+    if cap_active:
+        log.info(f"Limit naklejek na arkusz: {max_per_sheet} (tryb mix)")
 
     # Bleed: kazda naklejka jest wieksza o 2*bleed w obu kierunkach
     bleed2 = 2 * bleed_mm
@@ -386,6 +399,15 @@ def nest_job(
         current_shelf_top = 0.0
         return s
 
+    def _sheet_at_capacity() -> bool:
+        """True gdy biezacy arkusz osiagnal user-definiowany limit naklejek.
+
+        Aktywne tylko gdy cap_active (mix mode + max_per_sheet > 0). Wywolywane
+        z helperow placementu — jesli True, zwracaja False jak przy braku miejsca,
+        co naturalnie pcha glowna petle do galezi "nowy arkusz".
+        """
+        return cap_active and len(sheet.placements) >= max_per_sheet
+
     def _finalize_sheet(s: Sheet):
         """Zamyka arkusz i dodaje do job.sheets."""
         if not s.placements:
@@ -411,6 +433,8 @@ def nest_job(
         """Umieszcza naklejke w biezacym (ostatnim) wierszu."""
         nonlocal current_shelf_top
         if not shelves:
+            return False
+        if _sheet_at_capacity():
             return False
         cur_shelf = shelves[-1]
         item_h_gap = item.height_mm + gap_mm
@@ -438,6 +462,8 @@ def nest_job(
     def _place_in_new_shelf(item: _NestingItem) -> bool:
         """Tworzy nowy wiersz i umieszcza naklejke."""
         nonlocal current_shelf_top
+        if _sheet_at_capacity():
+            return False
         item_h_gap = item.height_mm + gap_mm
         new_shelf_y = current_shelf_top
         new_shelf_top = new_shelf_y + item_h_gap
@@ -472,6 +498,8 @@ def nest_job(
         Jesli allow_rotation=False, probuje tylko 0°.
         Wymiary naklejki uwzgledniaja bleed (bleed2).
         """
+        if _sheet_at_capacity():
+            return False
         best_shelf_idx: int | None = None
         best_item: _NestingItem | None = None
         best_waste: float = float("inf")
@@ -779,6 +807,7 @@ def nest_job(
             job, area_w, area_h, gap_mm, origin_x, origin_y,
             is_roll, top, mark_zone_mm, bleed2,
             same_source_only=same_source_only,
+            max_per_sheet=max_per_sheet if cap_active else 0,
         )
 
     # -------------------------------------------------------------------
@@ -827,6 +856,7 @@ def _consolidate_last_sheet(
     mark_zone_mm: float,
     bleed2: float = 0.0,
     same_source_only: bool = False,
+    max_per_sheet: int = 0,
 ):
     """Przenosi naklejki z ostatniego arkusza do wczesniejszych.
 
@@ -898,6 +928,8 @@ def _consolidate_last_sheet(
     # szuka best-fit wg *height waste* wsrod shelfow spelniajacych oba warunki
     # (szerokosc + wysokosc), a po kazdym umieszczeniu mutuje cursor_x jednego
     # shelfa — indeks wymagalby re-insert po kazdej zmianie.
+    cap = max_per_sheet if max_per_sheet > 0 else None
+
     for placement in sorted_last:
         moved = False
         sticker = placement.sticker
@@ -905,6 +937,9 @@ def _consolidate_last_sheet(
         for sheet_idx, prev_sheet in enumerate(prev_sheets):
             # Tryb group: przenosimy tylko na arkusz ktory juz ma ten wzor.
             if same_source_only and sticker.source_path not in prev_sheet_sources[sheet_idx]:
+                continue
+            # Limit naklejek na arkuszu (mix mode) — nie wciagaj na pelny.
+            if cap is not None and len(prev_sheet.placements) >= cap:
                 continue
             prev_shelves = prev_shelves_map[sheet_idx]
 

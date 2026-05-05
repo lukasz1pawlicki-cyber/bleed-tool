@@ -137,3 +137,68 @@ def test_nest_bleed_reduces_capacity():
     # Mniej naklejek na arkusz → wiecej arkuszy LUB mniej placements per sheet
     # Kiedy wszystkie sie miesza, liczby beda rowne — ale arkuszy bedzie wiecej
     assert len(with_bleed.sheets) >= len(no_bleed.sheets)
+
+
+# ============================================================================
+# max_per_sheet — limit naklejek na arkuszu (tylko tryb mix)
+# ============================================================================
+
+def test_nest_max_per_sheet_caps_mix_mode():
+    """Limit 10 szt./arkusz w trybie mix → arkusze maja <= 10 placementow."""
+    s1 = make_sticker(50, 30, source="/tmp/a.pdf")
+    s2 = make_sticker(50, 30, source="/tmp/b.pdf")
+    # 30 naklejek; bez limitu zmiescilyby sie wszystkie na 1 arkuszu SRA3
+    job = Job(stickers=[(s1, 15), (s2, 15)], plotter="summa_s3")
+    result = nest_job(
+        job, sheet_width_mm=320, sheet_height_mm=450,
+        gap_mm=2, mark_zone_mm=0,
+        grouping_mode="mix", max_per_sheet=10,
+    )
+    total = sum(len(s.placements) for s in result.sheets)
+    assert total == 30, f"Wszystkie naklejki musza byc rozlozone (got {total})"
+    for i, sheet in enumerate(result.sheets):
+        assert len(sheet.placements) <= 10, (
+            f"Arkusz {i + 1} ma {len(sheet.placements)} > 10 placements"
+        )
+    # 30 / 10 = 3 arkusze (lub wiecej jesli ostatni jest niepelny)
+    assert len(result.sheets) >= 3
+
+
+def test_nest_max_per_sheet_zero_means_unlimited():
+    """max_per_sheet=0 = bez limitu (zachowanie sprzed feature)."""
+    sticker = make_sticker(30, 20)
+    job = Job(stickers=[(sticker, 20)], plotter="summa_s3")
+    result = nest_job(
+        job, sheet_width_mm=320, sheet_height_mm=450,
+        gap_mm=2, mark_zone_mm=0,
+        grouping_mode="mix", max_per_sheet=0,
+    )
+    total = sum(len(s.placements) for s in result.sheets)
+    assert total == 20
+    # Bez limitu wszystkie powinny zmiescic sie na 1 arkuszu
+    assert len(result.sheets) == 1
+
+
+def test_nest_max_per_sheet_ignored_outside_mix_mode():
+    """max_per_sheet egzekwowany tylko w trybie 'mix' — w 'group' bez wplywu."""
+    sticker = make_sticker(30, 20)
+    job = Job(stickers=[(sticker, 20)], plotter="summa_s3")
+    result = nest_job(
+        job, sheet_width_mm=320, sheet_height_mm=450,
+        gap_mm=2, mark_zone_mm=0,
+        grouping_mode="group", max_per_sheet=5,  # cap ignorowany
+    )
+    total = sum(len(s.placements) for s in result.sheets)
+    assert total == 20
+    assert len(result.sheets) == 1  # tryb group nie respektuje cap
+
+
+def test_nest_max_per_sheet_negative_raises():
+    """Ujemna wartosc → ValueError."""
+    sticker = make_sticker(30, 20)
+    job = Job(stickers=[(sticker, 1)], plotter="summa_s3")
+    with pytest.raises(ValueError):
+        nest_job(
+            job, sheet_width_mm=320, sheet_height_mm=450,
+            grouping_mode="mix", max_per_sheet=-1,
+        )

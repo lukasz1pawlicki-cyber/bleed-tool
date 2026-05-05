@@ -214,7 +214,8 @@ class NestWorker(QThread):
     def __init__(self, files, file_copies, output_dir,
                  sheet_w, sheet_h=None, max_sheet_length=None,
                  copies=1, gap=0.0, plotter="jwei",
-                 grouping_mode="group", white=False, parent=None):
+                 grouping_mode="group", max_per_sheet=0,
+                 white=False, parent=None):
         super().__init__(parent)
         self._files = files
         self._file_copies = file_copies
@@ -226,6 +227,7 @@ class NestWorker(QThread):
         self._gap = gap
         self._plotter = plotter
         self._grouping_mode = grouping_mode
+        self._max_per_sheet = int(max_per_sheet) if max_per_sheet else 0
         self._white = white
 
     @staticmethod
@@ -523,6 +525,7 @@ class NestWorker(QThread):
             gap_mm=self._gap,
             max_sheet_length_mm=nest_max_len,
             grouping_mode=self._grouping_mode,
+            max_per_sheet=self._max_per_sheet,
             bleed_mm=0,
             mark_zone_mm=mark_zone,
         )

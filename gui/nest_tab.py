@@ -243,12 +243,34 @@ class NestTab(QWidget):
             accent=True,
             default=_saved.get("grouping", "Grupuj"),
         )
+        self._grouping_seg.currentTextChanged.connect(self._on_grouping_changed)
         row_group.addWidget(self._grouping_seg)
         row_group.addStretch(1)
         self._white_cb = QCheckBox("Biały poddruk")
         self._white_cb.setChecked(bool(_saved.get("white", False)))
         row_group.addWidget(self._white_cb)
         params_card.body.addLayout(row_group)
+
+        # Max szt./arkusz (tylko tryb Mieszaj — 0 = bez limitu)
+        self._max_row_widget = QWidget()
+        max_row = QHBoxLayout(self._max_row_widget)
+        max_row.setContentsMargins(0, 0, 0, 0)
+        max_row.setSpacing(8)
+        max_row.addWidget(self._field_label("Max/arkusz"))
+        self._max_per_sheet_spin = QSpinBox()
+        self._max_per_sheet_spin.setRange(0, 9999)
+        self._max_per_sheet_spin.setValue(int(_saved.get("max_per_sheet", 0)))
+        self._max_per_sheet_spin.setSpecialValueText("bez limitu")
+        self._max_per_sheet_spin.setFixedSize(160, 26)
+        self._max_per_sheet_spin.setToolTip(
+            "Maksymalna liczba naklejek na arkuszu (tylko tryb Mieszaj). "
+            "0 = bez limitu."
+        )
+        max_row.addWidget(self._max_per_sheet_spin)
+        max_row.addWidget(UnitLabel("szt."))
+        max_row.addStretch(1)
+        params_card.body.addWidget(self._max_row_widget)
+        self._update_max_row_visibility()
 
         # FlexCut + Output
         row_tools = QHBoxLayout()
@@ -333,6 +355,8 @@ class NestTab(QWidget):
         self._copies_spin.setValue(1)
         self._gap_spin.setValue(int(round(float(DEFAULT_GAP_MM))))
         self._grouping_seg.set_value("Grupuj")
+        self._max_per_sheet_spin.setValue(0)
+        self._update_max_row_visibility()
         self._white_cb.setChecked(False)
         self._plotter_combo.setCurrentText("jwei")
 
@@ -378,6 +402,13 @@ class NestTab(QWidget):
             self._on_sheet_changed(self._sheet_combo.currentText())
         else:
             self._plotter_combo.setCurrentText("summa_s3")
+
+    def _on_grouping_changed(self, _value: str):
+        self._update_max_row_visibility()
+
+    def _update_max_row_visibility(self):
+        """Pole Max/arkusz tylko w trybie Mieszaj."""
+        self._max_row_widget.setVisible(self._grouping_seg.value() == "Mieszaj")
 
     def _on_sheet_changed(self, name: str):
         if name in ("SRA3", "SRA3+"):
@@ -581,6 +612,7 @@ class NestTab(QWidget):
             "white": self._white_cb.isChecked(),
             "sheet_preset": self._sheet_combo.currentText(),
             "mode": self._mode_seg.value(),
+            "max_per_sheet": int(self._max_per_sheet_spin.value()),
         }})
         self._processing = True
         self._nest_btn.setEnabled(False)
@@ -593,6 +625,13 @@ class NestTab(QWidget):
         mode = self._mode_seg.value()
 
         from gui.workers import NestWorker
+        grouping_mode = {"Grupuj": "group", "Osobne": "separate", "Mieszaj": "mix"}.get(
+            self._grouping_seg.value(), "group")
+        max_per_sheet = int(self._max_per_sheet_spin.value())
+        # Limit ma sens tylko w trybie mieszaj (UI ukrywa pole inaczej, ale
+        # zabezpieczamy się gdyby state przeszedł z poprzedniej sesji).
+        if grouping_mode != "mix":
+            max_per_sheet = 0
         self._worker = NestWorker(
             files=self.files,
             file_copies=self._file_section.file_copies,
@@ -603,8 +642,8 @@ class NestTab(QWidget):
             copies=self.copies,
             gap=self.gap_mm,
             plotter=self.plotter,
-            grouping_mode={"Grupuj": "group", "Osobne": "separate", "Mieszaj": "mix"}.get(
-                self._grouping_seg.value(), "group"),
+            grouping_mode=grouping_mode,
+            max_per_sheet=max_per_sheet,
             white=self._white_cb.isChecked(),
         )
         self._worker.log_message.connect(self._log)
